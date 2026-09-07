@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from dl_utils.data.factor_shapes import FactorShapes32
-from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 from dl_utils.vae.vae_hierarchy import (
     ActiveUnitAccumulator,
@@ -41,9 +40,7 @@ def make_factor_shape_loaders(
     )
 
 
-def warmup_weight(
-    update: int, *, warmup_updates: int
-) -> float:
+def warmup_weight(update: int, *, warmup_updates: int) -> float:
     if warmup_updates <= 0:
         return 1.0
     return min(1.0, update / warmup_updates)
@@ -67,9 +64,7 @@ def evaluate_hierarchy(
         x = x.to(device, non_blocking=True)
         latents = model.infer(x, sample=False)
         reconstruction = model.decode(latents["z1"])
-        distortion += float(
-            F.binary_cross_entropy(reconstruction, x, reduction="sum")
-        )
+        distortion += float(F.binary_cross_entropy(reconstruction, x, reduction="sum"))
         kl_z1 += float(
             diagonal_gaussian_kl_from_logvar(
                 latents["q1_mu"],
@@ -85,9 +80,7 @@ def evaluate_hierarchy(
         )
         active.update(latents)
         examples += x.shape[0]
-    active_z1, active_z2 = active.counts(
-        variance_threshold=active_variance_threshold
-    )
+    active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     return {
         "distortion": distortion / examples,
         "kl_z1": kl_z1 / examples,
@@ -125,9 +118,7 @@ def train_hierarchy(
             update += 1
             x = x.to(device, non_blocking=True)
             reconstruction, latents = model(x)
-            kl_weight = warmup_weight(
-                update, warmup_updates=warmup_updates
-            )
+            kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
             loss, terms = hierarchical_vae_loss(
                 reconstruction,
                 x,
@@ -138,14 +129,17 @@ def train_hierarchy(
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            totals += torch.stack(
-                [
-                    loss.detach(),
-                    terms["distortion"],
-                    terms["kl_z1"],
-                    terms["kl_z2"],
-                ]
-            ) * x.shape[0]
+            totals += (
+                torch.stack(
+                    [
+                        loss.detach(),
+                        terms["distortion"],
+                        terms["kl_z1"],
+                        terms["kl_z2"],
+                    ]
+                )
+                * x.shape[0]
+            )
             examples += x.shape[0]
             active.update(latents)
         values = (totals / examples).tolist()
@@ -168,10 +162,9 @@ def train_hierarchy(
         active_variance_threshold=active_variance_threshold,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    save_model_weights(
-        model,
-        out_dir / "model.pth",
-        metadata={
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
             "model_name": model_name,
             "model_config": model_config(model),
             "posterior_family": model.posterior_family,
@@ -179,6 +172,7 @@ def train_hierarchy(
             "free_bits_per_group": free_bits,
             "split_seed": split_seed,
         },
+        out_dir / "model.pth",
     )
     model.eval()
     with torch.inference_mode():

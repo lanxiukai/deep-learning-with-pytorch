@@ -32,8 +32,6 @@ class TokenUsageAccumulator:
     """Accumulate exact token counts over an epoch or evaluation window."""
 
     def __init__(self, vocabulary_size: int) -> None:
-        if vocabulary_size < 2:
-            raise ValueError("vocabulary_size must be at least two")
         self.vocabulary_size = vocabulary_size
         self.counts: Tensor | None = None
 
@@ -46,8 +44,6 @@ class TokenUsageAccumulator:
         self.counts += counts
 
     def statistics(self) -> dict[str, Tensor]:
-        if self.counts is None or self.counts.sum() == 0:
-            raise ValueError("no tokens were observed")
         return _token_usage_from_counts(self.counts.float())
 
 
@@ -61,8 +57,6 @@ class VectorQuantizer(nn.Module):
         commitment: float = 0.25,
     ) -> None:
         super().__init__()
-        if codebook_size < 2 or embedding_dim < 1 or commitment < 0:
-            raise ValueError("invalid vector-quantizer configuration")
         self.codebook_size = codebook_size
         self.embedding_dim = embedding_dim
         self.commitment = commitment
@@ -72,8 +66,6 @@ class VectorQuantizer(nn.Module):
         )
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        if z_e.ndim != 4 or z_e.shape[1] != self.embedding_dim:
-            raise ValueError("expected z_e with shape [B, embedding_dim, H, W]")
         flat = z_e.permute(0, 2, 3, 1).contiguous().reshape(-1, self.embedding_dim)
         distances = (
             flat.square().sum(dim=1, keepdim=True)
@@ -101,8 +93,6 @@ class VectorQuantizer(nn.Module):
         return z_st, index_grid, codebook_loss + commitment_loss, diagnostics
 
     def lookup(self, indices: Tensor) -> Tensor:
-        if indices.dtype != torch.long:
-            raise ValueError("indices must use torch.long")
         return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
 
 
@@ -112,8 +102,6 @@ class FiniteScalarQuantizer(nn.Module):
     def __init__(self, levels: Sequence[int] = (8, 8, 5, 5)) -> None:
         super().__init__()
         levels = tuple(int(level) for level in levels)
-        if not levels or any(level < 2 for level in levels):
-            raise ValueError("every FSQ channel needs at least two levels")
         levels_tensor = torch.tensor(levels, dtype=torch.long)
         basis = torch.ones_like(levels_tensor)
         if len(levels) > 1:
@@ -132,20 +120,12 @@ class FiniteScalarQuantizer(nn.Module):
         return torch.round((bounded + 1.0) * (levels - 1.0) / 2.0)
 
     def pack(self, digits: Tensor) -> Tensor:
-        if digits.shape[-1] != self.dim:
-            raise ValueError(f"expected {self.dim} scalar digits")
-        if torch.any(digits < 0) or torch.any(digits >= self.levels):
-            raise ValueError("digits fall outside their mixed-radix levels")
         return (digits.long() * self.basis).sum(dim=-1)
 
     def unpack(self, indices: Tensor) -> Tensor:
-        if torch.any(indices < 0) or torch.any(indices >= self.codebook_size):
-            raise ValueError("FSQ indices are outside the vocabulary")
         return (indices[..., None] // self.basis % self.levels).long()
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        if z_e.ndim != 4 or z_e.shape[1] != self.dim:
-            raise ValueError(f"expected z_e with {self.dim} channels")
         bounded = torch.tanh(z_e).permute(0, 2, 3, 1).contiguous()
         digits = self._values_to_digits(bounded)
         quantized = self._digits_to_values(digits)
@@ -187,10 +167,6 @@ class ImageEncoder(nn.Module):
         downsample_steps: int = 2,
     ) -> None:
         super().__init__()
-        if hidden_channels < 2 or downsample_steps < 2:
-            raise ValueError(
-                "hidden_channels and downsample_steps must be at least two"
-            )
         layers: list[nn.Module] = [
             nn.Conv2d(image_channels, hidden_channels // 2, 4, 2, 1),
             nn.ReLU(inplace=True),
@@ -228,10 +204,6 @@ class ImageDecoder(nn.Module):
         downsample_steps: int = 2,
     ) -> None:
         super().__init__()
-        if hidden_channels < 2 or downsample_steps < 2:
-            raise ValueError(
-                "hidden_channels and downsample_steps must be at least two"
-            )
         layers: list[nn.Module] = [
             nn.Conv2d(in_channels, hidden_channels, 3, padding=1),
             ResidualBlock(hidden_channels),
@@ -254,13 +226,6 @@ class ImageDecoder(nn.Module):
             ]
         )
         self.net = nn.Sequential(*layers)
-
-    @property
-    def last_layer(self) -> nn.Parameter:
-        layer = self.net[-2]
-        if not isinstance(layer, nn.ConvTranspose2d):
-            raise TypeError("decoder final layer changed unexpectedly")
-        return layer.weight
 
     def forward(self, z: Tensor) -> Tensor:
         return self.net(z)
@@ -360,24 +325,12 @@ class FSQAutoencoder(nn.Module):
         return self.decoder(z_st), indices, diagnostics
 
 
-# Preserve imports used by the earlier 32x32 lessons and old checkpoints. The
-# default two downsampling steps still map 32x32 images to an 8x8 token grid.
-ImageEncoder32 = ImageEncoder
-ImageDecoder32 = ImageDecoder
-VQVAE32 = VQVAE
-FSQAutoencoder32 = FSQAutoencoder
-
-
 __all__ = [
     "VQVAE",
-    "VQVAE32",
     "FSQAutoencoder",
-    "FSQAutoencoder32",
     "FiniteScalarQuantizer",
     "ImageDecoder",
-    "ImageDecoder32",
     "ImageEncoder",
-    "ImageEncoder32",
     "ResidualBlock",
     "TokenUsageAccumulator",
     "VectorQuantizer",

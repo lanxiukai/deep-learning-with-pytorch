@@ -117,10 +117,7 @@ class PerceptualDecoder(nn.Module):
 
     @property
     def last_layer(self) -> nn.Parameter:
-        layer = self.net[-2]
-        if not isinstance(layer, nn.ConvTranspose2d):
-            raise TypeError("decoder final layer changed unexpectedly")
-        return layer.weight
+        return self.net[-2].weight
 
     def forward(self, z: Tensor) -> Tensor:
         return self.net(z)
@@ -239,50 +236,11 @@ class PatchDiscriminator(nn.Module):
         return self.head(x)
 
 
-class RandomFeaturePerceptualLoss(nn.Module):
-    """Frozen multiscale conv features for offline smoke tests.
-
-    This is deliberately named *random* and must not be reported as LPIPS.
-    It lets the algorithmic gradient path be tested without downloading
-    pretrained weights. Real VQGAN training must use
-    ``LPIPSPerceptualLoss``.
-    """
-
-    def __init__(self, channels: int = 16) -> None:
-        super().__init__()
-        self.blocks = nn.ModuleList(
-            [
-                nn.Sequential(nn.Conv2d(3, channels, 3, padding=1), nn.ReLU()),
-                nn.Sequential(
-                    nn.AvgPool2d(2),
-                    nn.Conv2d(channels, channels * 2, 3, padding=1),
-                    nn.ReLU(),
-                ),
-            ]
-        )
-        self.eval().requires_grad_(False)
-
-    def forward(
-        self, prediction: Tensor, target: Tensor, *, reduction: str = "mean"
-    ) -> Tensor:
-        per_sample = prediction.new_zeros(prediction.shape[0])
-        for block in self.blocks:
-            prediction = block(prediction)
-            target = block(target)
-            per_sample = per_sample + (prediction - target).abs().flatten(1).mean(1)
-        if reduction == "none":
-            return per_sample
-        if reduction == "mean":
-            return per_sample.mean()
-        raise ValueError("reduction must be 'none' or 'mean'")
-
-
 class VGGPerceptualLoss(nn.Module):
     """Frozen ImageNet-VGG16 multi-layer feature L1 distance."""
 
     def __init__(self) -> None:
         super().__init__()
-        # Keep torchvision import lazy: smoke tests need no model download.
         from torchvision import models
 
         features = models.vgg16(weights=models.VGG16_Weights.DEFAULT).features
@@ -315,16 +273,12 @@ class VGGPerceptualLoss(nn.Module):
 class LPIPSPerceptualLoss(nn.Module):
     """Frozen, learned LPIPS v0.1 distance for inputs in [-1, 1]."""
 
-    def __init__(self, *, net: str = "vgg") -> None:
+    def __init__(self) -> None:
         super().__init__()
-        if net not in {"alex", "squeeze", "vgg"}:
-            raise ValueError("LPIPS net must be 'alex', 'squeeze', or 'vgg'")
-        # Keep the optional model construction lazy so offline smoke tests do
-        # not initialize pretrained feature networks.
         import lpips
 
         self.metric = lpips.LPIPS(
-            net=net,
+            net="vgg",
             version="0.1",
             lpips=True,
             pretrained=True,
@@ -335,31 +289,8 @@ class LPIPSPerceptualLoss(nn.Module):
         )
         self.eval().requires_grad_(False)
 
-    def forward(
-        self, prediction: Tensor, target: Tensor, *, reduction: str = "mean"
-    ) -> Tensor:
-        per_sample = self.metric(prediction, target, normalize=False).flatten(1)
-        per_sample = per_sample.mean(dim=1)
-        if reduction == "none":
-            return per_sample
-        if reduction == "mean":
-            return per_sample.mean()
-        raise ValueError("reduction must be 'none' or 'mean'")
-
-
-def build_perceptual_loss(name: str, device: torch.device) -> nn.Module:
-    """Build a truthfully named frozen feature distance."""
-    if name == "lpips":
-        return LPIPSPerceptualLoss(net="vgg").to(device)
-    if name == "vgg":
-        return VGGPerceptualLoss().to(device)
-    if name == "random":
-        print(
-            "warning: random features are a gradient-path debug mode, "
-            "not a perceptual metric"
-        )
-        return RandomFeaturePerceptualLoss().to(device)
-    raise ValueError(f"unknown perceptual network: {name}")
+    def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
+        return self.metric(prediction, target, normalize=False).mean()
 
 
 def adaptive_adversarial_weight(
@@ -396,11 +327,9 @@ __all__ = [
     "PerceptualDecoder32",
     "PerceptualEncoder",
     "PerceptualEncoder32",
-    "RandomFeaturePerceptualLoss",
     "ResidualBlock",
     "VGGPerceptualLoss",
     "VQPerceptualAutoencoder",
     "VQPerceptualAutoencoder32",
     "adaptive_adversarial_weight",
-    "build_perceptual_loss",
 ]

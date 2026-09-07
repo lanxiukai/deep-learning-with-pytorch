@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -85,12 +84,10 @@ class TorchvisionInceptionFeatures(nn.Module):
     def __init__(
         self,
         *,
-        projection_dim: int | None = 256,
+        projection_dim: int = 256,
         projection_seed: int = 2026,
     ) -> None:
         super().__init__()
-        if projection_dim is not None and not 1 <= projection_dim <= 2048:
-            raise ValueError("projection_dim must be in [1, 2048] or None")
         model = inception_v3(
             weights=Inception_V3_Weights.DEFAULT,
             transform_input=False,
@@ -103,16 +100,11 @@ class TorchvisionInceptionFeatures(nn.Module):
         self.register_buffer(
             "std", torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
         )
-        if projection_dim is None:
-            projection = torch.empty(0)
-            self.feature_dim = 2048
-        else:
-            generator = torch.Generator().manual_seed(projection_seed)
-            projection = (
-                torch.randn(2048, projection_dim, generator=generator)
-                / projection_dim**0.5
-            )
-            self.feature_dim = projection_dim
+        generator = torch.Generator().manual_seed(projection_seed)
+        projection = (
+            torch.randn(2048, projection_dim, generator=generator) / projection_dim**0.5
+        )
+        self.feature_dim = projection_dim
         self.register_buffer("projection", projection)
 
     def forward(self, images: Tensor) -> Tensor:
@@ -127,9 +119,7 @@ class TorchvisionInceptionFeatures(nn.Module):
             antialias=True,
         )
         features = self.model((images - self.mean) / self.std)
-        if self.projection.numel():
-            features = features @ self.projection
-        return features
+        return features @ self.projection
 
 
 class FeatureMoments:
@@ -250,7 +240,6 @@ def evaluate_conditional_generation(
     generated_moments = FeatureMoments(real_moments.feature_dim)
     sample_batches: list[Tensor] = []
     saved = 0
-    elapsed = 0.0
     generated = 0
     while generated < examples:
         count = min(batch_size, examples - generated)
@@ -259,16 +248,12 @@ def evaluate_conditional_generation(
             generated + count,
             device=device,
         ).remainder(num_classes)
-        start = time.perf_counter()
         images = system.sample(
             count,
             device=device,
             labels=labels,
             temperature=temperature,
         )
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-        elapsed += time.perf_counter() - start
         generated_moments.update(feature_extractor(images))
         if saved < saved_examples:
             save_count = min(saved_examples - saved, images.shape[0])
@@ -279,8 +264,6 @@ def evaluate_conditional_generation(
         "projected_inception_frechet": frechet_distance(
             real_moments, generated_moments
         ),
-        "seconds": elapsed,
-        "images_per_second": examples / max(elapsed, 1e-12),
         "temperature": temperature,
     }, torch.cat(sample_batches)
 

@@ -13,13 +13,13 @@ division remains an empirical observation, not a property implied by the
 hierarchical ELBO.
 
 Data:
-    FactorShapes32 test split, generated in memory with the split seed stored
-    in the compared checkpoints. Factor annotations do not enter the models.
+    FactorShapes32 test split, generated with the same split seed as training.
+    Factor annotations do not enter the models.
 
 Checkpoints:
     output/vae/hierarchical_vae/baseline/model.pth: default HVAE
     output/vae/ladder_vae/baseline/model.pth: default Ladder VAE
-    At least one checkpoint is required; missing models are reported.
+    Run both 5.0 and 5.1 first to produce the compared checkpoints.
 
 Outputs:
     output/vae/hierarchical_vae_evaluation/metrics.json: comparison report
@@ -47,7 +47,6 @@ Loaded total:                     1.750 M parameters
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -75,17 +74,25 @@ PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 
 
+# Edit these defaults to explore the lesson.
+BATCH_SIZE = 64
+INTERVENTION_SAMPLES = 8
+VISUAL_VARIANTS = 6
+ACTIVE_VARIANCE_THRESHOLD = 1e-2
+WORKERS = 4
+SEED = 123
+SPLIT_SEED = 2026
+HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "baseline" / "model.pth"
+LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "baseline" / "model.pth"
+
+
 def load_model(
     path: Path, device: torch.device
 ) -> tuple[HierarchicalVAE32, dict[str, object]]:
-    checkpoint = torch.load(
-        path, map_location=device, weights_only=True
-    )
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
     model_name = checkpoint.get("model_name")
     if model_name == "hierarchical_vae":
-        model: HierarchicalVAE32 = HierarchicalVAE32(
-            **checkpoint["model_config"]
-        )
+        model: HierarchicalVAE32 = HierarchicalVAE32(**checkpoint["model_config"])
     elif model_name == "ladder_vae":
         model = LadderVAE32(**checkpoint["model_config"])
     else:
@@ -95,7 +102,6 @@ def load_model(
 
 
 def make_test_loader(
-    args: argparse.Namespace,
     *,
     split_seed: int,
     device: torch.device,
@@ -103,11 +109,11 @@ def make_test_loader(
     dataset = FactorShapes32(split="test", split_seed=split_seed)
     return DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=args.workers,
+        num_workers=WORKERS,
         pin_memory=device.type == "cuda",
-        persistent_workers=args.workers > 0,
+        persistent_workers=WORKERS > 0,
     )
 
 
@@ -119,19 +125,17 @@ def _sample_gaussian(mu: Tensor, logvar: Tensor, samples: int) -> Tensor:
         device=mu.device,
         dtype=mu.dtype,
     )
-    return mu[:, None, :] + torch.exp(
-        0.5 * logvar[:, None, :]
-    ) * epsilon
+    return mu[:, None, :] + torch.exp(0.5 * logvar[:, None, :]) * epsilon
 
 
-def _decode_distortion(
-    model: HierarchicalVAE32, z1: Tensor, target: Tensor
-) -> Tensor:
+def _decode_distortion(model: HierarchicalVAE32, z1: Tensor, target: Tensor) -> Tensor:
     reconstruction = model.decode(z1)
     expanded_target = target[:, None, ...].expand_as(reconstruction)
-    return F.binary_cross_entropy(
-        reconstruction, expanded_target, reduction="none"
-    ).flatten(2).sum(dim=2)
+    return (
+        F.binary_cross_entropy(reconstruction, expanded_target, reduction="none")
+        .flatten(2)
+        .sum(dim=2)
+    )
 
 
 @torch.inference_mode()
@@ -144,9 +148,11 @@ def sampled_counterfactual_distortions(
     """Use paired top samples to isolate lower and upper posterior removal."""
     lower_evidence, q2_mu, q2_logvar = model.bottom_up(x)
     batch_size = x.shape[0]
-    repeated_evidence = lower_evidence[:, None, :].expand(
-        -1, samples, -1
-    ).reshape(batch_size * samples, -1)
+    repeated_evidence = (
+        lower_evidence[:, None, :]
+        .expand(-1, samples, -1)
+        .reshape(batch_size * samples, -1)
+    )
 
     q_z2 = _sample_gaussian(q2_mu, q2_logvar, samples)
     q_z2_flat = q_z2.reshape(batch_size * samples, model.z2_dim)
@@ -156,21 +162,21 @@ def sampled_counterfactual_distortions(
     posterior_z1 = reparameterize_logvar(q1_mu, q1_logvar).reshape(
         batch_size, samples, model.z1_dim
     )
-    lower_prior_z1 = reparameterize_logvar(
-        p1_mu, p1_logvar
-    ).reshape(batch_size, samples, model.z1_dim)
+    lower_prior_z1 = reparameterize_logvar(p1_mu, p1_logvar).reshape(
+        batch_size, samples, model.z1_dim
+    )
 
     p_z2 = torch.randn_like(q_z2)
     p_z2_flat = p_z2.reshape(batch_size * samples, model.z2_dim)
     p_top_p1_mu, p_top_p1_logvar, p_top_q1_mu, p_top_q1_logvar = (
         model.lower_distributions(repeated_evidence, p_z2_flat)
     )
-    top_replaced_z1 = reparameterize_logvar(
-        p_top_q1_mu, p_top_q1_logvar
-    ).reshape(batch_size, samples, model.z1_dim)
-    both_replaced_z1 = reparameterize_logvar(
-        p_top_p1_mu, p_top_p1_logvar
-    ).reshape(batch_size, samples, model.z1_dim)
+    top_replaced_z1 = reparameterize_logvar(p_top_q1_mu, p_top_q1_logvar).reshape(
+        batch_size, samples, model.z1_dim
+    )
+    both_replaced_z1 = reparameterize_logvar(p_top_p1_mu, p_top_p1_logvar).reshape(
+        batch_size, samples, model.z1_dim
+    )
     return {
         "posterior": _decode_distortion(model, posterior_z1, x),
         "lower_prior": _decode_distortion(model, lower_prior_z1, x),
@@ -226,30 +232,18 @@ def evaluate_model(
         for name, values in counterfactuals.items():
             totals[name] += float(values.sum()) / intervention_samples
         examples += x.shape[0]
-    active_z1, active_z2 = active.counts(
-        variance_threshold=active_variance_threshold
-    )
+    active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     sampled_posterior = totals["posterior"] / examples
     return {
-        "posterior_mean_distortion": (
-            deterministic_distortion / examples
-        ),
+        "posterior_mean_distortion": (deterministic_distortion / examples),
         "sampled_posterior_distortion": sampled_posterior,
-        "lower_prior_replacement_distortion": (
-            totals["lower_prior"] / examples
-        ),
-        "top_prior_replacement_distortion": (
-            totals["top_prior"] / examples
-        ),
-        "both_priors_replacement_distortion": (
-            totals["both_priors"] / examples
-        ),
+        "lower_prior_replacement_distortion": (totals["lower_prior"] / examples),
+        "top_prior_replacement_distortion": (totals["top_prior"] / examples),
+        "both_priors_replacement_distortion": (totals["both_priors"] / examples),
         "lower_replacement_delta": (
             totals["lower_prior"] / examples - sampled_posterior
         ),
-        "top_replacement_delta": (
-            totals["top_prior"] / examples - sampled_posterior
-        ),
+        "top_replacement_delta": (totals["top_prior"] / examples - sampled_posterior),
         "both_replacement_delta": (
             totals["both_priors"] / examples - sampled_posterior
         ),
@@ -288,9 +282,7 @@ def save_counterfactual_grids(
         zero_z2,
         sample_lower=False,
     )
-    zero_p1_mu, _, _, _ = model.lower_distributions(
-        lower_evidence, zero_z2
-    )
+    zero_p1_mu, _, _, _ = model.lower_distributions(lower_evidence, zero_z2)
     summary = torch.cat(
         (
             x,
@@ -307,12 +299,8 @@ def save_counterfactual_grids(
     )
 
     fixed_top = q2_mu
-    p1_mu, p1_logvar, _, _ = model.lower_distributions(
-        lower_evidence, fixed_top
-    )
-    lower_samples = _sample_gaussian(
-        p1_mu, p1_logvar, variants
-    )
+    p1_mu, p1_logvar, _, _ = model.lower_distributions(lower_evidence, fixed_top)
+    lower_samples = _sample_gaussian(p1_mu, p1_logvar, variants)
     lower_images = model.decode(lower_samples)
     save_image(
         lower_images.flatten(0, 1),
@@ -320,19 +308,17 @@ def save_counterfactual_grids(
         nrow=variants,
     )
 
-    top_samples = _sample_gaussian(
-        q2_mu, q2_logvar, variants
+    top_samples = _sample_gaussian(q2_mu, q2_logvar, variants)
+    repeated_evidence = (
+        lower_evidence[:, None, :]
+        .expand(-1, variants, -1)
+        .reshape(-1, lower_evidence.shape[1])
     )
-    repeated_evidence = lower_evidence[:, None, :].expand(
-        -1, variants, -1
-    ).reshape(-1, lower_evidence.shape[1])
     _, _, changed_q1_mu, _ = model.lower_distributions(
         repeated_evidence,
         top_samples.reshape(-1, model.z2_dim),
     )
-    upper_images = model.decode(
-        changed_q1_mu.reshape(8, variants, model.z1_dim)
-    )
+    upper_images = model.decode(changed_q1_mu.reshape(8, variants, model.z1_dim))
     save_image(
         upper_images.flatten(0, 1),
         out_dir / "fixed_evidence_changed_top.png",
@@ -348,59 +334,39 @@ def save_counterfactual_grids(
     }
 
 
-def checkpoint_paths(args: argparse.Namespace) -> dict[str, Path]:
+def checkpoint_paths() -> dict[str, Path]:
     return {
-        "hierarchical_vae": args.hvae_checkpoint,
-        "ladder_vae": args.ladder_checkpoint,
+        "hierarchical_vae": HVAE_CHECKPOINT,
+        "ladder_vae": LADDER_CHECKPOINT,
     }
 
 
-def evaluate(args: argparse.Namespace) -> None:
-    set_seed(args.seed)
+def evaluate() -> None:
+    set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    paths = checkpoint_paths(args)
-    available = {name: path for name, path in paths.items() if path.exists()}
-    if not available:
-        raise FileNotFoundError(
-            "no hierarchy checkpoint exists; run 5.0 and/or 5.1 first"
-        )
-    checkpoints = {
-        name: torch.load(path, map_location="cpu", weights_only=True)
-        for name, path in available.items()
-    }
-    split_seeds = {
-        int(checkpoint["split_seed"])
-        for checkpoint in checkpoints.values()
-    }
-    if len(split_seeds) != 1:
-        raise ValueError("compared checkpoints must use one data split")
-    loader = make_test_loader(
-        args, split_seed=split_seeds.pop(), device=device
-    )
+    paths = checkpoint_paths()
+    loader = make_test_loader(split_seed=SPLIT_SEED, device=device)
     out_root = OUTPUT_ROOT / "hierarchical_vae_evaluation"
     reset_dir(str(out_root))
     results: dict[str, object] = {
         "protocol": {
             "dataset": "FactorShapes32 test",
-            "intervention_samples": args.intervention_samples,
-            "active_variance_threshold": args.active_variance_threshold,
+            "intervention_samples": INTERVENTION_SAMPLES,
+            "active_variance_threshold": ACTIVE_VARIANCE_THRESHOLD,
             "interpretation": (
                 "Layer interventions test incremental information; they do "
                 "not prove a semantic global/local hierarchy."
             ),
         },
-        "missing_optional_checkpoints": [
-            name for name, path in paths.items() if not path.exists()
-        ],
         "models": {},
     }
-    for name, path in available.items():
+    for name, path in paths.items():
         model, checkpoint = load_model(path, device)
         metrics = evaluate_model(
             model,
             loader,
-            intervention_samples=args.intervention_samples,
-            active_variance_threshold=args.active_variance_threshold,
+            intervention_samples=INTERVENTION_SAMPLES,
+            active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
             device=device,
         )
         model_out_dir = out_root / name
@@ -410,16 +376,14 @@ def evaluate(args: argparse.Namespace) -> None:
                 model,
                 loader,
                 model_out_dir,
-                variants=args.visual_variants,
+                variants=VISUAL_VARIANTS,
                 device=device,
             )
         )
         metrics["checkpoint"] = str(path.relative_to(PROJECT_ROOT))
         metrics["posterior_family"] = checkpoint["posterior_family"]
         metrics["warmup_epochs"] = checkpoint["warmup_epochs"]
-        metrics["free_bits_per_group"] = checkpoint[
-            "free_bits_per_group"
-        ]
+        metrics["free_bits_per_group"] = checkpoint["free_bits_per_group"]
         results["models"][name] = metrics
         print(
             f"{name}: KL1={metrics['kl_z1']:.3f}, "
@@ -433,73 +397,8 @@ def evaluate(args: argparse.Namespace) -> None:
     print(f"saved evaluation to {out_root}")
 
 
-def smoke_test() -> None:
-    set_seed(7)
-    dataset = FactorShapes32(split="test")
-    loader = DataLoader(dataset, batch_size=4)
-    for model in (
-        HierarchicalVAE32(
-            z1_dim=6,
-            z2_dim=3,
-            hidden_channels=32,
-            context_dim=24,
-        ),
-        LadderVAE32(
-            z1_dim=6,
-            z2_dim=3,
-            hidden_channels=32,
-            context_dim=24,
-        ),
-    ):
-        metrics = evaluate_model(
-            model,
-            loader,
-            intervention_samples=2,
-            active_variance_threshold=1e-3,
-            device=torch.device("cpu"),
-        )
-        assert torch.isfinite(
-            torch.tensor(metrics["sampled_posterior_distortion"])
-        )
-        assert metrics["total_rate"] >= 0
-    print("smoke test passed")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--intervention-samples", type=int, default=8)
-    parser.add_argument("--visual-variants", type=int, default=6)
-    parser.add_argument(
-        "--active-variance-threshold", type=float, default=1e-2
-    )
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument(
-        "--hvae-checkpoint",
-        type=Path,
-        default=(
-            OUTPUT_ROOT
-            / "hierarchical_vae"
-            / "baseline"
-            / "model.pth"
-        ),
-    )
-    parser.add_argument(
-        "--ladder-checkpoint",
-        type=Path,
-        default=OUTPUT_ROOT / "ladder_vae" / "baseline" / "model.pth",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-    if args.smoke_test:
-        smoke_test()
-    else:
-        evaluate(args)
+    evaluate()
 
 
 if __name__ == "__main__":

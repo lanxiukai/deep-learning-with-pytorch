@@ -28,8 +28,6 @@ class HierarchicalVAE32(nn.Module):
         context_dim: int = 192,
     ) -> None:
         super().__init__()
-        if hidden_channels % 8:
-            raise ValueError("hidden_channels must be divisible by 8")
         self.z1_dim = z1_dim
         self.z2_dim = z2_dim
         self.hidden_channels = hidden_channels
@@ -70,30 +68,20 @@ class HierarchicalVAE32(nn.Module):
         )
         self.decoder = nn.Sequential(
             nn.Unflatten(1, (hidden_channels * 2, 4, 4)),
-            nn.ConvTranspose2d(
-                hidden_channels * 2, hidden_channels, 4, 2, 1
-            ),
+            nn.ConvTranspose2d(hidden_channels * 2, hidden_channels, 4, 2, 1),
             nn.GroupNorm(8, hidden_channels),
             nn.SiLU(),
-            nn.ConvTranspose2d(
-                hidden_channels, hidden_channels // 2, 4, 2, 1
-            ),
+            nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
             nn.GroupNorm(8, hidden_channels // 2),
             nn.SiLU(),
             nn.ConvTranspose2d(hidden_channels // 2, 1, 4, 2, 1),
             nn.Sigmoid(),
         )
 
-    def bottom_up(
-        self, x: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        if x.ndim != 4 or x.shape[1:] != (1, 32, 32):
-            raise ValueError("x must have shape [batch, 1, 32, 32]")
+    def bottom_up(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         lower_evidence = self.bottom_up_lower(self.bottom_up_image(x))
         top_evidence = self.bottom_up_top(lower_evidence)
-        q2_mu, q2_logvar = split_gaussian_parameters(
-            self.top_posterior(top_evidence)
-        )
+        q2_mu, q2_logvar = split_gaussian_parameters(self.top_posterior(top_evidence))
         return lower_evidence, q2_mu, q2_logvar
 
     def lower_distributions(
@@ -102,13 +90,9 @@ class HierarchicalVAE32(nn.Module):
         z2: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Return p(z1 | z2) and q(z1 | z2, x) parameters."""
-        p1_mu, p1_logvar = split_gaussian_parameters(
-            self.lower_prior(z2)
-        )
+        p1_mu, p1_logvar = split_gaussian_parameters(self.lower_prior(z2))
         q1_mu, q1_logvar = split_gaussian_parameters(
-            self.lower_posterior(
-                torch.cat((lower_evidence, z2), dim=1)
-            )
+            self.lower_posterior(torch.cat((lower_evidence, z2), dim=1))
         )
         return p1_mu, p1_logvar, q1_mu, q1_logvar
 
@@ -121,14 +105,10 @@ class HierarchicalVAE32(nn.Module):
         *,
         sample_lower: bool,
     ) -> dict[str, Tensor]:
-        p1_mu, p1_logvar, q1_mu, q1_logvar = (
-            self.lower_distributions(lower_evidence, z2)
+        p1_mu, p1_logvar, q1_mu, q1_logvar = self.lower_distributions(
+            lower_evidence, z2
         )
-        z1 = (
-            reparameterize_logvar(q1_mu, q1_logvar)
-            if sample_lower
-            else q1_mu
-        )
+        z1 = reparameterize_logvar(q1_mu, q1_logvar) if sample_lower else q1_mu
         return {
             "z1": z1,
             "z2": z2,
@@ -145,11 +125,7 @@ class HierarchicalVAE32(nn.Module):
 
     def infer(self, x: Tensor, *, sample: bool = True) -> dict[str, Tensor]:
         lower_evidence, q2_mu, q2_logvar = self.bottom_up(x)
-        z2 = (
-            reparameterize_logvar(q2_mu, q2_logvar)
-            if sample
-            else q2_mu
-        )
+        z2 = reparameterize_logvar(q2_mu, q2_logvar) if sample else q2_mu
         return self.infer_from_top(
             lower_evidence,
             q2_mu,
@@ -159,8 +135,6 @@ class HierarchicalVAE32(nn.Module):
         )
 
     def decode(self, z1: Tensor) -> Tensor:
-        if z1.shape[-1] != self.z1_dim:
-            raise ValueError("the final z1 dimension must equal z1_dim")
         leading_shape = z1.shape[:-1]
         flat_z1 = z1.reshape(-1, self.z1_dim)
         images = self.decoder(self.decoder_input(flat_z1))
@@ -175,9 +149,7 @@ class HierarchicalVAE32(nn.Module):
 
     def sample(self, count: int, *, device: torch.device) -> Tensor:
         z2 = torch.randn(count, self.z2_dim, device=device)
-        p1_mu, p1_logvar = split_gaussian_parameters(
-            self.lower_prior(z2)
-        )
+        p1_mu, p1_logvar = split_gaussian_parameters(self.lower_prior(z2))
         z1 = reparameterize_logvar(p1_mu, p1_logvar)
         return self.decode(z1)
 
@@ -213,9 +185,7 @@ class LadderVAE32(HierarchicalVAE32):
         lower_evidence: Tensor,
         z2: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        p1_mu, p1_logvar = split_gaussian_parameters(
-            self.lower_prior(z2)
-        )
+        p1_mu, p1_logvar = split_gaussian_parameters(self.lower_prior(z2))
         evidence_mu, evidence_logvar = split_gaussian_parameters(
             self.lower_evidence_distribution(lower_evidence)
         )
@@ -248,30 +218,20 @@ class ActiveUnitAccumulator:
             self.lower_square_sum = torch.zeros_like(lower[0])
             self.top_sum = torch.zeros_like(top[0])
             self.top_square_sum = torch.zeros_like(top[0])
-        assert self.lower_square_sum is not None
-        assert self.top_sum is not None
-        assert self.top_square_sum is not None
         self.lower_sum += lower.sum(dim=0)
         self.lower_square_sum += lower.square().sum(dim=0)
         self.top_sum += top.sum(dim=0)
         self.top_square_sum += top.square().sum(dim=0)
         self.count += lower.shape[0]
 
-    def counts(
-        self, *, variance_threshold: float = 1e-2
-    ) -> tuple[int, int]:
+    def counts(self, *, variance_threshold: float = 1e-2) -> tuple[int, int]:
         if self.count < 2 or self.lower_sum is None:
             return 0, 0
-        assert self.lower_square_sum is not None
-        assert self.top_sum is not None
-        assert self.top_square_sum is not None
         lower_variance = (
-            self.lower_square_sum / self.count
-            - (self.lower_sum / self.count).square()
+            self.lower_square_sum / self.count - (self.lower_sum / self.count).square()
         )
         top_variance = (
-            self.top_square_sum / self.count
-            - (self.top_sum / self.count).square()
+            self.top_square_sum / self.count - (self.top_sum / self.count).square()
         )
         return (
             int((lower_variance > variance_threshold).sum()),
@@ -288,22 +248,27 @@ def hierarchical_vae_loss(
     free_bits: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Negative two-level ELBO with group-wise free bits after batch means."""
-    if not 0.0 <= kl_weight <= 1.0:
-        raise ValueError("kl_weight must be between zero and one")
-    if free_bits < 0:
-        raise ValueError("free_bits must be non-negative")
-    distortion = F.binary_cross_entropy(
-        reconstruction, target, reduction="none"
-    ).flatten(1).sum(dim=1).mean()
-    kl_z1 = diagonal_gaussian_kl_from_logvar(
-        latents["q1_mu"],
-        latents["q1_logvar"],
-        latents["p1_mu"],
-        latents["p1_logvar"],
-    ).sum(dim=1).mean()
-    kl_z2 = diagonal_gaussian_kl_from_logvar(
-        latents["q2_mu"], latents["q2_logvar"]
-    ).sum(dim=1).mean()
+    distortion = (
+        F.binary_cross_entropy(reconstruction, target, reduction="none")
+        .flatten(1)
+        .sum(dim=1)
+        .mean()
+    )
+    kl_z1 = (
+        diagonal_gaussian_kl_from_logvar(
+            latents["q1_mu"],
+            latents["q1_logvar"],
+            latents["p1_mu"],
+            latents["p1_logvar"],
+        )
+        .sum(dim=1)
+        .mean()
+    )
+    kl_z2 = (
+        diagonal_gaussian_kl_from_logvar(latents["q2_mu"], latents["q2_logvar"])
+        .sum(dim=1)
+        .mean()
+    )
     threshold = distortion.new_tensor(float(free_bits))
     kl_objective_z1 = torch.maximum(kl_z1, threshold)
     kl_objective_z2 = torch.maximum(kl_z2, threshold)

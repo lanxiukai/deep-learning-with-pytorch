@@ -42,9 +42,8 @@ from dl_utils.vae.image_quality import structural_similarity_index
 from dl_utils.vae.perceptual_autoencoder import (
     KLPerceptualAutoencoder32,
     PatchDiscriminator32,
-    RandomFeaturePerceptualLoss,
+    VGGPerceptualLoss,
     adaptive_adversarial_weight,
-    build_perceptual_loss,
 )
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
@@ -291,6 +290,44 @@ def evaluate(
     }, comparison, normal_decode
 
 
+class RandomFeaturePerceptualLoss(nn.Module):
+    """Frozen multiscale conv features for offline smoke tests.
+
+    This is deliberately named *random* and must not be reported as LPIPS.
+    It lets the algorithmic gradient path be tested without downloading
+    pretrained weights. The default KL-autoencoder run uses learned VGG
+    features instead.
+    """
+
+    def __init__(self, channels: int = 16) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList(
+            [
+                nn.Sequential(nn.Conv2d(3, channels, 3, padding=1), nn.ReLU()),
+                nn.Sequential(
+                    nn.AvgPool2d(2),
+                    nn.Conv2d(channels, channels * 2, 3, padding=1),
+                    nn.ReLU(),
+                ),
+            ]
+        )
+        self.eval().requires_grad_(False)
+
+    def forward(
+        self, prediction: Tensor, target: Tensor, *, reduction: str = "mean"
+    ) -> Tensor:
+        per_sample = prediction.new_zeros(prediction.shape[0])
+        for block in self.blocks:
+            prediction = block(prediction)
+            target = block(target)
+            per_sample = per_sample + (prediction - target).abs().flatten(1).mean(1)
+        if reduction == "none":
+            return per_sample
+        if reduction == "mean":
+            return per_sample.mean()
+        raise ValueError("reduction must be 'none' or 'mean'")
+
+
 def smoke_test() -> None:
     torch.manual_seed(7)
     model = KLPerceptualAutoencoder32(latent_channels=4, hidden_channels=32)
@@ -389,7 +426,11 @@ def train(args: argparse.Namespace) -> None:
     }
     model = KLPerceptualAutoencoder32(**config).to(device)
     discriminator = PatchDiscriminator32(args.discriminator_channels).to(device)
-    perceptual = build_perceptual_loss(args.perceptual, device)
+    perceptual = (
+        VGGPerceptualLoss()
+        if args.perceptual == "vgg"
+        else RandomFeaturePerceptualLoss()
+    ).to(device)
     reconstruction_logvar = nn.Parameter(
         torch.tensor(float(args.reconstruction_logvar), device=device),
         requires_grad=not args.fixed_reconstruction_logvar,

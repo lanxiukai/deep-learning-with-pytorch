@@ -4,37 +4,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
-
-class IndexTokenizer(Protocol):
-    """Minimal interface shared by VQ-VAE and FSQ tokenizers."""
-
-    def encode_indices(self, images: Tensor, /) -> Tensor: ...
-
-    def decode_indices(self, indices: Tensor, /) -> Tensor: ...
-
-
-def _validate_class_labels(
-    labels: Tensor | None,
-    *,
-    batch_size: int,
-    num_classes: int,
-) -> Tensor | None:
-    if num_classes == 0:
-        if labels is not None:
-            raise ValueError("this prior was built without class conditioning")
-        return None
-    if labels is None:
-        raise ValueError("class-conditional prior requires labels")
-    if labels.dtype != torch.long or labels.shape != (batch_size,):
-        raise ValueError("labels must be a torch.long tensor with shape [B]")
-    return labels
+from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
 
 def make_fixed_class_labels(
@@ -43,8 +20,6 @@ def make_fixed_class_labels(
     device: torch.device,
 ) -> Tensor:
     """Return adjacent, balanced labels for readable generated-image grids."""
-    if min(num_classes, samples_per_class) < 1:
-        raise ValueError("num_classes and samples_per_class must be positive")
     return torch.arange(num_classes, device=device).repeat_interleave(samples_per_class)
 
 
@@ -55,8 +30,6 @@ class MaskedConv2d(nn.Conv2d):
 
     def __init__(self, mask_type: str, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        if mask_type not in {"A", "B"}:
-            raise ValueError("mask_type must be 'A' or 'B'")
         mask = torch.ones_like(self.weight)
         center_h = self.kernel_size[0] // 2
         center_w = self.kernel_size[1] // 2
@@ -78,7 +51,7 @@ class MaskedConv2d(nn.Conv2d):
 
 
 class PixelCNNPrior(nn.Module):
-    """Small unconditional or spatially conditioned causal image-token prior."""
+    """Class-conditional causal prior over an image-token grid."""
 
     def __init__(
         self,
@@ -86,24 +59,13 @@ class PixelCNNPrior(nn.Module):
         *,
         hidden_channels: int = 128,
         layers: int = 7,
-        condition_channels: int = 0,
-        num_classes: int = 0,
+        num_classes: int = 2,
     ) -> None:
         super().__init__()
-        if vocabulary_size < 2 or layers < 1 or num_classes < 0:
-            raise ValueError("invalid PixelCNN configuration")
         self.vocabulary_size = vocabulary_size
-        self.condition_channels = condition_channels
         self.num_classes = num_classes
         self.embedding = nn.Embedding(vocabulary_size, hidden_channels)
-        self.class_embedding = (
-            nn.Embedding(num_classes, hidden_channels) if num_classes > 0 else None
-        )
-        self.condition_projection = (
-            nn.Conv2d(condition_channels, hidden_channels, 1)
-            if condition_channels > 0
-            else None
-        )
+        self.class_embedding = nn.Embedding(num_classes, hidden_channels)
         blocks: list[nn.Module] = [
             MaskedConv2d("A", hidden_channels, hidden_channels, 7, padding=3),
             nn.ReLU(inplace=True),
@@ -125,31 +87,12 @@ class PixelCNNPrior(nn.Module):
     def forward(
         self,
         indices: Tensor,
-        condition: Tensor | None = None,
         *,
-        labels: Tensor | None = None,
+        labels: Tensor,
     ) -> Tensor:
         hidden = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
         hidden = self.causal(hidden)
-        labels = _validate_class_labels(
-            labels,
-            batch_size=indices.shape[0],
-            num_classes=self.num_classes,
-        )
-        if self.class_embedding is not None:
-            hidden = hidden + self.class_embedding(labels)[:, :, None, None]
-        if self.condition_projection is None:
-            if condition is not None:
-                raise ValueError("this prior was built without conditioning")
-        else:
-            if condition is None:
-                raise ValueError("conditional prior requires a spatial condition")
-            if (
-                condition.shape[0] != indices.shape[0]
-                or condition.shape[2:] != indices.shape[1:]
-            ):
-                raise ValueError("condition must align with the index grid")
-            hidden = hidden + self.condition_projection(condition)
+        hidden = hidden + self.class_embedding(labels)[:, :, None, None]
         return self.head(hidden)
 
     @torch.inference_mode()
@@ -160,19 +103,13 @@ class PixelCNNPrior(nn.Module):
         width: int,
         *,
         device: torch.device,
-        condition: Tensor | None = None,
-        labels: Tensor | None = None,
+        labels: Tensor,
         temperature: float = 1.0,
     ) -> Tensor:
-        if temperature <= 0:
-            raise ValueError("temperature must be positive")
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
         for row in range(height):
             for column in range(width):
-                logits = (
-                    self(indices, condition, labels=labels)[:, :, row, column]
-                    / temperature
-                )
+                logits = self(indices, labels=labels)[:, :, row, column] / temperature
                 indices[:, row, column] = torch.multinomial(
                     logits.softmax(dim=1), 1
                 ).squeeze(1)
@@ -180,7 +117,7 @@ class PixelCNNPrior(nn.Module):
 
 
 def train_pixelcnn_prior_epoch(
-    tokenizer: IndexTokenizer,
+    tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
     loader: Iterable[tuple[Tensor, Tensor]],
     optimizer: Optimizer,
@@ -196,8 +133,7 @@ def train_pixelcnn_prior_epoch(
         # The prior's embedding backward must be able to save these indices.
         with torch.no_grad():
             indices = tokenizer.encode_indices(images)
-        class_labels = labels if prior.num_classes > 0 else None
-        loss = F.cross_entropy(prior(indices, labels=class_labels), indices)
+        loss = F.cross_entropy(prior(indices, labels=labels), indices)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -208,7 +144,7 @@ def train_pixelcnn_prior_epoch(
 
 @torch.inference_mode()
 def evaluate_pixelcnn_prior(
-    tokenizer: IndexTokenizer,
+    tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
     loader: Iterable[tuple[Tensor, Tensor]],
     *,
@@ -223,8 +159,7 @@ def evaluate_pixelcnn_prior(
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         indices = tokenizer.encode_indices(images)
-        class_labels = labels if prior.num_classes > 0 else None
-        loss = F.cross_entropy(prior(indices, labels=class_labels), indices)
+        loss = F.cross_entropy(prior(indices, labels=labels), indices)
         nll_sum += float(loss) * images.shape[0]
         examples += images.shape[0]
     nll = nll_sum / examples
@@ -237,7 +172,7 @@ def evaluate_pixelcnn_prior(
 
 @torch.inference_mode()
 def sample_pixelcnn_prior_images(
-    tokenizer: IndexTokenizer,
+    tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
     labels: Tensor,
     *,
@@ -247,13 +182,12 @@ def sample_pixelcnn_prior_images(
 ) -> Tensor:
     """Sample a square token grid and decode it to an image batch."""
     labels = labels.to(device)
-    class_labels = labels if prior.num_classes > 0 else None
     indices = prior.sample(
         labels.shape[0],
         grid_size,
         grid_size,
         device=device,
-        labels=class_labels,
+        labels=labels,
         temperature=temperature,
     )
     return tokenizer.decode_indices(indices)
@@ -271,21 +205,15 @@ class CausalTransformerPrior(nn.Module):
         heads: int = 8,
         layers: int = 4,
         dropout: float = 0.0,
-        num_classes: int = 0,
+        num_classes: int = 2,
     ) -> None:
         super().__init__()
-        if vocabulary_size < 2 or sequence_length < 1 or num_classes < 0:
-            raise ValueError("invalid vocabulary or sequence length")
-        if model_dim % heads != 0:
-            raise ValueError("model_dim must be divisible by heads")
         self.vocabulary_size = vocabulary_size
         self.sequence_length = sequence_length
         self.num_classes = num_classes
         self.bos_token = vocabulary_size
         self.token_embedding = nn.Embedding(vocabulary_size + 1, model_dim)
-        self.class_embedding = (
-            nn.Embedding(num_classes, model_dim) if num_classes > 0 else None
-        )
+        self.class_embedding = nn.Embedding(num_classes, model_dim)
         self.position_embedding = nn.Parameter(
             torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
         )
@@ -309,21 +237,11 @@ class CausalTransformerPrior(nn.Module):
             torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1
         )
 
-    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
-        if input_tokens.ndim != 2:
-            raise ValueError("input_tokens must have shape [B, T]")
+    def forward(self, input_tokens: Tensor, labels: Tensor) -> Tensor:
         length = input_tokens.shape[1]
-        if length < 1 or length > self.sequence_length:
-            raise ValueError("input sequence length is outside the configured range")
         hidden = self.token_embedding(input_tokens)
         hidden = hidden + self.position_embedding[:, :length]
-        labels = _validate_class_labels(
-            labels,
-            batch_size=input_tokens.shape[0],
-            num_classes=self.num_classes,
-        )
-        if self.class_embedding is not None:
-            hidden = hidden + self.class_embedding(labels)[:, None, :]
+        hidden = hidden + self.class_embedding(labels)[:, None, :]
         hidden = self.transformer(
             hidden, mask=self._causal_mask(length, input_tokens.device)
         )
@@ -332,12 +250,10 @@ class CausalTransformerPrior(nn.Module):
     def teacher_forcing(
         self,
         indices: Tensor,
-        labels: Tensor | None = None,
+        labels: Tensor,
     ) -> tuple[Tensor, Tensor]:
         """Return logits and targets for ``[B,H,W]`` or ``[B,T]`` indices."""
         targets = indices.flatten(1)
-        if targets.shape[1] != self.sequence_length:
-            raise ValueError("token grid does not match sequence_length")
         bos = targets.new_full((targets.shape[0], 1), self.bos_token)
         inputs = torch.cat((bos, targets[:, :-1]), dim=1)
         return self(inputs, labels), targets
@@ -348,11 +264,9 @@ class CausalTransformerPrior(nn.Module):
         count: int,
         *,
         device: torch.device,
-        labels: Tensor | None = None,
+        labels: Tensor,
         temperature: float = 1.0,
     ) -> Tensor:
-        if temperature <= 0:
-            raise ValueError("temperature must be positive")
         sequence = torch.full(
             (count, 1), self.bos_token, dtype=torch.long, device=device
         )
@@ -368,7 +282,6 @@ class CausalTransformerPrior(nn.Module):
 
 __all__ = [
     "CausalTransformerPrior",
-    "IndexTokenizer",
     "MaskedConv2d",
     "PixelCNNPrior",
     "evaluate_pixelcnn_prior",

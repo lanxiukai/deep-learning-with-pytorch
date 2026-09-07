@@ -1,24 +1,22 @@
 """Evaluate cVAE generation paths that the training loss cannot validate.
 
-This script trains a small held-out MNIST classifier only as an evaluator,
+This script trains a small MNIST classifier only as an evaluator,
 then measures:
 
-* class compliance of samples drawn from p(z | c);
+* class compliance after decoding z ~ N(0, I) with each label;
 * within-class feature diversity relative to real test images;
-* posterior-mean reconstruction and a decoder condition-shuffle intervention;
-* the standard-prior main model, plus learned-prior and deterministic
-  controls when their final artifacts are available.
+* posterior-mean reconstruction and a decoder condition-shuffle intervention.
 
-The classifier is not part of the cVAE checkpoint or generation path.
+The classifier is trained on MNIST train and checked on MNIST test. Its test
+accuracy provides context for the generation metrics; it is separate from
+the cVAE checkpoint and generation path.
 
 Data:
     data/mnist, downloaded automatically by torchvision when absent. Digit
-    labels train the evaluator and condition the compared generators.
+    labels train the evaluator and condition the generator.
 
 Checkpoints:
     output/vae/conditional_vae/standard-prior/model.pth: required main model
-    output/vae/conditional_vae/learned-prior/model.pth: optional control
-    output/vae/conditional_vae/deterministic/model.pth: optional control
 
 Outputs:
     output/vae/conditional_vae/evaluation/metrics.json: complete comparison
@@ -33,23 +31,20 @@ Test images:                       10,000
 Batch size:                           256
 Generated samples per model:         1,280 (128 per class)
 Real diversity reference:            1,280 (128 per class)
-Maximum reconstruction examples:     5,000 per VAE variant
+Maximum reconstruction examples:     5,000
 
 Default dimensions:
 Evaluation input:                  32x32 grayscale
 Generated image:                   32x32 grayscale
-Latent vector:                         16 values (VAE variants)
+Latent vector:                         16 values
 
 Model size:
 Standard-prior CVAE:                0.971 M parameters (required)
-Learned-prior CVAE:                 0.980 M parameters (optional)
-Deterministic baseline:             0.235 M parameters (optional)
 Evaluator classifier:               0.056 M parameters
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -64,13 +59,22 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.conditional import (
-    ConditionalMeanDecoder32,
     ConditionalVAE32,
 )
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
 DEFAULT_ROOT = PROJECT_ROOT / "output" / "vae" / "conditional_vae"
+
+
+# Edit these defaults to explore the lesson.
+CLASSIFIER_EPOCHS = 3
+BATCH_SIZE = 256
+SAMPLES_PER_CLASS = 128
+MAX_RECONSTRUCTION_EXAMPLES = 5_000
+WORKERS = 4
+SEED = 123
+STANDARD_PRIOR_CHECKPOINT = DEFAULT_ROOT / "standard-prior" / "model.pth"
 
 
 class DigitClassifier32(nn.Module):
@@ -99,12 +103,8 @@ class DigitClassifier32(nn.Module):
         return self.classifier(self.encode(x))
 
 
-def make_loaders(
-    args: argparse.Namespace, device: torch.device
-) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose(
-        [transforms.Resize((32, 32)), transforms.ToTensor()]
-    )
+def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
+    transform = transforms.Compose([transforms.Resize((32, 32)), transforms.ToTensor()])
     train_set = datasets.MNIST(
         PROJECT_ROOT / "data" / "mnist",
         train=True,
@@ -118,10 +118,10 @@ def make_loaders(
         transform=transform,
     )
     common = {
-        "batch_size": args.batch_size,
-        "num_workers": args.workers,
+        "batch_size": BATCH_SIZE,
+        "num_workers": WORKERS,
         "pin_memory": device.type == "cuda",
-        "persistent_workers": args.workers > 0,
+        "persistent_workers": WORKERS > 0,
     }
     return (
         DataLoader(train_set, shuffle=True, drop_last=True, **common),
@@ -152,10 +152,7 @@ def train_classifier(
             optimizer.step()
             correct += int((logits.argmax(dim=1) == labels).sum())
             examples += x.shape[0]
-        print(
-            f"classifier epoch {epoch:02d}: "
-            f"train accuracy={correct / examples:.4f}"
-        )
+        print(f"classifier epoch {epoch:02d}: train accuracy={correct / examples:.4f}")
 
     model.eval()
     correct = 0
@@ -169,22 +166,9 @@ def train_classifier(
     return correct / examples
 
 
-def _load_model(
-    path: Path, device: torch.device
-) -> ConditionalVAE32 | ConditionalMeanDecoder32:
-    checkpoint = torch.load(
-        path, map_location=device, weights_only=True
-    )
-    model_name = checkpoint.get("model_name")
-    config = checkpoint["model_config"]
-    if model_name == "conditional_vae":
-        model: ConditionalVAE32 | ConditionalMeanDecoder32 = (
-            ConditionalVAE32(**config)
-        )
-    elif model_name == "conditional_mean_decoder":
-        model = ConditionalMeanDecoder32(**config)
-    else:
-        raise ValueError(f"{path} is not a supported conditional checkpoint")
+def _load_model(path: Path, device: torch.device) -> ConditionalVAE32:
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    model = ConditionalVAE32(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval()
 
@@ -197,19 +181,14 @@ def _mean_pairwise_distance(features: Tensor) -> float:
 
 @torch.inference_mode()
 def generation_metrics(
-    model: ConditionalVAE32 | ConditionalMeanDecoder32,
+    model: ConditionalVAE32,
     classifier: DigitClassifier32,
     *,
     samples_per_class: int,
     device: torch.device,
 ) -> tuple[dict[str, object], Tensor]:
-    labels = torch.arange(10, device=device).repeat_interleave(
-        samples_per_class
-    )
-    if isinstance(model, ConditionalVAE32):
-        images = model.generate(labels)
-    else:
-        images = model.generate(labels)
+    labels = torch.arange(10, device=device).repeat_interleave(samples_per_class)
+    images = model.generate(labels)
     features = classifier.encode(images)
     probabilities = classifier(images).softmax(dim=1)
     predictions = probabilities.argmax(dim=1)
@@ -220,16 +199,10 @@ def generation_metrics(
         per_class_compliance.append(
             float((predictions[mask] == class_index).float().mean())
         )
-        per_class_diversity.append(
-            _mean_pairwise_distance(features[mask])
-        )
+        per_class_diversity.append(_mean_pairwise_distance(features[mask]))
     return {
-        "condition_compliance": float(
-            (predictions == labels).float().mean()
-        ),
-        "target_probability": float(
-            probabilities.gather(1, labels[:, None]).mean()
-        ),
+        "condition_compliance": float((predictions == labels).float().mean()),
+        "target_probability": float(probabilities.gather(1, labels[:, None]).mean()),
         "feature_diversity": sum(per_class_diversity) / 10,
         "per_class_compliance": per_class_compliance,
         "per_class_feature_diversity": per_class_diversity,
@@ -286,207 +259,80 @@ def posterior_and_shuffle_metrics(
         correct = model.decode(q_mu, labels)
         shuffled_labels = (labels + 1) % model.num_classes
         shuffled = model.decode(q_mu, shuffled_labels)
-        correct_distortion += float(
-            F.binary_cross_entropy(correct, x, reduction="sum")
-        )
+        correct_distortion += float(F.binary_cross_entropy(correct, x, reduction="sum"))
         shuffled_distortion += float(
             F.binary_cross_entropy(shuffled, x, reduction="sum")
         )
         rate += float(
-            diagonal_gaussian_kl_from_logvar(
-                q_mu, q_logvar, p_mu, p_logvar
-            ).sum()
+            diagonal_gaussian_kl_from_logvar(q_mu, q_logvar, p_mu, p_logvar).sum()
         )
-        posterior_prior_mean_gap += float(
-            (q_mu - p_mu).square().sum()
-        )
+        posterior_prior_mean_gap += float((q_mu - p_mu).square().sum())
         examples += x.shape[0]
     return {
         "posterior_mean_distortion": correct_distortion / examples,
-        "shuffled_decoder_condition_distortion": (
-            shuffled_distortion / examples
-        ),
+        "shuffled_decoder_condition_distortion": (shuffled_distortion / examples),
         "condition_shuffle_distortion_ratio": (
             shuffled_distortion / correct_distortion
         ),
         "conditional_rate": rate / examples,
-        "posterior_prior_mean_squared_gap": (
-            posterior_prior_mean_gap / examples
-        ),
+        "posterior_prior_mean_squared_gap": (posterior_prior_mean_gap / examples),
     }
 
 
-def _checkpoint_paths(args: argparse.Namespace) -> dict[str, Path]:
-    return {
-        "standard-prior": args.standard_prior_checkpoint,
-        "learned-prior": args.learned_prior_checkpoint,
-        "deterministic": args.deterministic_checkpoint,
-    }
-
-
-def evaluate(args: argparse.Namespace) -> None:
-    set_seed(args.seed)
+def evaluate() -> None:
+    set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_loader, test_loader = make_loaders(args, device)
+    model = _load_model(STANDARD_PRIOR_CHECKPOINT, device)
+    train_loader, test_loader = make_loaders(device)
     classifier = DigitClassifier32().to(device)
     classifier_accuracy = train_classifier(
         classifier,
         train_loader,
         test_loader,
-        epochs=args.classifier_epochs,
+        epochs=CLASSIFIER_EPOCHS,
         device=device,
     )
-    if classifier_accuracy < 0.97:
-        print(
-            "warning: evaluator accuracy is below 97%; treat compliance "
-            "numbers as unreliable"
+    metrics, images = generation_metrics(
+        model,
+        classifier,
+        samples_per_class=SAMPLES_PER_CLASS,
+        device=device,
+    )
+    metrics.update(
+        posterior_and_shuffle_metrics(
+            model,
+            test_loader,
+            device=device,
+            max_examples=MAX_RECONSTRUCTION_EXAMPLES,
         )
-
-    paths = _checkpoint_paths(args)
-    if not paths["standard-prior"].exists():
-        raise FileNotFoundError(
-            f"missing {paths['standard-prior']}; run 3.0_conditional_vae.py"
-        )
-    missing_controls = [
-        name
-        for name in ("learned-prior", "deterministic")
-        if not paths[name].exists()
-    ]
-    if missing_controls and args.require_controls:
-        raise FileNotFoundError(
-            "missing required control checkpoints: "
-            + ", ".join(missing_controls)
-        )
-
-    out_dir = DEFAULT_ROOT / "evaluation"
-    reset_dir(str(out_dir))
-    results: dict[str, object] = {
+    )
+    results = {
         "classifier_test_accuracy": classifier_accuracy,
         "real_reference": real_diversity_reference(
             test_loader,
             classifier,
-            samples_per_class=args.samples_per_class,
+            samples_per_class=SAMPLES_PER_CLASS,
             device=device,
         ),
-        "models": {},
-        "missing_optional_controls": missing_controls,
+        "models": {"standard-prior": metrics},
     }
-    for name, path in paths.items():
-        if not path.exists():
-            print(f"skip {name}: checkpoint not found at {path}")
-            continue
-        model = _load_model(path, device)
-        metrics, images = generation_metrics(
-            model,
-            classifier,
-            samples_per_class=args.samples_per_class,
-            device=device,
-        )
-        if isinstance(model, ConditionalVAE32):
-            metrics.update(
-                posterior_and_shuffle_metrics(
-                    model,
-                    test_loader,
-                    device=device,
-                    max_examples=args.max_reconstruction_examples,
-                )
-            )
-        results["models"][name] = metrics
-        display_count = min(args.samples_per_class, 8)
-        display = images.reshape(
-            10, args.samples_per_class, 1, 32, 32
-        )[:, :display_count].flatten(0, 1)
-        save_image(
-            display,
-            out_dir / f"{name}_conditional_samples.png",
-            nrow=display_count,
-        )
-        print(
-            f"{name}: compliance={metrics['condition_compliance']:.4f}, "
-            f"feature diversity={metrics['feature_diversity']:.4f}"
-        )
-
+    out_dir = DEFAULT_ROOT / "evaluation"
+    reset_dir(str(out_dir))
+    display = images.reshape(10, SAMPLES_PER_CLASS, 1, 32, 32)[:, :8].flatten(0, 1)
+    save_image(display, out_dir / "standard-prior_conditional_samples.png", nrow=8)
     (out_dir / "metrics.json").write_text(
-        json.dumps(results, indent=2) + "\n", encoding="utf-8"
+        json.dumps(results, indent=2) + "\n",
+        encoding="utf-8",
     )
-    print(f"saved evaluation to {out_dir}")
-
-
-def smoke_test() -> None:
-    set_seed(7)
-    device = torch.device("cpu")
-    classifier = DigitClassifier32().to(device)
-    model = ConditionalVAE32(
-        latent_dim=4,
-        condition_dim=8,
-        hidden_channels=32,
-        learned_prior=True,
-    ).to(device)
-    metrics, images = generation_metrics(
-        model,
-        classifier,
-        samples_per_class=3,
-        device=device,
+    print(
+        f"classifier accuracy={classifier_accuracy:.4f}, "
+        f"condition compliance={metrics['condition_compliance']:.4f}, "
+        f"feature diversity={metrics['feature_diversity']:.4f}"
     )
-    loader = DataLoader(
-        list(
-            zip(
-                torch.rand(20, 1, 32, 32),
-                torch.arange(20) % 10,
-            )
-        ),
-        batch_size=5,
-    )
-    metrics.update(
-        posterior_and_shuffle_metrics(
-            model, loader, device=device, max_examples=20
-        )
-    )
-    assert images.shape == (30, 1, 32, 32)
-    assert all(
-        torch.isfinite(torch.tensor(value))
-        for key, value in metrics.items()
-        if not key.startswith("per_class")
-    )
-    print("smoke test passed")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--classifier-epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--samples-per-class", type=int, default=128)
-    parser.add_argument(
-        "--max-reconstruction-examples", type=int, default=5_000
-    )
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=123)
-    parser.add_argument(
-        "--learned-prior-checkpoint",
-        type=Path,
-        default=DEFAULT_ROOT / "learned-prior" / "model.pth",
-    )
-    parser.add_argument(
-        "--standard-prior-checkpoint",
-        type=Path,
-        default=DEFAULT_ROOT / "standard-prior" / "model.pth",
-    )
-    parser.add_argument(
-        "--deterministic-checkpoint",
-        type=Path,
-        default=DEFAULT_ROOT / "deterministic" / "model.pth",
-    )
-    parser.add_argument("--require-controls", action="store_true")
-    return parser.parse_args()
 
 
 def main() -> None:
-    args = parse_args()
-    if args.smoke_test:
-        smoke_test()
-    else:
-        evaluate(args)
+    evaluate()
 
 
 if __name__ == "__main__":

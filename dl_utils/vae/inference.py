@@ -26,8 +26,6 @@ class GaussianVAE32(nn.Module):
         context_dim: int = 128,
     ) -> None:
         super().__init__()
-        if hidden_channels % 8:
-            raise ValueError("hidden_channels must be divisible by 8")
         self.latent_dim = latent_dim
         self.hidden_channels = hidden_channels
         self.context_dim = context_dim
@@ -53,14 +51,10 @@ class GaussianVAE32(nn.Module):
         )
         self.decoder = nn.Sequential(
             nn.Unflatten(1, (hidden_channels, 4, 4)),
-            nn.ConvTranspose2d(
-                hidden_channels, hidden_channels // 2, 4, 2, 1
-            ),
+            nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
             nn.GroupNorm(8, hidden_channels // 2),
             nn.SiLU(),
-            nn.ConvTranspose2d(
-                hidden_channels // 2, hidden_channels // 4, 4, 2, 1
-            ),
+            nn.ConvTranspose2d(hidden_channels // 2, hidden_channels // 4, 4, 2, 1),
             nn.GroupNorm(4, hidden_channels // 4),
             nn.SiLU(),
             nn.ConvTranspose2d(hidden_channels // 4, 1, 4, 2, 1),
@@ -68,17 +62,11 @@ class GaussianVAE32(nn.Module):
         )
 
     def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        if x.ndim != 4 or x.shape[1:] != (1, 32, 32):
-            raise ValueError("x must have shape [batch, 1, 32, 32]")
         context = self.context(self.encoder(x))
-        mu, logvar = split_gaussian_parameters(
-            self.base_posterior(context)
-        )
+        mu, logvar = split_gaussian_parameters(self.base_posterior(context))
         return mu, logvar
 
     def decode(self, z: Tensor) -> Tensor:
-        if z.shape[-1] != self.latent_dim:
-            raise ValueError("the final z dimension must equal latent_dim")
         leading_shape = z.shape[:-1]
         flat_z = z.reshape(-1, self.latent_dim)
         images = self.decoder(self.decoder_input(flat_z))
@@ -91,8 +79,6 @@ class GaussianVAE32(nn.Module):
         *,
         particles: int,
     ) -> tuple[Tensor, Tensor]:
-        if particles < 1:
-            raise ValueError("particles must be positive")
         epsilon = torch.randn(
             mu.shape[0],
             particles,
@@ -106,26 +92,13 @@ class GaussianVAE32(nn.Module):
         ).sum(dim=-1)
         return z, log_q
 
-    def sample_posterior(
-        self, x: Tensor, *, particles: int
-    ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        mu, logvar = self.encode(x)
-        z, log_q = self.sample_from_statistics(
-            mu, logvar, particles=particles
-        )
-        return z, log_q, {
-            "mu": mu,
-            "logvar": logvar,
-        }
-
     def reconstruct(self, x: Tensor) -> Tensor:
         mu, _ = self.encode(x)
         return self.decode(mu)
 
     def sample(self, count: int, *, device: torch.device) -> Tensor:
-        return self.decode(
-            torch.randn(count, self.latent_dim, device=device)
-        )
+        return self.decode(torch.randn(count, self.latent_dim, device=device))
+
 
 def standard_normal_log_density(z: Tensor) -> Tensor:
     """Return log N(z; 0, I), reduced only over the final event dimension."""
@@ -134,14 +107,12 @@ def standard_normal_log_density(z: Tensor) -> Tensor:
 
 def bernoulli_log_density(mean: Tensor, target: Tensor) -> Tensor:
     """Return log p(target | mean) for particle-shaped Bernoulli means."""
-    if mean.ndim != 5 or target.ndim != 4:
-        raise ValueError(
-            "mean must be [B, K, C, H, W] and target [B, C, H, W]"
-        )
     expanded_target = target[:, None, ...].expand_as(mean)
-    return -F.binary_cross_entropy(
-        mean, expanded_target, reduction="none"
-    ).flatten(2).sum(dim=-1)
+    return (
+        -F.binary_cross_entropy(mean, expanded_target, reduction="none")
+        .flatten(2)
+        .sum(dim=-1)
+    )
 
 
 def importance_log_weights(
@@ -152,11 +123,7 @@ def importance_log_weights(
     particle_chunk_size: int | None = None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute per-example importance log weights entirely in log space."""
-    if particles < 1:
-        raise ValueError("particles must be positive")
     chunk_size = particles if particle_chunk_size is None else particle_chunk_size
-    if chunk_size < 1:
-        raise ValueError("particle_chunk_size must be positive")
     mu, logvar = model.encode(x)
     log_weight_chunks = []
     log_px_chunks = []
@@ -165,9 +132,7 @@ def importance_log_weights(
     remaining = particles
     while remaining:
         count = min(remaining, chunk_size)
-        z, log_q = model.sample_from_statistics(
-            mu, logvar, particles=count
-        )
+        z, log_q = model.sample_from_statistics(mu, logvar, particles=count)
         reconstruction = model.decode(z)
         log_px = bernoulli_log_density(reconstruction, x)
         log_pz = standard_normal_log_density(z)
@@ -189,11 +154,7 @@ def importance_log_weights(
 
 def log_mean_exp(log_weights: Tensor) -> Tensor:
     """Reduce only the particle axis of [batch, particles] log weights."""
-    if log_weights.ndim != 2 or log_weights.shape[1] < 1:
-        raise ValueError("log_weights must have shape [batch, particles]")
-    return torch.logsumexp(log_weights, dim=1) - math.log(
-        log_weights.shape[1]
-    )
+    return torch.logsumexp(log_weights, dim=1) - math.log(log_weights.shape[1])
 
 
 def importance_diagnostics(
@@ -209,9 +170,10 @@ def importance_diagnostics(
         "log_q": terms["log_q"].mean().detach(),
         "ess_fraction": (ess / log_weights.shape[1]).mean().detach(),
         "log_weight_range": (
-            log_weights.max(dim=1).values
-            - log_weights.min(dim=1).values
-        ).mean().detach(),
+            log_weights.max(dim=1).values - log_weights.min(dim=1).values
+        )
+        .mean()
+        .detach(),
     }
 
 
