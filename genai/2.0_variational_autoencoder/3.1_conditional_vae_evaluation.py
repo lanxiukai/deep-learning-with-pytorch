@@ -58,8 +58,8 @@ from torchvision.utils import save_image
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.conditional import (
-    ConditionalVAE32,
+from dl_utils.vae.conditional_vae import (
+    ConditionalVAE,
 )
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
@@ -166,9 +166,9 @@ def train_classifier(
     return correct / examples
 
 
-def _load_model(path: Path, device: torch.device) -> ConditionalVAE32:
+def _load_model(path: Path, device: torch.device) -> ConditionalVAE:
     checkpoint = torch.load(path, map_location=device, weights_only=True)
-    model = ConditionalVAE32(**checkpoint["model_config"])
+    model = ConditionalVAE(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval()
 
@@ -181,7 +181,7 @@ def _mean_pairwise_distance(features: Tensor) -> float:
 
 @torch.inference_mode()
 def generation_metrics(
-    model: ConditionalVAE32,
+    model: ConditionalVAE,
     classifier: DigitClassifier32,
     *,
     samples_per_class: int,
@@ -237,7 +237,7 @@ def real_diversity_reference(
 
 @torch.inference_mode()
 def posterior_and_shuffle_metrics(
-    model: ConditionalVAE32,
+    model: ConditionalVAE,
     loader: DataLoader,
     *,
     device: torch.device,

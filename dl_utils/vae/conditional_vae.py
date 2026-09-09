@@ -11,7 +11,7 @@ from dl_utils.vae.vae_common import (
 )
 
 
-class ConditionalDecoder32(nn.Module):
+class ConditionalDecoder(nn.Module):
     """Decode a latent and class representation into a Bernoulli mean."""
 
     def __init__(
@@ -46,7 +46,7 @@ class ConditionalDecoder32(nn.Module):
         return images.reshape(*leading_shape, 1, 32, 32)
 
 
-class ConditionalVAE32(nn.Module):
+class ConditionalVAE(nn.Module):
     """Class-conditional VAE with explicit prior, posterior, and decoder APIs."""
 
     def __init__(
@@ -81,7 +81,7 @@ class ConditionalVAE32(nn.Module):
             nn.SiLU(),
             nn.Linear(256, 2 * latent_dim),
         )
-        self.decoder = ConditionalDecoder32(latent_dim, condition_dim, hidden_channels)
+        self.decoder = ConditionalDecoder(latent_dim, condition_dim, hidden_channels)
 
     def condition(self, labels: Tensor) -> Tensor:
         return self.condition_embedding(labels)
@@ -138,5 +138,5 @@ class ConditionalVAE32(nn.Module):
 
 
 __all__ = [
-    "ConditionalVAE32",
+    "ConditionalVAE",
 ]

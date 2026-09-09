@@ -55,8 +55,8 @@ from torchvision.utils import save_image
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.conditional import (
-    ConditionalVAE32,
+from dl_utils.vae.conditional_vae import (
+    ConditionalVAE,
 )
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
@@ -135,7 +135,7 @@ def _accumulate(
 
 @torch.inference_mode()
 def evaluate_cvae(
-    model: ConditionalVAE32,
+    model: ConditionalVAE,
     loader: DataLoader,
     device: torch.device,
 ) -> dict[str, float]:
@@ -153,7 +153,7 @@ def evaluate_cvae(
 
 
 def _save_conditional_samples(
-    model: ConditionalVAE32,
+    model: ConditionalVAE,
     path: Path,
     *,
     device: torch.device,
@@ -181,7 +181,7 @@ def train_cvae(
         "condition_dim": CONDITION_DIM,
         "hidden_channels": HIDDEN_CHANNELS,
     }
-    model = ConditionalVAE32(**model_config).to(device)
+    model = ConditionalVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
     for epoch in range(1, EPOCHS + 1):
