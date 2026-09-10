@@ -311,68 +311,6 @@ def generator_hinge_loss(fake_scores):
     return -fake_scores.mean()
 
 
-def init_spectral_norm_state(weight_orig, eps=1e-12):
-    """Initialize unit vectors for the minimal spectral-normalization lesson.
-
-    Accepts 2D ``Linear`` weights and higher-dimensional tensors. Tensors with
-    more than two dimensions are flattened to ``[dim0, prod(other dims)]``.
-    """
-    if weight_orig.ndim < 2:
-        raise ValueError(
-            "init_spectral_norm_state requires at least two-dimensional "
-            f"weight, but got {weight_orig.ndim} dimensions"
-        )
-
-    with torch.no_grad():
-        out_features = weight_orig.size(0)
-        in_features = weight_orig[0].numel()
-        u = F.normalize(weight_orig.new_empty(out_features).normal_(), dim=0, eps=eps)
-        v = F.normalize(weight_orig.new_empty(in_features).normal_(), dim=0, eps=eps)
-    return u, v
-
-
-def spectral_norm_scratch_minimal(
-    weight_orig,
-    u,
-    v,
-    training,
-    eps=1e-12,
-):
-    """Run one teaching-only power iteration for a weight tensor.
-
-    Returns ``(normalized_weight, next_u, next_v, sigma)``. The singular
-    vectors are updated without autograd, while ``sigma`` is recomputed with
-    gradients enabled so the original weight receives gradients.
-    """
-    if weight_orig.ndim < 2:
-        raise ValueError(
-            "spectral_norm_scratch_minimal requires at least two-dimensional "
-            f"weight, but got {weight_orig.ndim} dimensions"
-        )
-
-    weight_2d = weight_orig.reshape(weight_orig.size(0), -1)
-    expected_u_shape = (weight_2d.shape[0],)
-    expected_v_shape = (weight_2d.shape[1],)
-    if tuple(u.shape) != expected_u_shape or tuple(v.shape) != expected_v_shape:
-        raise ValueError(
-            "u and v shapes must match the flattened weight: expected "
-            f"{expected_u_shape} and {expected_v_shape}, got "
-            f"{tuple(u.shape)} and {tuple(v.shape)}."
-        )
-
-    if training:
-        with torch.no_grad():
-            next_v = F.normalize(torch.mv(weight_2d.t(), u.detach()), dim=0, eps=eps)
-            next_u = F.normalize(torch.mv(weight_2d, next_v), dim=0, eps=eps)
-    else:
-        next_u = u.detach()
-        next_v = v.detach()
-
-    sigma = torch.dot(next_u, torch.mv(weight_2d, next_v))
-    normalized_weight = weight_orig / sigma
-    return normalized_weight, next_u, next_v, sigma
-
-
 __all__ = [
     "CategoricalConditionalBatchNorm2d",
     "SNDiscriminator",
@@ -385,7 +323,5 @@ __all__ = [
     "generator_block_resolutions",
     "generator_channels",
     "generator_hinge_loss",
-    "init_spectral_norm_state",
-    "spectral_norm_scratch_minimal",
     "validate_class_labels",
 ]

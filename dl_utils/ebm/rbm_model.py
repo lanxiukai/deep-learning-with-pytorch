@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ._ebm_types import RBMUpdateMetrics
-from .rbm_primitives import binarize, _quantize_int16_q_, rbm_energy_free_energy_fast
+from .rbm_primitives import _quantize_int16_q_
 from .rbm_update import cd_k_update as _cd_k_update_fn
 
 
@@ -117,15 +117,6 @@ class BinaryRBM(nn.Module):
         h_arg = self.bh + v @ self.W
         h_term = torch.sum(F.softplus(h_arg), dim=1)
         return -v_term - h_term
-
-    @torch.no_grad()
-    def energy(self, v: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
-        """
-        Joint energy E(v,h) = -v^T W h - bv^T v - bh^T h.
-        Returns: [B]
-        """
-        e, _, _ = rbm_energy_free_energy_fast(self, v, h=h)
-        return e
 
     @torch.no_grad()
     def pseudo_likelihood(self, v: torch.Tensor) -> torch.Tensor:

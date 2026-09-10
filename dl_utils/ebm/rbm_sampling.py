@@ -8,7 +8,7 @@ from ..devices.randomness import set_seed
 from ..plot.images import save_grid
 from ..training.timing import Timer
 from ._ebm_types import _RBMSamplingConfig
-from .rbm_model import rbm_energy_free_energy_fast
+from .rbm_primitives import rbm_energy_free_energy_fast
 from .sampling_artifacts import (
     save_gibbs_energy_curves,
     save_gif_from_grids,

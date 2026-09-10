@@ -206,43 +206,6 @@ def modified_orthogonal_regularization(module, strength=1e-4):
     return 0.5 * strength * penalty
 
 
-def truncated_normal(shape, truncation, device):
-    """Sample a standard normal and reject coordinates outside the threshold."""
-    if truncation <= 0:
-        raise ValueError("truncation must be positive.")
-
-    samples = torch.randn(shape, device=device)
-    invalid = samples.abs() > truncation
-    while invalid.any():
-        samples[invalid] = torch.randn_like(samples[invalid])
-        invalid = samples.abs() > truncation
-    return samples
-
-
-def orthogonal_scratch_minimal(weight, gain=1.0):
-    """Fill a weight tensor with a scaled orthogonal matrix using QR."""
-    if weight.ndim < 2:
-        raise ValueError(
-            "orthogonal_scratch_minimal requires at least two-dimensional "
-            f"weight, but got {weight.ndim} dimensions"
-        )
-
-    with torch.no_grad():
-        rows = weight.size(0)
-        columns = weight[0].numel()
-        matrix = weight.new_empty(rows, columns).normal_()
-        if rows < columns:
-            matrix = matrix.t()
-
-        q, r = torch.linalg.qr(matrix)
-        q *= torch.diagonal(r).sign()
-        if rows < columns:
-            q = q.t()
-
-        weight.copy_(q.reshape_as(weight)).mul_(gain)
-    return weight
-
-
 __all__ = [
     "BigGANDiscriminator",
     "BigGANGenerator",
@@ -250,6 +213,4 @@ __all__ = [
     "ConditionalBatchNorm2d",
     "initialize_orthogonal_weights",
     "modified_orthogonal_regularization",
-    "orthogonal_scratch_minimal",
-    "truncated_normal",
 ]

@@ -213,9 +213,3 @@ def _is_flattened_archive_complete(base_dir, data_dir, entries, top_dirs):
         os.path.exists(os.path.join(base_dir, item))
         for item in top_level_items
     )
-
-
-def download_all(*, data_root=None):
-    """Download all files in DATA_HUB"""
-    for name in DATA_HUB:
-        download(name, data_root=data_root)

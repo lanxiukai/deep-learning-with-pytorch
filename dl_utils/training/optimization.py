@@ -49,18 +49,6 @@ class UpdateRatioSchedule:
             // self.discriminator_updates_per_generator
         )
 
-    def generator_due(self, completed_discriminator_updates: int) -> bool:
-        """Return whether a G update follows the completed D update."""
-        if completed_discriminator_updates < 1:
-            raise ValueError(
-                "completed_discriminator_updates must be positive."
-            )
-        return (
-            completed_discriminator_updates
-            % self.discriminator_updates_per_generator
-            == 0
-        )
-
     def completed_discriminator_updates(self, completed_epochs: int) -> int:
         """Return the expected D step count after complete epochs."""
         if not 0 <= completed_epochs <= self.num_epochs:

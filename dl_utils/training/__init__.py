@@ -1,1 +1,1 @@
-"""Checkpointing, metrics, optimization, parameter, and timing utilities."""
+"""Checkpointing, metrics, optimization, and timing utilities."""

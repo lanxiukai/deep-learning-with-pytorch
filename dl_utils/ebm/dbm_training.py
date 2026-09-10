@@ -14,7 +14,8 @@ from ..training.metrics import NumericScalar, save_metrics_csv
 from ..training.timing import Timer
 from ._ebm_types import DBMPretrainMetrics, EpochMetrics, MetricHistory, StepMetrics, _DBMConfig, layer_cfg
 from .dbm_model import DBM
-from .rbm_model import BinaryRBM, binarize, rbm_energy_free_energy_fast
+from .rbm_model import BinaryRBM
+from .rbm_primitives import binarize, rbm_energy_free_energy_fast
 from .training_artifacts import save_rbm_training_artifacts
 
 

@@ -76,22 +76,24 @@ SEED = 42
 
 def conditional_vae_loss(
     reconstruction: Tensor,
-    target: Tensor,
+    real_images: Tensor,
     statistics: dict[str, Tensor],
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Return negative conditional ELBO with explicit per-sample reductions."""
+    # reconstruction: (B, 1, 32, 32)
+    # real_images:    (B, 1, 32, 32)
     distortion = (
-        F.binary_cross_entropy(reconstruction, target, reduction="none")
+        F.binary_cross_entropy(reconstruction, real_images, reduction="none")
         .flatten(1)
         .sum(dim=1)
         .mean()
-    )
+    )  # distortion: scalar ()
     rate_per_dimension = diagonal_gaussian_kl_from_logvar(
         statistics["q_mu"],
         statistics["q_logvar"],
         statistics["p_mu"],
         statistics["p_logvar"],
-    )
+    )  # 
     rate = rate_per_dimension.sum(dim=1).mean()
     return distortion + rate, {
         "distortion": distortion.detach(),

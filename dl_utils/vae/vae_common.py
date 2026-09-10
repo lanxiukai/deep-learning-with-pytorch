@@ -43,14 +43,8 @@ def diagonal_gaussian_kl_from_logvar(
     dimensions are reduced so each lesson can make its own per-sample and
     per-layer reduction explicit.
     """
-    if q_mu.shape != q_logvar.shape:
-        raise ValueError("q_mu and q_logvar must have matching shapes")
-    if (p_mu is None) != (p_logvar is None):
-        raise ValueError("p_mu and p_logvar must be supplied together")
     if p_mu is None:
         return 0.5 * (q_mu.square() + q_logvar.exp() - 1.0 - q_logvar)
-    if p_mu.shape != q_mu.shape or p_logvar.shape != q_mu.shape:
-        raise ValueError("q and p parameters must have matching shapes")
     return 0.5 * (
         p_logvar
         - q_logvar

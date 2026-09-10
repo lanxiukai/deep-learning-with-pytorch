@@ -1,15 +1,6 @@
 import shutil
 import os
 
-from .project_root import infer_project_root
-
-
-def clean_pycache():
-    """Clean the __pycache__ folder when the program exits."""
-    root = infer_project_root()
-    for folder in root.rglob('__pycache__'):
-        shutil.rmtree(folder, ignore_errors=True)
-
 
 def reset_dir(path: str) -> None:
     """

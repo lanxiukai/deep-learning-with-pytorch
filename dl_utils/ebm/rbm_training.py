@@ -18,7 +18,8 @@ from ._ebm_types import (
     _RBMTrainingConfig,
 )
 from .rbm_artifacts import save_filters_grids, save_rbm_recon_grids
-from .rbm_model import BinaryRBM, binarize, rbm_energy_free_energy_fast
+from .rbm_model import BinaryRBM
+from .rbm_primitives import binarize, rbm_energy_free_energy_fast
 from .training_artifacts import save_rbm_training_artifacts
 
 

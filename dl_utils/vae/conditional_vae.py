@@ -60,7 +60,7 @@ class ConditionalVAE(nn.Module):
         self.condition_dim = condition_dim
         self.hidden_channels = hidden_channels
 
-        # The posterior and decoder share the class embedding.
+        # The posterior, conditional prior, and decoder share the class embedding.
         self.condition_embedding = nn.Embedding(num_classes, condition_dim)
         self.image_encoder = nn.Sequential(
             nn.Conv2d(1, hidden_channels // 4, 4, 2, 1),
@@ -78,16 +78,21 @@ class ConditionalVAE(nn.Module):
             nn.SiLU(),
             nn.Linear(256, 2 * latent_dim),
         )  # (B, hidden_channels * 4 * 4 + condition_dim) -> (B, 2 * latent_dim)
-        self.decoder = ConditionalDecoder(latent_dim, condition_dim, hidden_channels)
+        self.prior_network = nn.Sequential(
+            nn.Linear(condition_dim, 256),
+            nn.SiLU(),
+            nn.Linear(256, 2 * latent_dim),
+        )  # (B, condition_dim) -> (B, 2 * latent_dim)
+        self.decoder = ConditionalDecoder(
+            latent_dim, condition_dim, hidden_channels
+        )
 
     def prior(self, labels: Tensor) -> tuple[Tensor, Tensor]:
-        """Return the standard normal prior, independent of the class label."""
-        # new_zeros creates a separate tensor matching the embedding's dtype/device;
-        # it does not modify condition_embedding.weight.
-        zeros = self.condition_embedding.weight.new_zeros(
-            labels.shape[0], self.latent_dim
-        )
-        return zeros, zeros  # p_mu, p_logvar (B, latent_dim)
+        """Return p(z | c) parameters predicted from the class condition."""
+        condition = self.condition_embedding(labels)  # (B, condition_dim)
+        return split_gaussian_parameters(
+            self.prior_network(condition)
+        )  # p_mu, p_logvar: (B, latent_dim)
 
     def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""

@@ -15,7 +15,7 @@ from ..training.timing import Timer
 from ._ebm_types import _DBMConfig
 from .dbm_diagnostics import _compute_mcmc_metrics, _save_mcmc_convergence_plots
 from .dbm_model import DBM
-from .rbm_model import binarize
+from .rbm_primitives import binarize
 from .sampling_artifacts import ensure_dir
 from .sampling_common import _desync_prepare, _parse_save_steps
 

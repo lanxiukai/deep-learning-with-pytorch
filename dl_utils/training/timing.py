@@ -27,18 +27,6 @@ class Timer:
         self._paused_elapsed = 0.0
         return self.times[-1]
 
-    def pause(self) -> None:
-        """Pause the timer without recording a time entry."""
-        if self._running:
-            self._paused_elapsed += time.time() - self.start_time
-            self._running = False
-
-    def resume(self) -> None:
-        """Resume the timer after a pause."""
-        if not self._running:
-            self.start_time = time.time()
-            self._running = True
-
     def avg(self) -> float:
         """Return the average time."""
         return sum(self.times) / len(self.times)

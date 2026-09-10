@@ -8,7 +8,8 @@ from ..devices.randomness import set_seed
 from ..plot.images import save_grid
 from ..training.timing import Timer
 from ._ebm_types import LayerConfig, _DBNRunConfig, _DBNSamplingConfig, layer_cfg
-from .rbm_model import BinaryRBM, binarize, rbm_energy_free_energy_fast
+from .rbm_model import BinaryRBM
+from .rbm_primitives import binarize, rbm_energy_free_energy_fast
 from .rbm_training import (
     _configure_rbm_fixed_point,
     _prepare_layer1_rbm,

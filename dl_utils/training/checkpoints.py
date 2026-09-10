@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
-import platform
 import random
 import tempfile
 from collections.abc import Callable, Mapping
-from importlib.metadata import PackageNotFoundError, version
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -28,32 +25,10 @@ __all__ = [
     "load_model_weights",
     "load_training_checkpoint",
     "make_training_checkpoint",
-    "model_state_fingerprint",
-    "reproducibility_metadata",
     "restore_rng_state",
     "save_model_weights",
     "save_periodic_checkpoint",
 ]
-
-
-def model_state_fingerprint(model: nn.Module) -> str:
-    """Return a stable SHA-256 identity for a module's tensors and buffers."""
-    if not isinstance(model, nn.Module):
-        raise TypeError("model must be an nn.Module.")
-    digest = hashlib.sha256()
-    for name, value in sorted(model.state_dict().items()):
-        if not torch.is_tensor(value):
-            raise TypeError(f"state_dict entry {name!r} is not a tensor")
-        tensor = value.detach().cpu().contiguous()
-        fields = (name, str(tensor.dtype), repr(tuple(tensor.shape)))
-        for field in fields:
-            encoded = field.encode("utf-8")
-            digest.update(len(encoded).to_bytes(8, "big"))
-            digest.update(encoded)
-        digest.update(
-            tensor.reshape(-1).view(torch.uint8).numpy().tobytes(order="C")
-        )
-    return f"sha256:{digest.hexdigest()}"
 
 
 class TrainingCheckpoint:
@@ -155,45 +130,6 @@ def _validate_named_objects(
                 f"{description}[{name!r}] must be a "
                 f"{expected_type.__name__}."
             )
-
-
-def _installed_version(distribution: str) -> str | None:
-    try:
-        return version(distribution)
-    except PackageNotFoundError:
-        return None
-
-
-def reproducibility_metadata(
-    *,
-    models: Mapping[str, nn.Module],
-    seed: int,
-    training_budget: Mapping[str, Any],
-    data_preprocessing: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Build the compact audit record shared by named teaching artifacts."""
-    _validate_named_objects(models, nn.Module, "models")
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise TypeError("seed must be an integer")
-    if not training_budget:
-        raise ValueError("training_budget must not be empty")
-    if not data_preprocessing:
-        raise ValueError("data_preprocessing must not be empty")
-    return {
-        "seed": seed,
-        "training_budget": dict(training_budget),
-        "data_preprocessing": dict(data_preprocessing),
-        "software_environment": {
-            "python": platform.python_version(),
-            "torch": str(torch.__version__),
-            "torchvision": _installed_version("torchvision"),
-            "cuda_runtime": torch.version.cuda,
-        },
-        "checkpoint_identity": {
-            name: model_state_fingerprint(model)
-            for name, model in models.items()
-        },
-    }
 
 
 def make_training_checkpoint(

@@ -90,10 +90,6 @@ class Accumulator:
                 vals.append(float(value))
         self.data = [current + v for current, v in zip(self.data, vals)]
 
-    def reset(self):
-        """Reset every accumulated metric to zero."""
-        self.data = [0.0] * len(self.data)  # reset every metric to zero
-
     def __getitem__(self, idx):  # double underscores getitem: get the data at the index
         """Get the data at the index."""
         return self.data[idx]  # return the data at the index

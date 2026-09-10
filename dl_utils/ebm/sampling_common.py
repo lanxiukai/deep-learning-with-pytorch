@@ -15,7 +15,8 @@ from dl_utils.ebm._ebm_types import (
     _RBMSamplingConfig,
     _SamplingOutputConfig,
 )
-from dl_utils.ebm.rbm_model import BinaryRBM, binarize
+from dl_utils.ebm.rbm_model import BinaryRBM
+from dl_utils.ebm.rbm_primitives import binarize
 from dl_utils.ebm.sampling_artifacts import ensure_dir
 
 
