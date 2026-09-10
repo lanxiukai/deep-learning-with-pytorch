@@ -7,13 +7,13 @@ The projected Inception distance is a teaching proxy, not canonical FID.
 
 Inputs:
     data/celeba: official validation split.
-    output/vae/vqgan/tokenizer.pth: tokenizer and discriminator weights.
+    output/vae/vqgan/vqgan.pth: tokenizer and discriminator weights.
     output/vae/vqgan/transformer_prior.pth: frozen-token prior weights.
 
 Outputs:
-    output/vae/vqgan_evaluation/metrics.json
-    output/vae/vqgan_evaluation/vqgan_real_and_reconstruction.png
-    output/vae/vqgan_evaluation/vqgan_prior_samples.png
+    output/vae/vqgan/evaluation/metrics.json
+    output/vae/vqgan/evaluation/vqgan_real_and_reconstruction.png
+    output/vae/vqgan/evaluation/vqgan_prior_samples.png
 
 Defaults: 1,024 reconstruction examples, 100 generated images, batch size 16,
 256 projected Inception features, and an 8x8 latent token grid.
@@ -74,8 +74,12 @@ INCEPTION_PROJECTION_DIM = 256
 FEATURE_SEED = 2026
 WORKERS = 4
 SEED = 123
-VQGAN_TOKENIZER = OUTPUT_ROOT / "vqgan" / "tokenizer.pth"
-OUTPUT_DIR = OUTPUT_ROOT / "vqgan_evaluation"
+VQGAN_TOKENIZER = OUTPUT_ROOT / "vqgan" / "vqgan.pth"
+OUTPUT_DIR = VQGAN_TOKENIZER.parent / "evaluation"
+PRIOR_CHECKPOINT_NAME = "transformer_prior.pth"
+RECONSTRUCTION_SAMPLES = 16
+SAVED_GENERATION_SAMPLES = 64
+SAMPLE_GRID_COLUMNS = 8
 
 
 @dataclass
@@ -139,7 +143,7 @@ def load_vqgan_system(tokenizer_path: Path, device: torch.device) -> EvaluatedSy
     discriminator = PatchDiscriminator(**checkpoint["discriminator_config"]).to(device)
     discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
     checkpoint = torch.load(
-        tokenizer_path.with_name("transformer_prior.pth"),
+        tokenizer_path.with_name(PRIOR_CHECKPOINT_NAME),
         map_location=device,
         weights_only=True,
     )
@@ -183,7 +187,12 @@ def evaluate_reconstruction(
         labels = labels[:remaining].to(device, non_blocking=True)
         reconstruction, indices, diagnostics = system.reconstruct_and_tokens(images)
         if comparison is None:
-            comparison = torch.cat((images[:16], reconstruction[:16])).cpu()
+            comparison = torch.cat(
+                (
+                    images[:RECONSTRUCTION_SAMPLES],
+                    reconstruction[:RECONSTRUCTION_SAMPLES],
+                )
+            ).cpu()
         positions = indices.shape[1] * indices.shape[2]
         reconstruction_moments.update(feature_extractor(reconstruction))
         squared_error += float((reconstruction - images).square().sum())
@@ -304,6 +313,7 @@ def evaluate() -> None:
         num_classes=NUM_CLASSES,
         temperature=TEMPERATURE,
         device=device,
+        saved_examples=SAVED_GENERATION_SAMPLES,
     )
     metrics["generation"] = generation
     metrics["protocol"] = {
@@ -317,9 +327,13 @@ def evaluate() -> None:
     save_image(
         comparison.mul(0.5).add(0.5),
         OUTPUT_DIR / "vqgan_real_and_reconstruction.png",
-        nrow=16,
+        nrow=min(RECONSTRUCTION_SAMPLES, BATCH_SIZE, MAX_EXAMPLES),
     )
-    save_image(images.mul(0.5).add(0.5), OUTPUT_DIR / "vqgan_prior_samples.png", nrow=8)
+    save_image(
+        images.mul(0.5).add(0.5),
+        OUTPUT_DIR / "vqgan_prior_samples.png",
+        nrow=SAMPLE_GRID_COLUMNS,
+    )
     (OUTPUT_DIR / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n",
         encoding="utf-8",

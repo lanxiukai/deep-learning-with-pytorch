@@ -16,7 +16,7 @@ Data:
     ``5.0_hierarchical_vae.py``.
 
 Outputs:
-    output/vae/ladder_vae/baseline/model.pth: final Ladder VAE checkpoint
+    output/vae/ladder_vae/baseline/ladder_vae.pth: final Ladder VAE checkpoint
     output/vae/ladder_vae/baseline/prior_samples.png: prior sample grid
 
 Training data -- FactorShapes32:
@@ -54,6 +54,13 @@ from dl_utils.vae.vae_hierarchy import (
 )
 
 PROJECT_ROOT = infer_project_root()
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "ladder_vae" / "baseline"
+MODEL_NAME = "ladder_vae"
+SAMPLE_COUNT = 64
+SAMPLE_GRID_COLUMNS = 8
+SAMPLE_EVERY = 5
+PROGRESS_INTERVAL = 0.5
+MAX_METRIC_PANELS = 4
 
 
 # Edit these defaults to explore the lesson.
@@ -97,8 +104,13 @@ def main() -> None:
         warmup_epochs=WARMUP_EPOCHS,
         free_bits=FREE_BITS,
         active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
-        out_dir=(PROJECT_ROOT / "output" / "vae" / "ladder_vae" / "baseline"),
-        model_name="ladder_vae",
+        out_dir=OUTPUT_DIR,
+        model_name=MODEL_NAME,
+        sample_count=SAMPLE_COUNT,
+        sample_grid_columns=SAMPLE_GRID_COLUMNS,
+        sample_every=SAMPLE_EVERY,
+        progress_interval=PROGRESS_INTERVAL,
+        max_metric_panels=MAX_METRIC_PANELS,
         split_seed=SPLIT_SEED,
     )
 

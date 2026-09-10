@@ -16,11 +16,11 @@ Data:
     labels train the evaluator and condition the generator.
 
 Checkpoints:
-    output/vae/conditional_vae/standard-prior/model.pth: required main model
+    output/vae/conditional_vae/standard-prior/conditional_vae.pth: required main model
 
 Outputs:
-    output/vae/conditional_vae/evaluation/metrics.json: complete comparison
-    output/vae/conditional_vae/evaluation/<variant>_conditional_samples.png
+    output/vae/conditional_vae/standard-prior/evaluation/metrics.json: complete comparison
+    output/vae/conditional_vae/standard-prior/evaluation/<variant>_conditional_samples.png
 
 Evaluation data -- MNIST:
 Classifier training images:        60,000
@@ -54,6 +54,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
+from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -64,6 +65,12 @@ from dl_utils.vae.conditional_vae import (
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
+DATA_DIR = PROJECT_ROOT / "data" / "mnist"
+IMAGE_SIZE = 32
+NUM_CLASSES = 10
+DISPLAY_SAMPLES_PER_CLASS = 8
+CLASSIFIER_LR = 1e-3
+PROGRESS_INTERVAL = 0.5
 DEFAULT_ROOT = PROJECT_ROOT / "output" / "vae" / "conditional_vae"
 
 
@@ -74,7 +81,8 @@ SAMPLES_PER_CLASS = 128
 MAX_RECONSTRUCTION_EXAMPLES = 5_000
 WORKERS = 4
 SEED = 123
-STANDARD_PRIOR_CHECKPOINT = DEFAULT_ROOT / "standard-prior" / "model.pth"
+STANDARD_PRIOR_CHECKPOINT = DEFAULT_ROOT / "standard-prior" / "conditional_vae.pth"
+OUTPUT_DIR = STANDARD_PRIOR_CHECKPOINT.parent / "evaluation"
 
 
 class DigitClassifier32(nn.Module):
@@ -94,7 +102,7 @@ class DigitClassifier32(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
-        self.classifier = nn.Linear(64, 10)
+        self.classifier = nn.Linear(64, NUM_CLASSES)
 
     def encode(self, images: Tensor) -> Tensor:
         return self.features(images)
@@ -104,15 +112,17 @@ class DigitClassifier32(nn.Module):
 
 
 def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose([transforms.Resize((32, 32)), transforms.ToTensor()])
+    transform = transforms.Compose(
+        [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
+    )
     train_set = datasets.MNIST(
-        PROJECT_ROOT / "data" / "mnist",
+        DATA_DIR,
         train=True,
         download=True,
         transform=transform,
     )
     test_set = datasets.MNIST(
-        PROJECT_ROOT / "data" / "mnist",
+        DATA_DIR,
         train=False,
         download=True,
         transform=transform,
@@ -137,12 +147,17 @@ def train_classifier(
     epochs: int,
     device: torch.device,
 ) -> float:
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=CLASSIFIER_LR)
     for epoch in range(1, epochs + 1):
         model.train()
         correct = 0
         examples = 0
-        for images, labels in train_loader:
+        progress = tqdm(
+            train_loader,
+            desc=f"Classifier {epoch}/{epochs}",
+            mininterval=PROGRESS_INTERVAL,
+        )
+        for images, labels in progress:
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             logits = model(images)
@@ -152,7 +167,11 @@ def train_classifier(
             optimizer.step()
             correct += int((logits.argmax(dim=1) == labels).sum())
             examples += images.shape[0]
-        print(f"classifier epoch {epoch:02d}: train accuracy={correct / examples:.4f}")
+            progress.set_postfix(
+                loss=f"{loss.item():.4f}",
+                acc=f"{correct / examples:.4f}",
+                refresh=False,
+            )
 
     model.eval()
     correct = 0
@@ -187,14 +206,16 @@ def generation_metrics(
     samples_per_class: int,
     device: torch.device,
 ) -> tuple[dict[str, object], Tensor]:
-    labels = torch.arange(10, device=device).repeat_interleave(samples_per_class)
+    labels = torch.arange(NUM_CLASSES, device=device).repeat_interleave(
+        samples_per_class
+    )
     images = model.generate(labels)
     features = classifier.encode(images)
     probabilities = classifier(images).softmax(dim=1)
     predictions = probabilities.argmax(dim=1)
     per_class_compliance = []
     per_class_diversity = []
-    for class_index in range(10):
+    for class_index in range(NUM_CLASSES):
         mask = labels == class_index
         per_class_compliance.append(
             float((predictions[mask] == class_index).float().mean())
@@ -203,7 +224,7 @@ def generation_metrics(
     return {
         "condition_compliance": float((predictions == labels).float().mean()),
         "target_probability": float(probabilities.gather(1, labels[:, None]).mean()),
-        "feature_diversity": sum(per_class_diversity) / 10,
+        "feature_diversity": sum(per_class_diversity) / NUM_CLASSES,
         "per_class_compliance": per_class_compliance,
         "per_class_feature_diversity": per_class_diversity,
     }, images
@@ -217,7 +238,7 @@ def real_diversity_reference(
     samples_per_class: int,
     device: torch.device,
 ) -> dict[str, object]:
-    buckets: list[list[Tensor]] = [[] for _ in range(10)]
+    buckets: list[list[Tensor]] = [[] for _ in range(NUM_CLASSES)]
     for images, labels in loader:
         for image, label in zip(images, labels):
             bucket = buckets[int(label)]
@@ -230,7 +251,7 @@ def real_diversity_reference(
         images = torch.stack(bucket).to(device)
         per_class.append(_mean_pairwise_distance(classifier.encode(images)))
     return {
-        "feature_diversity": sum(per_class) / 10,
+        "feature_diversity": sum(per_class) / NUM_CLASSES,
         "per_class_feature_diversity": per_class,
     }
 
@@ -259,7 +280,9 @@ def posterior_and_shuffle_metrics(
         correct = model.decode(q_mu, labels)
         shuffled_labels = (labels + 1) % model.num_classes
         shuffled = model.decode(q_mu, shuffled_labels)
-        correct_distortion += float(F.binary_cross_entropy(correct, images, reduction="sum"))
+        correct_distortion += float(
+            F.binary_cross_entropy(correct, images, reduction="sum")
+        )
         shuffled_distortion += float(
             F.binary_cross_entropy(shuffled, images, reduction="sum")
         )
@@ -316,10 +339,16 @@ def evaluate() -> None:
         ),
         "models": {"standard-prior": metrics},
     }
-    out_dir = DEFAULT_ROOT / "evaluation"
+    out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
-    display = images.reshape(10, SAMPLES_PER_CLASS, 1, 32, 32)[:, :8].flatten(0, 1)
-    save_image(display, out_dir / "standard-prior_conditional_samples.png", nrow=8)
+    display = images.reshape(NUM_CLASSES, SAMPLES_PER_CLASS, 1, IMAGE_SIZE, IMAGE_SIZE)[
+        :, :DISPLAY_SAMPLES_PER_CLASS
+    ].flatten(0, 1)
+    save_image(
+        display,
+        out_dir / "standard-prior_conditional_samples.png",
+        nrow=min(DISPLAY_SAMPLES_PER_CLASS, SAMPLES_PER_CLASS),
+    )
     (out_dir / "metrics.json").write_text(
         json.dumps(results, indent=2) + "\n",
         encoding="utf-8",

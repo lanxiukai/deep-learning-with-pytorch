@@ -46,6 +46,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
+from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -57,8 +58,18 @@ from dl_utils.vae.inference import (
     log_mean_exp,
     model_config,
 )
+from dl_utils.vae.training_artifacts import save_training_metrics
 
 PROJECT_ROOT = infer_project_root()
+DATA_DIR = PROJECT_ROOT / "data" / "mnist"
+OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae" / "iwae"
+CHECKPOINT_NAME = "iwae.pth"
+IMAGE_SIZE = 32
+SAMPLE_COUNT = 64
+SAMPLE_GRID_COLUMNS = 8
+SAMPLE_EVERY = 5
+PROGRESS_INTERVAL = 0.5
+MAX_METRIC_PANELS = 4
 
 
 # Edit these defaults to explore the lesson.
@@ -77,15 +88,17 @@ SEED = 42
 
 
 def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose([transforms.Resize((32, 32)), transforms.ToTensor()])
+    transform = transforms.Compose(
+        [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
+    )
     train_set = datasets.MNIST(
-        PROJECT_ROOT / "data" / "mnist",
+        DATA_DIR,
         train=True,
         download=True,
         transform=transform,
     )
     validation_set = datasets.MNIST(
-        PROJECT_ROOT / "data" / "mnist",
+        DATA_DIR,
         train=False,
         download=True,
         transform=transform,
@@ -147,16 +160,26 @@ def train_one(
         context_dim=CONTEXT_DIM,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    out_dir = PROJECT_ROOT / "output" / "vae" / "iwae" / f"k{particles}"
+    out_dir = OUTPUT_ROOT / f"k{particles}"
     reset_dir(str(out_dir))
+    training_dir = out_dir / "training"
+    training_dir.mkdir()
+    history = []
     for epoch in range(1, EPOCHS + 1):
         model.train()
         loss_sum = 0.0
         ess_sum = 0.0
         examples = 0
-        for images, _ in train_loader:
+        progress = tqdm(
+            train_loader,
+            desc=f"IWAE K={particles} {epoch}/{EPOCHS}",
+            mininterval=PROGRESS_INTERVAL,
+        )
+        for images, _ in progress:
             images = images.to(device, non_blocking=True)
-            log_weights, terms = importance_log_weights(model, images, particles=particles)
+            log_weights, terms = importance_log_weights(
+                model, images, particles=particles
+            )
             loss = -log_mean_exp(log_weights).mean()
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -165,10 +188,23 @@ def train_one(
             loss_sum += loss.item() * images.shape[0]
             ess_sum += float(diagnostics["ess_fraction"]) * images.shape[0]
             examples += images.shape[0]
-        print(
-            f"K={particles} epoch {epoch:03d}: "
-            f"loss={loss_sum / examples:.3f}, ESS/K={ess_sum / examples:.3f}"
+            progress.set_postfix(
+                loss=f"{loss_sum / examples:.3f}",
+                ess=f"{ess_sum / examples:.3f}",
+                refresh=False,
+            )
+        history.append(
+            {"loss": loss_sum / examples, "ess_fraction": ess_sum / examples}
         )
+        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
+            model.eval()
+            with torch.inference_mode():
+                samples = model.sample(SAMPLE_COUNT, device=device)
+            save_image(
+                samples,
+                training_dir / f"epoch_{epoch:03d}.png",
+                nrow=SAMPLE_GRID_COLUMNS,
+            )
 
     validation = evaluate_bound(
         model,
@@ -178,22 +214,20 @@ def train_one(
         max_examples=VALIDATION_EXAMPLES,
         device=device,
     )
+    save_training_metrics(history, out_dir, prefix="iwae", max_panels=MAX_METRIC_PANELS)
     torch.save(
         {
             "state_dict": model.state_dict(),
             "model_name": "iwae",
             "model_config": model_config(model),
+            "validation": validation,
         },
-        out_dir / "model.pth",
+        out_dir / CHECKPOINT_NAME,
     )
     model.eval()
     with torch.inference_mode():
-        samples = model.sample(64, device=device)
-    save_image(samples, out_dir / "prior_samples.png", nrow=8)
-    print(
-        f"K={particles}: validation bound={validation['bound']:.3f}, "
-        f"ESS/K={validation['ess_fraction']:.3f}; saved {out_dir}"
-    )
+        samples = model.sample(SAMPLE_COUNT, device=device)
+    save_image(samples, out_dir / "prior_samples.png", nrow=SAMPLE_GRID_COLUMNS)
 
 
 def main() -> None:

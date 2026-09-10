@@ -19,14 +19,14 @@ Data:
     tool_scripts/download_dataset.py --dataset celeba.
 
 Checkpoints:
-    output/vae/vq_vae/{tokenizer.pth,pixelcnn_prior.pth}: VQ-VAE system
-    output/vae/fsq/{tokenizer.pth,pixelcnn_prior.pth}: FSQ system
+    output/vae/vq_vae/{vq_vae.pth,pixelcnn_prior.pth}: VQ-VAE system
+    output/vae/fsq/{fsq.pth,pixelcnn_prior.pth}: FSQ system
     Run 6.0 and 6.1 first to produce both complete systems.
 
 Outputs:
-    output/vae/discrete_tokenizer_evaluation/metrics.json: system comparison
-    output/vae/discrete_tokenizer_evaluation/<system>_real_and_reconstruction.png
-    output/vae/discrete_tokenizer_evaluation/<system>_prior_samples.png
+    output/vae/evaluation/discrete_tokenizer/metrics.json: system comparison
+    output/vae/evaluation/discrete_tokenizer/<system>_real_and_reconstruction.png
+    output/vae/evaluation/discrete_tokenizer/<system>_prior_samples.png
 
 Evaluation data -- CelebA validation:
 Available images:                      19,867
@@ -87,6 +87,10 @@ from dl_utils.vae.token_prior import PixelCNNPrior
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
+OUTPUT_DIR = OUTPUT_ROOT / "evaluation" / "discrete_tokenizer"
+RECONSTRUCTION_SAMPLES = 16
+SAVED_GENERATION_SAMPLES = 64
+SAMPLE_GRID_COLUMNS = 8
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
 IMAGE_SIZE = 128
 NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
@@ -103,9 +107,9 @@ INCEPTION_PROJECTION_DIM = 256
 FEATURE_SEED = 2026
 WORKERS = 4
 SEED = 123
-VQ_VAE_TOKENIZER = OUTPUT_ROOT / "vq_vae" / "tokenizer.pth"
+VQ_VAE_TOKENIZER = OUTPUT_ROOT / "vq_vae" / "vq_vae.pth"
 VQ_VAE_PRIOR = OUTPUT_ROOT / "vq_vae" / "pixelcnn_prior.pth"
-FSQ_TOKENIZER = OUTPUT_ROOT / "fsq" / "tokenizer.pth"
+FSQ_TOKENIZER = OUTPUT_ROOT / "fsq" / "fsq.pth"
 FSQ_PRIOR = OUTPUT_ROOT / "fsq" / "pixelcnn_prior.pth"
 
 
@@ -233,7 +237,12 @@ def evaluate_tokenizer(
         labels = labels[:remaining].to(device, non_blocking=True)
         reconstruction, indices, diagnostics = system.reconstruct_and_tokens(images)
         if comparison is None:
-            comparison = torch.cat((images[:16], reconstruction[:16])).cpu()
+            comparison = torch.cat(
+                (
+                    images[:RECONSTRUCTION_SAMPLES],
+                    reconstruction[:RECONSTRUCTION_SAMPLES],
+                )
+            ).cpu()
         reconstruction_moments.update(feature_extractor(reconstruction))
         squared_error += float((reconstruction - images).square().sum())
         elements += images.numel()
@@ -296,7 +305,7 @@ def evaluate() -> None:
             device=device,
         )
     )
-    out_dir = OUTPUT_ROOT / "discrete_tokenizer_evaluation"
+    out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
     model_results: dict[str, object] = {}
     results: dict[str, object] = {
@@ -331,7 +340,7 @@ def evaluate() -> None:
         save_image(
             comparison.mul(0.5).add(0.5),
             out_dir / f"{system.name}_real_and_reconstruction.png",
-            nrow=16,
+            nrow=min(RECONSTRUCTION_SAMPLES, BATCH_SIZE, MAX_EXAMPLES),
         )
         generation, images = evaluate_conditional_generation(
             system,
@@ -342,12 +351,13 @@ def evaluate() -> None:
             num_classes=NUM_CLASSES,
             temperature=TEMPERATURE,
             device=device,
+            saved_examples=SAVED_GENERATION_SAMPLES,
         )
         metrics["generation"] = generation
         save_image(
             images.mul(0.5).add(0.5),
             out_dir / f"{system.name}_prior_samples.png",
-            nrow=8,
+            nrow=SAMPLE_GRID_COLUMNS,
         )
         model_results[system.name] = metrics
         print(

@@ -11,13 +11,13 @@ Data:
     labels are ignored by the IWAE comparison.
 
 Checkpoints:
-    output/vae/iwae/k1/model.pth: default K=1 model
-    output/vae/iwae/k5/model.pth: default K=5 model
+    output/vae/iwae/k1/iwae.pth: default K=1 model
+    output/vae/iwae/k5/iwae.pth: default K=5 model
     Run 4.0_iwae.py first to produce both checkpoints.
 
 Outputs:
-    output/vae/iwae_evaluation/metrics.json: shared-protocol comparison
-    output/vae/iwae_evaluation/<model>_real_reconstruction_prior.png
+    output/vae/iwae/evaluation/metrics.json: shared-protocol comparison
+    output/vae/iwae/evaluation/<model>_real_reconstruction_prior.png
 
 Evaluation data -- MNIST test:
 Available images:                  10,000
@@ -61,6 +61,10 @@ from dl_utils.vae.inference import (
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
+OUTPUT_DIR = OUTPUT_ROOT / "iwae" / "evaluation"
+DATA_DIR = PROJECT_ROOT / "data" / "mnist"
+IMAGE_SIZE = 32
+DISPLAY_SAMPLES = 16
 
 
 # Edit these defaults to explore the lesson.
@@ -72,17 +76,17 @@ BATCH_SIZE = 64
 ACTIVE_VARIANCE_THRESHOLD = 1e-2
 WORKERS = 4
 SEED = 123
-IWAE_K1_CHECKPOINT = OUTPUT_ROOT / "iwae" / "k1" / "model.pth"
-IWAE_K5_CHECKPOINT = OUTPUT_ROOT / "iwae" / "k5" / "model.pth"
+IWAE_K1_CHECKPOINT = OUTPUT_ROOT / "iwae" / "k1" / "iwae.pth"
+IWAE_K5_CHECKPOINT = OUTPUT_ROOT / "iwae" / "k5" / "iwae.pth"
 
 
 def make_test_loader(device: torch.device) -> DataLoader:
     dataset = datasets.MNIST(
-        PROJECT_ROOT / "data" / "mnist",
+        DATA_DIR,
         train=False,
         download=True,
         transform=transforms.Compose(
-            [transforms.Resize((32, 32)), transforms.ToTensor()]
+            [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
         ),
     )
     return DataLoader(
@@ -193,13 +197,13 @@ def save_model_comparison(
     device: torch.device,
 ) -> None:
     real, _ = next(iter(loader))
-    real = real[:16].to(device)
+    real = real[:DISPLAY_SAMPLES].to(device)
     reconstructions = model.reconstruct(real)
-    samples = model.sample(16, device=device)
+    samples = model.sample(real.shape[0], device=device)
     save_image(
         torch.cat((real, reconstructions, samples)),
         path,
-        nrow=16,
+        nrow=real.shape[0],
     )
 
 
@@ -214,12 +218,12 @@ def evaluate() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = make_test_loader(device)
     paths = checkpoint_paths()
-    out_dir = OUTPUT_ROOT / "iwae_evaluation"
+    out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
     results: dict[str, object] = {
         "protocol": {
             "dataset": "MNIST test",
-            "image_size": 32,
+            "image_size": IMAGE_SIZE,
             "observation": "independent Bernoulli mean",
             "evaluation_particles": EVALUATION_PARTICLES,
             "particle_chunk_size": PARTICLE_CHUNK_SIZE,

@@ -8,8 +8,11 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
+from tqdm.auto import tqdm
 
 from dl_utils.data.factor_shapes import FactorShapes32
+from dl_utils.filesystem.directories import reset_dir
+from dl_utils.vae.training_artifacts import save_training_metrics
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 from dl_utils.vae.vae_hierarchy import (
     ActiveUnitAccumulator,
@@ -64,7 +67,9 @@ def evaluate_hierarchy(
         images = images.to(device, non_blocking=True)
         latents = model.infer(images, sample=False)
         reconstruction = model.decode(latents["z1"])
-        distortion += float(F.binary_cross_entropy(reconstruction, images, reduction="sum"))
+        distortion += float(
+            F.binary_cross_entropy(reconstruction, images, reduction="sum")
+        )
         kl_z1 += float(
             diagonal_gaussian_kl_from_logvar(
                 latents["q1_mu"],
@@ -105,7 +110,16 @@ def train_hierarchy(
     out_dir: Path,
     model_name: str,
     split_seed: int,
+    sample_count: int,
+    sample_grid_columns: int,
+    sample_every: int,
+    progress_interval: float,
+    max_metric_panels: int,
 ) -> None:
+    reset_dir(str(out_dir))
+    training_dir = out_dir / "training"
+    training_dir.mkdir()
+    history = []
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     warmup_updates = round(warmup_epochs * len(train_loader))
     update = 0
@@ -114,7 +128,12 @@ def train_hierarchy(
         totals = torch.zeros(4, device=device)
         examples = 0
         active = ActiveUnitAccumulator()
-        for images, _ in train_loader:
+        progress = tqdm(
+            train_loader,
+            desc=f"{model_name} {epoch}/{epochs}",
+            mininterval=progress_interval,
+        )
+        for images, _ in progress:
             update += 1
             images = images.to(device, non_blocking=True)
             reconstruction, latents = model(images)
@@ -142,18 +161,31 @@ def train_hierarchy(
             )
             examples += images.shape[0]
             active.update(latents)
+            progress.set_postfix(
+                loss=f"{float(totals[0]) / examples:.3f}",
+                refresh=False,
+            )
         values = (totals / examples).tolist()
         active_z1, active_z2 = active.counts(
             variance_threshold=active_variance_threshold
         )
-        print(
-            f"epoch {epoch:03d}: loss={values[0]:.3f}, "
-            f"D={values[1]:.3f}, KL(z1|z2)={values[2]:.3f}, "
-            f"KL(z2)={values[3]:.3f}, "
-            f"AU(z1 correction)={active_z1}/{model.z1_dim}, "
-            f"AU(z2)={active_z2}/{model.z2_dim}, "
-            f"warm-up={warmup_weight(update, warmup_updates=warmup_updates):.3f}"
+        history.append(
+            dict(zip(("loss", "distortion", "kl_z1", "kl_z2"), values))
+            | {
+                "active_z1": float(active_z1),
+                "active_z2": float(active_z2),
+                "kl_weight": warmup_weight(update, warmup_updates=warmup_updates),
+            }
         )
+        if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
+            model.eval()
+            with torch.inference_mode():
+                samples = model.sample(sample_count, device=device)
+            save_image(
+                samples,
+                training_dir / f"epoch_{epoch:03d}.png",
+                nrow=sample_grid_columns,
+            )
 
     validation = evaluate_hierarchy(
         model,
@@ -161,7 +193,9 @@ def train_hierarchy(
         device=device,
         active_variance_threshold=active_variance_threshold,
     )
-    out_dir.mkdir(parents=True, exist_ok=True)
+    save_training_metrics(
+        history, out_dir, prefix=model_name, max_panels=max_metric_panels
+    )
     torch.save(
         {
             "state_dict": model.state_dict(),
@@ -171,18 +205,14 @@ def train_hierarchy(
             "warmup_epochs": warmup_epochs,
             "free_bits_per_group": free_bits,
             "split_seed": split_seed,
+            "validation": validation,
         },
-        out_dir / "model.pth",
+        out_dir / f"{model_name}.pth",
     )
     model.eval()
     with torch.inference_mode():
-        samples = model.sample(64, device=device)
-    save_image(samples, out_dir / "prior_samples.png", nrow=8)
-    print(
-        f"validation D={validation['distortion']:.3f}, "
-        f"KL(z1|z2)={validation['kl_z1']:.3f}, "
-        f"KL(z2)={validation['kl_z2']:.3f}; saved {out_dir}"
-    )
+        samples = model.sample(sample_count, device=device)
+    save_image(samples, out_dir / "prior_samples.png", nrow=sample_grid_columns)
 
 
 __all__ = [

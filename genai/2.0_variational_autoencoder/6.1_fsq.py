@@ -24,7 +24,7 @@ Data:
 Outputs:
     output/vae/fsq/tokenizer_*.png: reconstruction comparisons
     output/vae/fsq/prior_*.png: one PixelCNN sample per Smiling label
-    output/vae/fsq/tokenizer.pth: final FSQ tokenizer checkpoint
+    output/vae/fsq/fsq.pth: final FSQ tokenizer checkpoint
     output/vae/fsq/pixelcnn_prior.pth: final token-prior checkpoint
 
 Training data -- CelebA-128:
@@ -60,6 +60,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
+from tqdm.auto import tqdm
 
 from dl_utils.data.celeba import (
     CELEBA_SMILING_ATTRIBUTE,
@@ -77,8 +78,15 @@ from dl_utils.vae.token_prior import (
     sample_pixelcnn_prior_images,
     train_pixelcnn_prior_epoch,
 )
+from dl_utils.vae.training_artifacts import save_training_metrics
 
 PROJECT_ROOT = infer_project_root()
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "fsq"
+TOKENIZER_CHECKPOINT_NAME = "fsq.pth"
+PRIOR_CHECKPOINT_NAME = "pixelcnn_prior.pth"
+RECONSTRUCTION_SAMPLES = 8
+PROGRESS_INTERVAL = 0.5
+MAX_METRIC_PANELS = 4
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
 IMAGE_SIZE = 128
 NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
@@ -155,18 +163,21 @@ def train_tokenizer(
     model = FSQAutoencoder(**config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     vocabulary_size = model.quantizer.codebook_size
-    fixed_bits = TOKENS_PER_IMAGE * math.ceil(math.log2(vocabulary_size))
-    print(
-        f"FSQ levels={LEVELS}, vocabulary={vocabulary_size}, "
-        f"fixed-length upper bound={fixed_bits} bits/image"
-    )
+    training_dir = out_dir / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    history = []
     for epoch in range(1, TOKENIZER_EPOCHS + 1):
         model.train()
         sums = torch.zeros(2, device=device)
         examples = 0
         usage = TokenUsageAccumulator(vocabulary_size)
         preview = None
-        for images, _ in train_loader:
+        progress = tqdm(
+            train_loader,
+            desc=f"fsq {epoch}/{TOKENIZER_EPOCHS}",
+            mininterval=PROGRESS_INTERVAL,
+        )
+        for images, _ in progress:
             images = images.to(device, non_blocking=True)
             reconstruction, indices, diagnostics = model(images)
             loss = F.mse_loss(reconstruction, images)
@@ -180,40 +191,47 @@ def train_tokenizer(
             sums += torch.stack(values) * images.shape[0]
             usage.update(indices)
             examples += images.shape[0]
-            preview = (images[:8].detach(), reconstruction[:8].detach())
+            progress.set_postfix(
+                loss=f"{float(sums[0]) / examples:.4f}",
+                quant=f"{float(sums[1]) / examples:.4f}",
+                refresh=False,
+            )
+            preview = (
+                images[:RECONSTRUCTION_SAMPLES].detach(),
+                reconstruction[:RECONSTRUCTION_SAMPLES].detach(),
+            )
         if preview is None:
             raise ValueError("training loader produced no batches; reduce batch size")
         means = (sums / examples).tolist()
         epoch_usage = usage.statistics()
-        print(
-            f"tokenizer {epoch:03d}: D={means[0]:.4f}, quant={means[1]:.4f}, "
-            f"PPL={epoch_usage['perplexity'].item():.1f}, "
-            f"active={epoch_usage['active_codes'].item()}/{vocabulary_size}, "
-            f"epoch marginal entropy="
-            f"{epoch_usage['token_entropy_nats'].item() / math.log(2):.2f} bits/token"
+        history.append(
+            dict(zip(("mse", "quantization_mse"), means))
+            | {
+                "perplexity": float(epoch_usage["perplexity"]),
+                "active_codes": float(epoch_usage["active_codes"]),
+                "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
+            }
         )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0:
+        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
             save_image(
                 torch.cat(preview).mul(0.5).add(0.5),
-                out_dir / f"tokenizer_{epoch:03d}.png",
-                nrow=8,
+                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                nrow=RECONSTRUCTION_SAMPLES,
             )
     validation = evaluate_tokenizer(model, validation_loader, device=device)
+    save_training_metrics(
+        history, out_dir, prefix="tokenizer", max_panels=MAX_METRIC_PANELS
+    )
     torch.save(
         {
             "state_dict": model.state_dict(),
             "model_name": "fsq_tokenizer",
             "model_config": config,
+            "validation": validation,
             "dataset": "celeba",
             "image_size": IMAGE_SIZE,
         },
-        out_dir / "tokenizer.pth",
-    )
-    print(
-        f"validation tokenizer: MSE={validation['mse']:.4f}, "
-        f"entropy={validation['marginal_entropy_bits_per_token']:.3f} "
-        f"bits/token, active={validation['active_codes']:.0f}/"
-        f"{vocabulary_size}"
+        out_dir / TOKENIZER_CHECKPOINT_NAME,
     )
     return model.eval().requires_grad_(False)
 
@@ -234,6 +252,9 @@ def train_prior(
         num_classes=NUM_CLASSES,
     ).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=PRIOR_LR)
+    training_dir = out_dir / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    history = []
     for epoch in range(1, PRIOR_EPOCHS + 1):
         nll = train_pixelcnn_prior_epoch(
             tokenizer,
@@ -241,12 +262,11 @@ def train_prior(
             train_loader,
             optimizer,
             device,
+            progress_desc=f"PixelCNN {epoch}/{PRIOR_EPOCHS}",
+            progress_interval=PROGRESS_INTERVAL,
         )
-        print(
-            f"prior {epoch:03d}: train nll={nll:.4f}, "
-            f"train bits/token={nll / math.log(2):.3f}"
-        )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0:
+        history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
+        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
             prior.eval()
             labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
             samples = sample_pixelcnn_prior_images(
@@ -259,9 +279,15 @@ def train_prior(
             )
             save_image(
                 samples.mul(0.5).add(0.5),
-                out_dir / f"prior_{epoch:03d}.png",
+                training_dir / f"prior_epoch_{epoch:03d}.png",
                 nrow=NUM_CLASSES,
             )
+            if epoch == PRIOR_EPOCHS:
+                save_image(
+                    samples.mul(0.5).add(0.5),
+                    out_dir / "prior_samples.png",
+                    nrow=NUM_CLASSES,
+                )
     validation = evaluate_pixelcnn_prior(
         tokenizer,
         prior,
@@ -275,28 +301,28 @@ def train_prior(
         "layers": PRIOR_LAYERS,
         "num_classes": NUM_CLASSES,
     }
+    save_training_metrics(
+        history, out_dir, prefix="prior", max_panels=MAX_METRIC_PANELS
+    )
     torch.save(
         {
             "state_dict": prior.state_dict(),
             "model_name": "fsq_pixelcnn_prior",
             "model_config": prior_config,
+            "validation": validation,
             "dataset": "celeba",
             "image_size": IMAGE_SIZE,
             "conditioning": "class_conditional",
             "attribute": CELEBA_SMILING_ATTRIBUTE,
             "class_names": list(CELEBA_SMILING_CLASSES),
         },
-        out_dir / "pixelcnn_prior.pth",
-    )
-    print(
-        f"validation prior: {validation['bits_per_token']:.3f} "
-        f"bits/token, {validation['bits_per_image']:.1f} bits/image"
+        out_dir / PRIOR_CHECKPOINT_NAME,
     )
 
 
 def train() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    out_dir = PROJECT_ROOT / "output" / "vae" / "fsq"
+    out_dir = OUTPUT_DIR
     train_loader, validation_loader = make_aligned_celeba_train_validation_loaders(
         DATA_DIR,
         IMAGE_SIZE,

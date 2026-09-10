@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim import Optimizer
+from tqdm.auto import tqdm
 
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
@@ -122,12 +123,16 @@ def train_pixelcnn_prior_epoch(
     loader: Iterable[tuple[Tensor, Tensor]],
     optimizer: Optimizer,
     device: torch.device,
+    *,
+    progress_desc: str = "PixelCNN",
+    progress_interval: float = 0.5,
 ) -> float:
     """Train one causal-prior epoch over frozen tokenizer indices."""
     prior.train()
     nll_sum = 0.0
     examples = 0
-    for images, labels in loader:
+    progress = tqdm(loader, desc=progress_desc, mininterval=progress_interval)
+    for images, labels in progress:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         # The prior's embedding backward must be able to save these indices.
@@ -139,6 +144,11 @@ def train_pixelcnn_prior_epoch(
         optimizer.step()
         nll_sum += loss.item() * images.shape[0]
         examples += images.shape[0]
+        progress.set_postfix(
+            nll=f"{nll_sum / examples:.4f}",
+            bpt=f"{nll_sum / examples / math.log(2):.3f}",
+            refresh=False,
+        )
     return nll_sum / examples
 
 

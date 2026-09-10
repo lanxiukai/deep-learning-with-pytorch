@@ -281,8 +281,6 @@ def train_glasses_vae(
                 loss_history[name].append(metrics[name])
             progress_bar.set_postfix(
                 total=f"{metrics['total']:.3f}",
-                reconstruction=f"{metrics['reconstruction']:.3f}",
-                kl=f"{metrics['kl']:.3f}",
                 refresh=False,
             )
             if epoch % sample_every_epochs == 0:

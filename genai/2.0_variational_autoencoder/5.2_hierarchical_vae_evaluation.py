@@ -17,15 +17,15 @@ Data:
     Factor annotations do not enter the models.
 
 Checkpoints:
-    output/vae/hierarchical_vae/baseline/model.pth: default HVAE
-    output/vae/ladder_vae/baseline/model.pth: default Ladder VAE
+    output/vae/hierarchical_vae/baseline/hierarchical_vae.pth: default HVAE
+    output/vae/ladder_vae/baseline/ladder_vae.pth: default Ladder VAE
     Run both 5.0 and 5.1 first to produce the compared checkpoints.
 
 Outputs:
-    output/vae/hierarchical_vae_evaluation/metrics.json: comparison report
-    output/vae/hierarchical_vae_evaluation/<model>/posterior_and_prior_replacements.png
-    output/vae/hierarchical_vae_evaluation/<model>/fixed_top_resampled_lower_prior.png
-    output/vae/hierarchical_vae_evaluation/<model>/fixed_evidence_changed_top.png
+    output/vae/hierarchical_vae/evaluation/metrics.json: comparison report
+    output/vae/hierarchical_vae/evaluation/<model>/posterior_and_prior_replacements.png
+    output/vae/hierarchical_vae/evaluation/<model>/fixed_top_resampled_lower_prior.png
+    output/vae/hierarchical_vae/evaluation/<model>/fixed_evidence_changed_top.png
 
 Evaluation data -- FactorShapes32 test:
 Available and evaluated images:       706
@@ -72,6 +72,8 @@ from dl_utils.vae.vae_hierarchy import (
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
+OUTPUT_DIR = OUTPUT_ROOT / "hierarchical_vae" / "evaluation"
+DISPLAY_SAMPLES = 8
 
 
 # Edit these defaults to explore the lesson.
@@ -82,8 +84,8 @@ ACTIVE_VARIANCE_THRESHOLD = 1e-2
 WORKERS = 4
 SEED = 123
 SPLIT_SEED = 2026
-HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "baseline" / "model.pth"
-LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "baseline" / "model.pth"
+HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "baseline" / "hierarchical_vae.pth"
+LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "baseline" / "ladder_vae.pth"
 
 
 def load_model(
@@ -265,7 +267,7 @@ def save_counterfactual_grids(
     device: torch.device,
 ) -> dict[str, float]:
     images, _ = next(iter(loader))
-    images = images[:8].to(device)
+    images = images[:DISPLAY_SAMPLES].to(device)
     lower_evidence, q2_mu, q2_logvar = model.bottom_up(images)
     posterior = model.infer_from_top(
         lower_evidence,
@@ -295,7 +297,7 @@ def save_counterfactual_grids(
     save_image(
         summary,
         out_dir / "posterior_and_prior_replacements.png",
-        nrow=8,
+        nrow=images.shape[0],
     )
 
     fixed_top = q2_mu
@@ -318,7 +320,9 @@ def save_counterfactual_grids(
         repeated_evidence,
         top_samples.reshape(-1, model.z2_dim),
     )
-    upper_images = model.decode(changed_q1_mu.reshape(8, variants, model.z1_dim))
+    upper_images = model.decode(
+        changed_q1_mu.reshape(images.shape[0], variants, model.z1_dim)
+    )
     save_image(
         upper_images.flatten(0, 1),
         out_dir / "fixed_evidence_changed_top.png",
@@ -346,7 +350,7 @@ def evaluate() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     paths = checkpoint_paths()
     loader = make_test_loader(split_seed=SPLIT_SEED, device=device)
-    out_root = OUTPUT_ROOT / "hierarchical_vae_evaluation"
+    out_root = OUTPUT_DIR
     reset_dir(str(out_root))
     results: dict[str, object] = {
         "protocol": {
