@@ -22,7 +22,7 @@ from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.lesson_utils import (
     OUTPUT_ROOT,
-    NoiseLossBins,
+    BinnedLoss,
     add_training_arguments,
     append_record,
     make_image_loader,
@@ -71,7 +71,9 @@ def load_autoencoder(path, device):
         checkpoint.get("model_name") != "kl_perceptual_autoencoder"
         or checkpoint.get("dataset") != "CelebA"
     ):
-        raise ValueError("Use the CelebA first-stage checkpoint from 3.0.")
+        raise ValueError(
+            "Use the CelebA first-stage checkpoint from kl_autoencoder.py."
+        )
     config = checkpoint["model_config"]
     model = KLPerceptualAutoencoder(**config).to(device)
     if model.image_size < 128:
@@ -233,7 +235,7 @@ def main():
         return
     for epoch in range(start, args.epochs + 1):
         model.train()
-        meter = NoiseLossBins()
+        meter = BinnedLoss()
         for images, labels in tqdm(loader, desc=f"Latent DDPM {epoch}/{args.epochs}"):
             with torch.no_grad():
                 latent = first_stage.encode_latent(

@@ -18,7 +18,7 @@ from tqdm import tqdm
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.improved_ddpm import ImprovedDDPM
 from dl_utils.diffusion.lesson_utils import (
-    NoiseLossBins,
+    BinnedLoss,
     add_training_arguments,
     append_record,
     make_image_loader,
@@ -89,7 +89,7 @@ def train(args):
 
     for epoch in range(start, args.epochs + 1):
         model.train()
-        meter = NoiseLossBins()
+        meter = BinnedLoss()
         sums = torch.zeros(3, device=device)
         examples = 0
         for clean, _ in tqdm(loader, desc=f"Improved DDPM {epoch}/{args.epochs}"):

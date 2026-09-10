@@ -133,10 +133,11 @@ def append_record(path: Path, record: dict) -> None:
         stream.write(json.dumps(record, allow_nan=False) + "\n")
 
 
-class NoiseLossBins:
-    """Mean per-image denoising error in three declared noise-coordinate bins."""
+class BinnedLoss:
+    """Mean per-image error overall and in three declared coordinate bins."""
 
-    def __init__(self):
+    def __init__(self, coordinate_name="noise"):
+        self.coordinate_name = coordinate_name
         self.sums = torch.zeros(3, dtype=torch.float64)
         self.counts = torch.zeros(3, dtype=torch.long)
 
@@ -147,7 +148,12 @@ class NoiseLossBins:
 
     def result(self):
         return {
-            f"noise_bin_{i}_loss": float(self.sums[i] / self.counts[i])
-            for i in range(3)
-            if self.counts[i] > 0
+            "loss": float(self.sums.sum() / self.counts.sum()),
+            **{
+                f"{self.coordinate_name}_bin_{i}_loss": float(
+                    self.sums[i] / self.counts[i]
+                )
+                for i in range(3)
+                if self.counts[i] > 0
+            },
         }

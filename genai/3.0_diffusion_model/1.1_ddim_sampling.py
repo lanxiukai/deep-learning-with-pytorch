@@ -1,9 +1,10 @@
-r"""Freeze DDPM/Improved DDPM and compare the ancestral chain with DDIM.
+r"""Freeze the 1.0 DDPM denoiser and compare its ancestral chain with DDIM.
 
 Both use identical EMA weights and initial noise. DDPM uses every adjacent
 transition and its checkpoint's variance. DDIM uses a subsequence and eta;
-learned variance is not used by DDIM. Quality, actual NFE, and latency are
-saved alongside images. Changing eta does not train a new model.
+quality, actual NFE, and latency are saved alongside images. Changing eta
+does not train a new model. An Improved DDPM extension checkpoint also works;
+its learned variance is used only for its ancestral chain.
 """
 
 from __future__ import annotations

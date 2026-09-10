@@ -1,1 +1,1 @@
-"""Utilities for diffusion and score-based model lessons."""
+"""DDPM, continuous score, and flow-matching foundations plus optional extensions."""

@@ -1,7 +1,7 @@
 """VP, VE, and sub-VP perturbations with explicit score-based samplers.
 
 Forward time runs from data to noise. Reverse integration uses negative dt;
-Brownian variance uses |dt|. A finite endpoint is followed by Tweedie denoising.
+Brownian variance uses |dt|. Optional Tweedie denoising follows a finite endpoint.
 NCSN-style annealed Langevin is restricted to the VE noise path.
 """
 
@@ -114,6 +114,7 @@ def sample_score_model(
     time_epsilon=1e-3,
     ode_solver="heun",
     time_embedding_scale=1000.0,
+    final_denoise=True,
     corrector_steps=1,
     langevin_step_size=0.01,
     initial_noise=None,
@@ -126,7 +127,8 @@ def sample_score_model(
     Langevin uses eta(t) = langevin_step_size * sigma(t)^2. This explicit
     fixed rule is a teaching choice, not the adaptive-SNR corrector recipe.
     At every reverse-SDE interval Brownian noise is retained; the separately
-    counted final network evaluation performs the finite-endpoint denoise.
+    counted final network evaluation performs the optional finite-endpoint
+    denoise. Disabling it returns the state at time_epsilon (then pixel-clipped).
     """
     if num_steps < 2 or not 0 < time_epsilon < 1:
         raise ValueError("Need >=2 steps and 0 < time_epsilon < 1.")
@@ -194,9 +196,10 @@ def sample_score_model(
                     )
             if return_trajectory and index in capture:
                 path.append(state.cpu())
-        final_time = times[-1].expand(shape[0])
-        alpha, sigma = sde.marginal_coefficients(final_time, state)
-        state = (state + sigma.square() * score(state, final_time)) / alpha
+        if final_denoise:
+            final_time = times[-1].expand(shape[0])
+            alpha, sigma = sde.marginal_coefficients(final_time, state)
+            state = (state + sigma.square() * score(state, final_time)) / alpha
         if path:
             path[-1] = state.cpu()
     finally:

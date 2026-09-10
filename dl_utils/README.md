@@ -24,10 +24,15 @@ environment or dependency workflow.
 ## Design boundaries
 
 - [diffusion/ddpm.py](diffusion/ddpm.py) is a compatibility facade. New
-  lessons import the discrete DDPM, learned-variance Improved DDPM, score-SDE,
-  EDM, solver, and U-Net modules directly. The
+  foundation lessons import the DDPM, score-SDE, flow-matching, and U-Net
+  modules directly. The
   [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) follows the
-  128px CelebA main line. `diffusion/lesson_utils.py` shares data and checkpoint
+  128px CelebA main line: discrete denoising, continuous score learning, then
+  direct velocity learning. `diffusion/flow_matching.py` owns conditional
+  Gaussian paths and Euler/midpoint/Heun integration from noise to data;
+  `diffusion/checkpoints.py` keeps score and velocity contracts distinct.
+  Improved DDPM, EDM, and DPM solvers serve optional extension lessons.
+  `diffusion/lesson_utils.py` shares data, binned losses, and checkpoint
   handling while objectives and optimization remain in scripts;
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
   using the existing Inception/MMD/Fréchet primitives.

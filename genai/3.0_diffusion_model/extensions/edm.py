@@ -1,7 +1,7 @@
 r"""EDM: preconditioning, log-normal training noise, weighted denoising, EMA.
 
 The training noise distribution is independent of the rho-shaped sampling
-grid. 2.2 compares Euler/Heun using this same frozen EMA denoiser.
+grid. solver_comparison.py compares Euler/Heun using this frozen EMA denoiser.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from tqdm import tqdm
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.edm import EDMPreconditioner, sample_edm
 from dl_utils.diffusion.lesson_utils import (
-    NoiseLossBins,
+    BinnedLoss,
     add_training_arguments,
     append_record,
     make_image_loader,
@@ -94,7 +94,7 @@ def train(args):
 
     for epoch in range(start, args.epochs + 1):
         model.train()
-        meter = NoiseLossBins()
+        meter = BinnedLoss()
         for clean, _ in tqdm(loader, desc=f"EDM {epoch}/{args.epochs}"):
             clean = clean.to(device, non_blocking=True)
             per_image, log_sigma = edm_loss(

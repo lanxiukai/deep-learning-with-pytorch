@@ -61,6 +61,8 @@ def main():
         args.checkpoint, device
     )
     kind = checkpoint["algorithm"]
+    if kind == "flow_matching":
+        raise ValueError("Use 3.1_flow_sampling.py for a direct velocity checkpoint.")
     path = None
     if kind in ("vp_ddpm", "improved_ddpm"):
         path = DiscreteVPPath(process)

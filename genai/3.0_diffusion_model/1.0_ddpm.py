@@ -2,7 +2,7 @@ r"""DDPM: q(x_t|x_0), epsilon regression, EMA, and free-generation monitoring.
 
 Default: full CelebA train split, 128x128 RGB, fixed posterior variance,
 linear beta schedule. Optional x0/v/score targets expose VP conversions.
-Improved DDPM has its own lesson and a different output/loss contract.
+Follow with 1.1 DDIM, which changes generation while keeping this model fixed.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from tqdm import tqdm
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.lesson_utils import (
-    NoiseLossBins,
+    BinnedLoss,
     add_training_arguments,
     append_record,
     make_image_loader,
@@ -46,10 +46,12 @@ def parse_args():
 
 
 def denoising_loss(model, diffusion, clean, prediction_type):
-    time = torch.randint(diffusion.num_steps, (len(clean),), device=clean.device)
-    noise = torch.randn_like(clean)
-    noisy = diffusion.q_sample(clean, time, noise)
-    target = diffusion.training_target(clean, noise, time, prediction_type)
+    # Python index 0 represents the paper's first NOISY state, not clean x_0.
+    with torch.no_grad():
+        time = torch.randint(diffusion.num_steps, (len(clean),), device=clean.device)
+        noise = torch.randn_like(clean)
+        noisy = diffusion.q_sample(clean, time, noise)
+        target = diffusion.training_target(clean, noise, time, prediction_type)
     residual = model(noisy, time) - target
     if prediction_type == "score":
         residual = diffusion.noise_scale(time, clean) * residual
@@ -98,7 +100,8 @@ def train(args):
 
     for epoch in range(start, args.epochs + 1):
         model.train()
-        meter = NoiseLossBins()
+        meter = BinnedLoss()
+        gradient_sum = 0.0
         for clean, _ in tqdm(loader, desc=f"DDPM {epoch}/{args.epochs}"):
             clean = clean.to(device, non_blocking=True)
             per_image, time = denoising_loss(
@@ -107,12 +110,27 @@ def train(args):
             loss = per_image.mean()  # L_simple, mean over images and pixels.
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            gradient_sum += float(
+                torch.nn.utils.get_total_norm(
+                    [
+                        parameter.grad
+                        for parameter in model.parameters()
+                        if parameter.grad is not None
+                    ],
+                    error_if_nonfinite=True,
+                )
+            )
             optimizer.step()
             update_ema(averaged, model, args.ema_decay)
             meter.update(per_image, time / (diffusion.num_steps - 1))
         append_record(
             args.output_dir / "training.jsonl",
-            {"epoch": epoch, "noise_coordinate": "t/(T-1)", **meter.result()},
+            {
+                "epoch": epoch,
+                "noise_coordinate": "t/(T-1)",
+                "gradient_norm": gradient_sum / len(loader),
+                **meter.result(),
+            },
         )
         save_checkpoint(
             args.output_dir / "latest.pth",
