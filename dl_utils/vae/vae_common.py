@@ -46,12 +46,11 @@ def diagonal_gaussian_kl_from_logvar(
     if p_mu is None:
         return 0.5 * (q_mu.square() + q_logvar.exp() - 1.0 - q_logvar)
     return 0.5 * (
-        p_logvar
-        - q_logvar
+        p_logvar - q_logvar
         + torch.exp(q_logvar - p_logvar)
         + (q_mu - p_mu).square() * torch.exp(-p_logvar)
         - 1.0
-    )
+    )  # (B, latent_dim)
 
 
 def diagonal_gaussian_log_density(

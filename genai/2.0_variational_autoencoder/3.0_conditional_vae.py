@@ -87,23 +87,28 @@ def conditional_vae_loss(
         .flatten(1)
         .sum(dim=1)
         .mean()
-    )  # distortion: scalar ()
+    )  # mean distortion per sample: scalar ()
     rate_per_dimension = diagonal_gaussian_kl_from_logvar(
         statistics["q_mu"],
         statistics["q_logvar"],
         statistics["p_mu"],
         statistics["p_logvar"],
-    )  # 
-    rate = rate_per_dimension.sum(dim=1).mean()
+    )  # (B, latent_dim)
+    rate = rate_per_dimension.sum(dim=1).mean()  # mean rate per sample: scalar ()
     return distortion + rate, {
         "distortion": distortion.detach(),
         "rate": rate.detach(),
-        "active_units": (rate_per_dimension.mean(dim=0) > 0.05).sum().detach(),
-    }
+        "num_active_latent_dimensions": (
+            rate_per_dimension.mean(dim=0) > 0.05
+        ).sum().detach(),
+    }  # loss, terms
 
 
 def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose([transforms.Resize((32, 32)), transforms.ToTensor()])
+    transform = transforms.Compose([
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+    ])
     train_set = datasets.MNIST(
         PROJECT_ROOT / "data" / "mnist",
         train=True,
@@ -129,10 +134,12 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
 
 
 def _accumulate(
-    totals: dict[str, float], metrics: dict[str, Tensor], batch_size: int
+    total_metrics: dict[str, float], metrics: dict[str, Tensor], batch_size: int
 ) -> None:
     for name, value in metrics.items():
-        totals[name] = totals.get(name, 0.0) + float(value) * batch_size
+        total_metrics[name] = (
+            total_metrics.get(name, 0.0) + float(value) * batch_size
+        )
 
 
 @torch.inference_mode()
@@ -142,16 +149,21 @@ def evaluate_cvae(
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
-    totals: dict[str, float] = {}
-    examples = 0
+    # Accumulated metric totals across all batches.
+    total_metrics: dict[str, float] = {}
+    total_examples = 0  # Total number of examples processed.
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         reconstruction, statistics = model(images, labels)
         loss, terms = conditional_vae_loss(reconstruction, images, statistics)
-        _accumulate(totals, {"loss": loss.detach(), **terms}, images.shape[0])
-        examples += images.shape[0]
-    return {name: value / examples for name, value in totals.items()}
+        _accumulate(
+            total_metrics, {"loss": loss.detach(), **terms}, images.shape[0]
+        )
+        total_examples += images.shape[0]
+    return {
+        name: value / total_examples for name, value in total_metrics.items()
+    }
 
 
 def _save_conditional_samples(
@@ -188,8 +200,8 @@ def train_cvae(
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
-        totals: dict[str, float] = {}
-        examples = 0
+        total_metrics: dict[str, float] = {}
+        total_examples = 0
         for images, labels in train_loader:
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
@@ -199,13 +211,15 @@ def train_cvae(
             loss.backward()
             optimizer.step()
             _accumulate(
-                totals,
+                total_metrics,
                 {"loss": loss.detach(), **terms},
                 images.shape[0],
             )
-            examples += images.shape[0]
+            total_examples += images.shape[0]
 
-        train_metrics = {name: value / examples for name, value in totals.items()}
+        train_metrics = {
+            name: value / total_examples for name, value in total_metrics.items()
+        }
         validation_metrics = evaluate_cvae(model, validation_loader, device)
         print(
             f"{variant} epoch {epoch:03d}: "

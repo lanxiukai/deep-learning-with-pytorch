@@ -124,12 +124,11 @@ class ConditionalVAE(nn.Module):
         z = reparameterize_logvar(q_mu, q_logvar)  # (B, latent_dim)
         reconstruction = self.decode(z, labels)    # (B, 1, 32, 32)
         return reconstruction, {
-            "z": z,
             "q_mu": q_mu,
             "q_logvar": q_logvar,
             "p_mu": p_mu,
             "p_logvar": p_logvar,
-        }
+        }  # reconstruction, statistics
 
 
 __all__ = [
