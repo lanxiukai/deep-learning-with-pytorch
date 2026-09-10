@@ -24,7 +24,7 @@ class ConditionalDecoder(nn.Module):
         self.input = nn.Sequential(
             nn.Linear(latent_dim + condition_dim, hidden_channels * 4 * 4),
             nn.SiLU(),
-        )  # (S*B, latent_dim + condition_dim) -> (S*B, hidden_channels * 4 * 4)
+        )  # (B, latent_dim + condition_dim) -> (B, hidden_channels * 4 * 4)
         self.net = nn.Sequential(
             nn.Unflatten(1, (hidden_channels, 4, 4)),
             nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
@@ -35,20 +35,12 @@ class ConditionalDecoder(nn.Module):
             nn.SiLU(),
             nn.ConvTranspose2d(hidden_channels // 4, 1, 4, 2, 1),
             nn.Sigmoid(),
-        )  # (S*B, hidden_channels, 4, 4) -> (S*B, 1, 32, 32)
+        )  # (B, hidden_channels, 4, 4) -> (B, 1, 32, 32)
 
     def forward(self, z: Tensor, condition: Tensor) -> Tensor:
-        # Typical shapes: z: (B, latent_dim), condition: (B, condition_dim).
-        # For S latent samples per example, use z: (S, B, latent_dim) and
-        # condition: (S, B, condition_dim).
-        # Preserve all leading dimensions so they can be restored after decoding.
-        leading_shape = z.shape[:-1]
-        features = torch.cat((z, condition), dim=-1).reshape(
-            -1, z.shape[-1] + condition.shape[-1]
-        )  # (S*B, latent_dim + condition_dim)
-        images = self.net(self.input(features))
-        # images: (B, 1, 32, 32) or (S, B, 1, 32, 32)
-        return images.reshape(*leading_shape, 1, 32, 32)
+        # z: (B, latent_dim), condition: (B, condition_dim)
+        features = torch.cat((z, condition), dim=1)
+        return self.net(self.input(features))  # (B, 1, 32, 32)
 
 
 class ConditionalVAE(nn.Module):
@@ -105,10 +97,7 @@ class ConditionalVAE(nn.Module):
 
     def decode(self, z: Tensor, labels: Tensor) -> Tensor:
         """Return the Bernoulli mean p(x | z, c)."""
-        flat_labels = labels.reshape(-1)
-        condition = self.condition_embedding(flat_labels).reshape(
-            *labels.shape, self.condition_dim
-        )
+        condition = self.condition_embedding(labels)
         return self.decoder(z, condition)
 
     def generate(self, labels: Tensor) -> Tensor:
