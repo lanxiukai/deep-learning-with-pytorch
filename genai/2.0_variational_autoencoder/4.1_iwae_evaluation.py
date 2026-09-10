@@ -53,8 +53,8 @@ from torchvision.utils import save_image
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.inference import (
-    GaussianVAE32,
+from dl_utils.vae.iwae import (
+    GaussianVAE,
     importance_log_weights,
     log_mean_exp,
 )
@@ -99,18 +99,18 @@ def make_test_loader(device: torch.device) -> DataLoader:
     )
 
 
-def load_model(path: Path, device: torch.device) -> GaussianVAE32:
+def load_model(path: Path, device: torch.device) -> GaussianVAE:
     checkpoint = torch.load(path, map_location=device, weights_only=True)
     if checkpoint.get("model_name") != "iwae":
         raise ValueError(f"{path} is not an IWAE checkpoint")
-    model = GaussianVAE32(**checkpoint["model_config"])
+    model = GaussianVAE(**checkpoint["model_config"])
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval()
 
 
 @torch.inference_mode()
 def evaluate_model(
-    model: GaussianVAE32,
+    model: GaussianVAE,
     loader: DataLoader,
     *,
     particles: int,
@@ -190,7 +190,7 @@ def evaluate_model(
 
 @torch.inference_mode()
 def save_model_comparison(
-    model: GaussianVAE32,
+    model: GaussianVAE,
     loader: DataLoader,
     path: Path,
     *,

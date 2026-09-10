@@ -51,12 +51,11 @@ from tqdm.auto import tqdm
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.inference import (
-    GaussianVAE32,
+from dl_utils.vae.iwae import (
+    GaussianVAE,
     importance_diagnostics,
     importance_log_weights,
     log_mean_exp,
-    model_config,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
 
@@ -117,7 +116,7 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
 
 @torch.inference_mode()
 def evaluate_bound(
-    model: GaussianVAE32,
+    model: GaussianVAE,
     loader: DataLoader,
     *,
     particles: int,
@@ -154,11 +153,12 @@ def train_one(
     device: torch.device,
 ) -> None:
     set_seed(SEED)
-    model = GaussianVAE32(
-        latent_dim=LATENT_DIM,
-        hidden_channels=HIDDEN_CHANNELS,
-        context_dim=CONTEXT_DIM,
-    ).to(device)
+    model_config = {
+        "latent_dim": LATENT_DIM,
+        "hidden_channels": HIDDEN_CHANNELS,
+        "context_dim": CONTEXT_DIM,
+    }
+    model = GaussianVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     out_dir = OUTPUT_ROOT / f"k{particles}"
     if not out_dir.exists():
@@ -223,7 +223,7 @@ def train_one(
         {
             "state_dict": model.state_dict(),
             "model_name": "iwae",
-            "model_config": model_config(model),
+            "model_config": model_config,
             "validation": validation,
         },
         out_dir / CHECKPOINT_NAME,

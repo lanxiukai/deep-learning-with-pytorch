@@ -15,7 +15,7 @@ from dl_utils.vae.vae_common import (
 )
 
 
-class GaussianVAE32(nn.Module):
+class GaussianVAE(nn.Module):
     """Compact Bernoulli VAE with an explicit particle-shaped posterior API."""
 
     def __init__(
@@ -116,7 +116,7 @@ def bernoulli_log_density(mean: Tensor, target: Tensor) -> Tensor:
 
 
 def importance_log_weights(
-    model: GaussianVAE32,
+    model: GaussianVAE,
     images: Tensor,
     *,
     particles: int,
@@ -177,20 +177,11 @@ def importance_diagnostics(
     }
 
 
-def model_config(model: GaussianVAE32) -> dict[str, int]:
-    return {
-        "latent_dim": model.latent_dim,
-        "hidden_channels": model.hidden_channels,
-        "context_dim": model.context_dim,
-    }
-
-
 __all__ = [
-    "GaussianVAE32",
+    "GaussianVAE",
     "bernoulli_log_density",
     "importance_diagnostics",
     "importance_log_weights",
     "log_mean_exp",
-    "model_config",
     "standard_normal_log_density",
 ]
