@@ -87,35 +87,37 @@ class ConditionalVAE(nn.Module):
         zeros = self.condition_embedding.weight.new_zeros(
             labels.shape[0], self.latent_dim
         )
-        return zeros, zeros
+        return zeros, zeros  # p_mu, p_logvar (B, latent_dim)
 
     def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""
+        # images: (B, 1, 32, 32), labels: (B,)
         condition = self.condition_embedding(labels)  # (B, condition_dim)
         features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(
             self.posterior(torch.cat((features, condition), dim=1))
-        )  # mu, logvar (B, latent_dim)
+        )  # q_mu, q_logvar (B, latent_dim)
 
     def decode(self, z: Tensor, labels: Tensor) -> Tensor:
         """Return the Bernoulli mean p(x | z, c)."""
-        condition = self.condition_embedding(labels)
-        return self.decoder(z, condition)
+        # z: (B, latent_dim), labels: (B,)
+        condition = self.condition_embedding(labels)  # (B, condition_dim)
+        return self.decoder(z, condition)  # (B, 1, 32, 32)
 
     def generate(self, labels: Tensor) -> Tensor:
-        """Sample z ~ N(0, I), then decode it with the requested class."""
-        z = torch.randn(
-            labels.shape[0],
-            self.latent_dim,
-            device=labels.device,
-        )
-        return self.decode(z, labels)
+        """Sample z from p(z | c), then decode it with the requested class."""
+        # The prior p(z | c) is the latent reference for the KL term and generation.
+        p_mu, p_logvar = self.prior(labels)
+        z = reparameterize_logvar(p_mu, p_logvar)  # (B, latent_dim)
+        return self.decode(z, labels)  # (B, 1, 32, 32)
 
     def forward(self, images: Tensor, labels: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+        # images: (B, 1, 32, 32), labels: (B,)
+        # mu, logvar: (B, latent_dim)
         q_mu, q_logvar = self.encode(images, labels)
         p_mu, p_logvar = self.prior(labels)
-        z = reparameterize_logvar(q_mu, q_logvar)
-        reconstruction = self.decode(z, labels)
+        z = reparameterize_logvar(q_mu, q_logvar)  # (B, latent_dim)
+        reconstruction = self.decode(z, labels)    # (B, 1, 32, 32)
         return reconstruction, {
             "z": z,
             "q_mu": q_mu,

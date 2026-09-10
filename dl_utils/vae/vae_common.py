@@ -19,15 +19,16 @@ def split_gaussian_parameters(
     raw: Tensor, *, dimension: int = 1, minimum: float = -12.0, maximum: float = 12.0
 ) -> tuple[Tensor, Tensor]:
     """Split a tensor into mean/log-variance and bound the exponential range."""
+    # raw: (B, 2 * latent_dim)
     mu, logvar = raw.chunk(2, dim=dimension)
-    return mu, logvar.clamp(minimum, maximum)
+    return mu, logvar.clamp(minimum, maximum)  # (B, latent_dim)
 
 
 def reparameterize_logvar(mu: Tensor, logvar: Tensor) -> Tensor:
     """Draw ``N(mu, exp(logvar))`` with the reparameterization trick."""
     if mu.shape != logvar.shape:
         raise ValueError("mu and logvar must have matching shapes")
-    return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)
+    return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)  # (B, latent_dim)
 
 
 def diagonal_gaussian_kl_from_logvar(
