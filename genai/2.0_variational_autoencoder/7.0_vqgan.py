@@ -326,99 +326,103 @@ def train_tokenizer(
     )
     global_step = 0
     training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
+    if not training_dir.exists():
+        reset_dir(str(training_dir))
     history = []
-    for epoch in range(1, TOKENIZER_EPOCHS + 1):
-        model.train()
-        discriminator.train()
-        sums = torch.zeros(9, device=device)
-        examples = 0
-        usage = TokenUsageAccumulator(CODEBOOK_SIZE)
-        preview = None
-        progress = tqdm(
-            train_loader,
-            desc=f"vqgan {epoch}/{TOKENIZER_EPOCHS}",
-            mininterval=PROGRESS_INTERVAL,
-        )
-        for images, _ in progress:
-            images = images.to(device, non_blocking=True)
-            reconstruction, indices, metrics = vqgan_autoencoder_step(
-                model,
-                discriminator,
-                perceptual,
-                images,
-                ae_optimizer,
-                step=global_step,
-                discriminator_start=DISCRIMINATOR_START,
-                perceptual_weight=PERCEPTUAL_WEIGHT,
-                vq_weight=VQ_WEIGHT,
-                discriminator_weight=DISCRIMINATOR_WEIGHT,
-            )
-            d_metrics = vqgan_discriminator_step(
-                discriminator,
-                images,
-                reconstruction,
-                d_optimizer,
-                step=global_step,
-                discriminator_start=DISCRIMINATOR_START,
-            )
-            values = [
-                metrics["autoencoder"],
-                metrics["pixel_l1"],
-                metrics["perceptual"],
-                metrics["vq"],
-                metrics["generator_adversarial"],
-                metrics["adversarial_scale"],
-                d_metrics["discriminator"],
-                d_metrics["real_logit"],
-                d_metrics["fake_logit"],
-            ]
-            sums += torch.stack(values) * images.shape[0]
-            usage.update(indices)
-            examples += images.shape[0]
-            global_step += 1
-            progress.set_postfix(
-                ae=f"{float(sums[0]) / examples:.4f}",
-                d=f"{float(sums[6]) / examples:.4f}",
-                refresh=False,
-            )
-            preview = (
-                images[:RECONSTRUCTION_SAMPLES].detach(),
-                reconstruction[:RECONSTRUCTION_SAMPLES].detach(),
-            )
-        if preview is None:
-            raise ValueError("training loader produced no batches; reduce batch size")
-        means = (sums / examples).tolist()
-        epoch_usage = usage.statistics()
-        history.append(
-            dict(
-                zip(
-                    (
-                        "autoencoder",
-                        "pixel_l1",
-                        "perceptual",
-                        "vq",
-                        "generator_adversarial",
-                        "adversarial_scale",
-                        "discriminator",
-                        "real_logit",
-                        "fake_logit",
-                    ),
-                    means,
+    with tqdm(
+        total=TOKENIZER_EPOCHS * len(train_loader),
+        desc=f"vqgan 1/{TOKENIZER_EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, TOKENIZER_EPOCHS + 1):
+            progress.set_description(f"vqgan {epoch}/{TOKENIZER_EPOCHS}", refresh=False)
+            model.train()
+            discriminator.train()
+            sums = torch.zeros(9, device=device)
+            examples = 0
+            usage = TokenUsageAccumulator(CODEBOOK_SIZE)
+            preview = None
+            for images, _ in train_loader:
+                images = images.to(device, non_blocking=True)
+                reconstruction, indices, metrics = vqgan_autoencoder_step(
+                    model,
+                    discriminator,
+                    perceptual,
+                    images,
+                    ae_optimizer,
+                    step=global_step,
+                    discriminator_start=DISCRIMINATOR_START,
+                    perceptual_weight=PERCEPTUAL_WEIGHT,
+                    vq_weight=VQ_WEIGHT,
+                    discriminator_weight=DISCRIMINATOR_WEIGHT,
                 )
+                d_metrics = vqgan_discriminator_step(
+                    discriminator,
+                    images,
+                    reconstruction,
+                    d_optimizer,
+                    step=global_step,
+                    discriminator_start=DISCRIMINATOR_START,
+                )
+                values = [
+                    metrics["autoencoder"],
+                    metrics["pixel_l1"],
+                    metrics["perceptual"],
+                    metrics["vq"],
+                    metrics["generator_adversarial"],
+                    metrics["adversarial_scale"],
+                    d_metrics["discriminator"],
+                    d_metrics["real_logit"],
+                    d_metrics["fake_logit"],
+                ]
+                sums += torch.stack(values) * images.shape[0]
+                usage.update(indices)
+                examples += images.shape[0]
+                global_step += 1
+                progress.set_postfix(
+                    ae=f"{float(sums[0]) / examples:.4f}",
+                    d=f"{float(sums[6]) / examples:.4f}",
+                    refresh=False,
+                )
+                progress.update(1)
+                preview = (
+                    images[:RECONSTRUCTION_SAMPLES].detach(),
+                    reconstruction[:RECONSTRUCTION_SAMPLES].detach(),
+                )
+            if preview is None:
+                raise ValueError("training loader produced no batches; reduce batch size")
+            means = (sums / examples).tolist()
+            epoch_usage = usage.statistics()
+            history.append(
+                dict(
+                    zip(
+                        (
+                            "autoencoder",
+                            "pixel_l1",
+                            "perceptual",
+                            "vq",
+                            "generator_adversarial",
+                            "adversarial_scale",
+                            "discriminator",
+                            "real_logit",
+                            "fake_logit",
+                        ),
+                        means,
+                    )
+                )
+                | {
+                    "perplexity": float(epoch_usage["perplexity"]),
+                    "active_codes": float(epoch_usage["active_codes"]),
+                    "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
+                }
             )
-            | {
-                "perplexity": float(epoch_usage["perplexity"]),
-                "active_codes": float(epoch_usage["active_codes"]),
-                "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
-            }
-        )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            save_image(
-                torch.cat(preview).mul(0.5).add(0.5),
-                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                nrow=RECONSTRUCTION_SAMPLES,
-            )
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+                save_image(
+                    torch.cat(preview).mul(0.5).add(0.5),
+                    training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                    nrow=RECONSTRUCTION_SAMPLES,
+                )
     validation = validate_tokenizer(
         model,
         discriminator,
@@ -467,59 +471,63 @@ def train_prior(
     ).to(device)
     optimizer = torch.optim.AdamW(prior.parameters(), lr=PRIOR_LR)
     training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
+    if not training_dir.exists():
+        reset_dir(str(training_dir))
     history = []
-    for epoch in range(1, PRIOR_EPOCHS + 1):
-        prior.train()
-        nll_sum = 0.0
-        examples = 0
-        progress = tqdm(
-            train_loader,
-            desc=f"Transformer {epoch}/{PRIOR_EPOCHS}",
-            mininterval=PROGRESS_INTERVAL,
-        )
-        for images, labels in progress:
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            # Frozen tokens still participate in the prior's backward pass.
-            with torch.no_grad():
-                indices = tokenizer.encode_indices(images)
-            logits, targets = prior.teacher_forcing(indices, labels)
-            loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            nll_sum += loss.item() * images.shape[0]
-            examples += images.shape[0]
-            progress.set_postfix(
-                nll=f"{nll_sum / examples:.4f}",
-                bpt=f"{nll_sum / examples / math.log(2):.3f}",
-                refresh=False,
-            )
-        nll = nll_sum / examples
-        history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
-            with torch.inference_mode():
-                prior.eval()
-                labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
-                indices = prior.sample(
-                    labels.shape[0],
-                    device=device,
-                    labels=labels,
-                    temperature=TEMPERATURE,
-                ).reshape(labels.shape[0], LATENT_GRID_SIZE, LATENT_GRID_SIZE)
-                samples = tokenizer.decode_indices(indices)
-                save_image(
-                    samples.mul(0.5).add(0.5),
-                    training_dir / f"prior_epoch_{epoch:03d}.png",
-                    nrow=NUM_CLASSES,
+    with tqdm(
+        total=PRIOR_EPOCHS * len(train_loader),
+        desc=f"Transformer 1/{PRIOR_EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, PRIOR_EPOCHS + 1):
+            progress.set_description(f"Transformer {epoch}/{PRIOR_EPOCHS}", refresh=False)
+            prior.train()
+            nll_sum = 0.0
+            examples = 0
+            for images, labels in train_loader:
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                # Frozen tokens still participate in the prior's backward pass.
+                with torch.no_grad():
+                    indices = tokenizer.encode_indices(images)
+                logits, targets = prior.teacher_forcing(indices, labels)
+                loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                nll_sum += loss.item() * images.shape[0]
+                examples += images.shape[0]
+                progress.set_postfix(
+                    nll=f"{nll_sum / examples:.4f}",
+                    bpt=f"{nll_sum / examples / math.log(2):.3f}",
+                    refresh=False,
                 )
-                if epoch == PRIOR_EPOCHS:
+                progress.update(1)
+            nll = nll_sum / examples
+            history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
+                with torch.inference_mode():
+                    prior.eval()
+                    labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
+                    indices = prior.sample(
+                        labels.shape[0],
+                        device=device,
+                        labels=labels,
+                        temperature=TEMPERATURE,
+                    ).reshape(labels.shape[0], LATENT_GRID_SIZE, LATENT_GRID_SIZE)
+                    samples = tokenizer.decode_indices(indices)
                     save_image(
                         samples.mul(0.5).add(0.5),
-                        out_dir / "prior_samples.png",
+                        training_dir / f"prior_epoch_{epoch:03d}.png",
                         nrow=NUM_CLASSES,
                     )
+                    if epoch == PRIOR_EPOCHS:
+                        save_image(
+                            samples.mul(0.5).add(0.5),
+                            out_dir / "prior_samples.png",
+                            nrow=NUM_CLASSES,
+                        )
     validation = validate_prior(
         tokenizer,
         prior,
@@ -561,7 +569,9 @@ def train() -> None:
         num_workers=WORKERS,
         attribute=CELEBA_SMILING_ATTRIBUTE,
     )
-    reset_dir(str(out_dir))
+    if not out_dir.exists():
+        reset_dir(str(out_dir))
+    reset_dir(str(out_dir / "training"))
     tokenizer = train_tokenizer(
         train_loader,
         validation_loader,

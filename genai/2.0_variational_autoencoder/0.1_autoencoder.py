@@ -164,7 +164,8 @@ def train_epoch(
 
 
 def main() -> None:
-    reset_dir(str(OUT_DIR))
+    if not OUT_DIR.exists():
+        reset_dir(str(OUT_DIR))
     reset_dir(str(TRAINING_DIR))
     set_seed(SEED)
     device = try_gpu()

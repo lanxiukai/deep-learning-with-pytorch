@@ -10,6 +10,7 @@ Data:
 Outputs:
     output/vae/vae/training/epoch_*.png: fixed-z prior samples
     output/vae/vae/vae.pth: final model checkpoint
+    output/vae/vae/vae_metrics.csv: epoch, total, reconstruction, and unweighted KL
     output/vae/vae/loss_curves.png: total, reconstruction, and KL panels
 
 Training data -- glasses-256:

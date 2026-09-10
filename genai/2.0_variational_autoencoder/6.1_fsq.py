@@ -164,60 +164,64 @@ def train_tokenizer(
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     vocabulary_size = model.quantizer.codebook_size
     training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
+    if not training_dir.exists():
+        reset_dir(str(training_dir))
     history = []
-    for epoch in range(1, TOKENIZER_EPOCHS + 1):
-        model.train()
-        sums = torch.zeros(2, device=device)
-        examples = 0
-        usage = TokenUsageAccumulator(vocabulary_size)
-        preview = None
-        progress = tqdm(
-            train_loader,
-            desc=f"fsq {epoch}/{TOKENIZER_EPOCHS}",
-            mininterval=PROGRESS_INTERVAL,
-        )
-        for images, _ in progress:
-            images = images.to(device, non_blocking=True)
-            reconstruction, indices, diagnostics = model(images)
-            loss = F.mse_loss(reconstruction, images)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            values = [
-                loss.detach(),
-                diagnostics["quantization_mse"],
-            ]
-            sums += torch.stack(values) * images.shape[0]
-            usage.update(indices)
-            examples += images.shape[0]
-            progress.set_postfix(
-                loss=f"{float(sums[0]) / examples:.4f}",
-                quant=f"{float(sums[1]) / examples:.4f}",
-                refresh=False,
+    with tqdm(
+        total=TOKENIZER_EPOCHS * len(train_loader),
+        desc=f"fsq 1/{TOKENIZER_EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, TOKENIZER_EPOCHS + 1):
+            progress.set_description(f"fsq {epoch}/{TOKENIZER_EPOCHS}", refresh=False)
+            model.train()
+            sums = torch.zeros(2, device=device)
+            examples = 0
+            usage = TokenUsageAccumulator(vocabulary_size)
+            preview = None
+            for images, _ in train_loader:
+                images = images.to(device, non_blocking=True)
+                reconstruction, indices, diagnostics = model(images)
+                loss = F.mse_loss(reconstruction, images)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                values = [
+                    loss.detach(),
+                    diagnostics["quantization_mse"],
+                ]
+                sums += torch.stack(values) * images.shape[0]
+                usage.update(indices)
+                examples += images.shape[0]
+                progress.set_postfix(
+                    loss=f"{float(sums[0]) / examples:.4f}",
+                    quant=f"{float(sums[1]) / examples:.4f}",
+                    refresh=False,
+                )
+                progress.update(1)
+                preview = (
+                    images[:RECONSTRUCTION_SAMPLES].detach(),
+                    reconstruction[:RECONSTRUCTION_SAMPLES].detach(),
+                )
+            if preview is None:
+                raise ValueError("training loader produced no batches; reduce batch size")
+            means = (sums / examples).tolist()
+            epoch_usage = usage.statistics()
+            history.append(
+                dict(zip(("mse", "quantization_mse"), means))
+                | {
+                    "perplexity": float(epoch_usage["perplexity"]),
+                    "active_codes": float(epoch_usage["active_codes"]),
+                    "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
+                }
             )
-            preview = (
-                images[:RECONSTRUCTION_SAMPLES].detach(),
-                reconstruction[:RECONSTRUCTION_SAMPLES].detach(),
-            )
-        if preview is None:
-            raise ValueError("training loader produced no batches; reduce batch size")
-        means = (sums / examples).tolist()
-        epoch_usage = usage.statistics()
-        history.append(
-            dict(zip(("mse", "quantization_mse"), means))
-            | {
-                "perplexity": float(epoch_usage["perplexity"]),
-                "active_codes": float(epoch_usage["active_codes"]),
-                "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
-            }
-        )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            save_image(
-                torch.cat(preview).mul(0.5).add(0.5),
-                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                nrow=RECONSTRUCTION_SAMPLES,
-            )
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+                save_image(
+                    torch.cat(preview).mul(0.5).add(0.5),
+                    training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                    nrow=RECONSTRUCTION_SAMPLES,
+                )
     validation = evaluate_tokenizer(model, validation_loader, device=device)
     save_training_metrics(
         history, out_dir, prefix="tokenizer", max_panels=MAX_METRIC_PANELS
@@ -253,41 +257,48 @@ def train_prior(
     ).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=PRIOR_LR)
     training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
+    if not training_dir.exists():
+        reset_dir(str(training_dir))
     history = []
-    for epoch in range(1, PRIOR_EPOCHS + 1):
-        nll = train_pixelcnn_prior_epoch(
-            tokenizer,
-            prior,
-            train_loader,
-            optimizer,
-            device,
-            progress_desc=f"PixelCNN {epoch}/{PRIOR_EPOCHS}",
-            progress_interval=PROGRESS_INTERVAL,
-        )
-        history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
-            prior.eval()
-            labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
-            samples = sample_pixelcnn_prior_images(
+    with tqdm(
+        total=PRIOR_EPOCHS * len(train_loader),
+        desc=f"PixelCNN 1/{PRIOR_EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, PRIOR_EPOCHS + 1):
+            progress.set_description(f"PixelCNN {epoch}/{PRIOR_EPOCHS}", refresh=False)
+            nll = train_pixelcnn_prior_epoch(
                 tokenizer,
                 prior,
-                labels,
-                grid_size=LATENT_GRID_SIZE,
-                device=device,
-                temperature=TEMPERATURE,
+                train_loader,
+                optimizer,
+                device,
+                progress=progress,
             )
-            save_image(
-                samples.mul(0.5).add(0.5),
-                training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=NUM_CLASSES,
-            )
-            if epoch == PRIOR_EPOCHS:
+            history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
+                prior.eval()
+                labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
+                samples = sample_pixelcnn_prior_images(
+                    tokenizer,
+                    prior,
+                    labels,
+                    grid_size=LATENT_GRID_SIZE,
+                    device=device,
+                    temperature=TEMPERATURE,
+                )
                 save_image(
                     samples.mul(0.5).add(0.5),
-                    out_dir / "prior_samples.png",
+                    training_dir / f"prior_epoch_{epoch:03d}.png",
                     nrow=NUM_CLASSES,
                 )
+                if epoch == PRIOR_EPOCHS:
+                    save_image(
+                        samples.mul(0.5).add(0.5),
+                        out_dir / "prior_samples.png",
+                        nrow=NUM_CLASSES,
+                    )
     validation = evaluate_pixelcnn_prior(
         tokenizer,
         prior,
@@ -331,7 +342,9 @@ def train() -> None:
         num_workers=WORKERS,
         attribute=CELEBA_SMILING_ATTRIBUTE,
     )
-    reset_dir(str(out_dir))
+    if not out_dir.exists():
+        reset_dir(str(out_dir))
+    reset_dir(str(out_dir / "training"))
     tokenizer = train_tokenizer(train_loader, validation_loader, device, out_dir)
     train_prior(
         tokenizer,

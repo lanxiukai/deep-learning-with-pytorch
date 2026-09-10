@@ -124,15 +124,13 @@ def train_pixelcnn_prior_epoch(
     optimizer: Optimizer,
     device: torch.device,
     *,
-    progress_desc: str = "PixelCNN",
-    progress_interval: float = 0.5,
+    progress: tqdm,
 ) -> float:
     """Train one causal-prior epoch over frozen tokenizer indices."""
     prior.train()
     nll_sum = 0.0
     examples = 0
-    progress = tqdm(loader, desc=progress_desc, mininterval=progress_interval)
-    for images, labels in progress:
+    for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         # The prior's embedding backward must be able to save these indices.
@@ -149,6 +147,7 @@ def train_pixelcnn_prior_epoch(
             bpt=f"{nll_sum / examples / math.log(2):.3f}",
             refresh=False,
         )
+        progress.update(1)
     return nll_sum / examples
 
 

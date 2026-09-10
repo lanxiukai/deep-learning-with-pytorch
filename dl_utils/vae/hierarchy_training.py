@@ -116,76 +116,80 @@ def train_hierarchy(
     progress_interval: float,
     max_metric_panels: int,
 ) -> None:
-    reset_dir(str(out_dir))
+    if not out_dir.exists():
+        reset_dir(str(out_dir))
     training_dir = out_dir / "training"
-    training_dir.mkdir()
+    reset_dir(str(training_dir))
     history = []
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     warmup_updates = round(warmup_epochs * len(train_loader))
     update = 0
-    for epoch in range(1, epochs + 1):
-        model.train()
-        totals = torch.zeros(4, device=device)
-        examples = 0
-        active = ActiveUnitAccumulator()
-        progress = tqdm(
-            train_loader,
-            desc=f"{model_name} {epoch}/{epochs}",
-            mininterval=progress_interval,
-        )
-        for images, _ in progress:
-            update += 1
-            images = images.to(device, non_blocking=True)
-            reconstruction, latents = model(images)
-            kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
-            loss, terms = hierarchical_vae_loss(
-                reconstruction,
-                images,
-                latents,
-                kl_weight=kl_weight,
-                free_bits=free_bits,
-            )
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            totals += (
-                torch.stack(
-                    [
-                        loss.detach(),
-                        terms["distortion"],
-                        terms["kl_z1"],
-                        terms["kl_z2"],
-                    ]
+    with tqdm(
+        total=epochs * len(train_loader),
+        desc=f"{model_name} 1/{epochs}",
+        unit="batch",
+        mininterval=progress_interval,
+    ) as progress:
+        for epoch in range(1, epochs + 1):
+            progress.set_description(f"{model_name} {epoch}/{epochs}", refresh=False)
+            model.train()
+            totals = torch.zeros(4, device=device)
+            examples = 0
+            active = ActiveUnitAccumulator()
+            for images, _ in train_loader:
+                update += 1
+                images = images.to(device, non_blocking=True)
+                reconstruction, latents = model(images)
+                kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
+                loss, terms = hierarchical_vae_loss(
+                    reconstruction,
+                    images,
+                    latents,
+                    kl_weight=kl_weight,
+                    free_bits=free_bits,
                 )
-                * images.shape[0]
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                totals += (
+                    torch.stack(
+                        [
+                            loss.detach(),
+                            terms["distortion"],
+                            terms["kl_z1"],
+                            terms["kl_z2"],
+                        ]
+                    )
+                    * images.shape[0]
+                )
+                examples += images.shape[0]
+                active.update(latents)
+                progress.set_postfix(
+                    loss=f"{float(totals[0]) / examples:.3f}",
+                    refresh=False,
+                )
+                progress.update(1)
+            values = (totals / examples).tolist()
+            active_z1, active_z2 = active.counts(
+                variance_threshold=active_variance_threshold
             )
-            examples += images.shape[0]
-            active.update(latents)
-            progress.set_postfix(
-                loss=f"{float(totals[0]) / examples:.3f}",
-                refresh=False,
+            history.append(
+                dict(zip(("loss", "distortion", "kl_z1", "kl_z2"), values))
+                | {
+                    "active_z1": float(active_z1),
+                    "active_z2": float(active_z2),
+                    "kl_weight": warmup_weight(update, warmup_updates=warmup_updates),
+                }
             )
-        values = (totals / examples).tolist()
-        active_z1, active_z2 = active.counts(
-            variance_threshold=active_variance_threshold
-        )
-        history.append(
-            dict(zip(("loss", "distortion", "kl_z1", "kl_z2"), values))
-            | {
-                "active_z1": float(active_z1),
-                "active_z2": float(active_z2),
-                "kl_weight": warmup_weight(update, warmup_updates=warmup_updates),
-            }
-        )
-        if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
-            model.eval()
-            with torch.inference_mode():
-                samples = model.sample(sample_count, device=device)
-            save_image(
-                samples,
-                training_dir / f"epoch_{epoch:03d}.png",
-                nrow=sample_grid_columns,
-            )
+            if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
+                model.eval()
+                with torch.inference_mode():
+                    samples = model.sample(sample_count, device=device)
+                save_image(
+                    samples,
+                    training_dir / f"epoch_{epoch:03d}.png",
+                    nrow=sample_grid_columns,
+                )
 
     validation = evaluate_hierarchy(
         model,

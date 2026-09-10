@@ -19,7 +19,7 @@ from dl_utils.plot.figures import save_loss_panels
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
-from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.training.metrics import MetricAccumulator, save_metrics_csv
 
 type _VAELossFunction = Callable[
     [Tensor, Tensor, Tensor, Tensor],
@@ -224,7 +224,8 @@ def train_glasses_vae(
     if num_epochs < 1 or sample_every_epochs < 1:
         raise ValueError("epoch counts must be positive")
 
-    reset_dir(str(output_path))
+    if not output_path.exists():
+        reset_dir(str(output_path))
     reset_dir(str(training_path))
     set_seed(seed)
     device = try_gpu()
@@ -291,6 +292,7 @@ def train_glasses_vae(
                     columns=sample_grid_columns,
                 )
 
+    save_metrics_csv(loss_history, output_path / f"{model_name}_metrics.csv")
     checkpoint_metadata = {
         "model_name": model_name,
         "model_config": dict(model_config),

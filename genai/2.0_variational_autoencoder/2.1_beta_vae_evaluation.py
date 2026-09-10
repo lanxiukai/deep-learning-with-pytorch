@@ -40,7 +40,6 @@ Loaded total:                126.66 M parameters
 
 from __future__ import annotations
 
-import argparse
 import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -62,11 +61,16 @@ from dl_utils.vae.vae import VAE, diagonal_gaussian_kl
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-DEFAULT_STANDARD_CHECKPOINT = OUTPUT_ROOT / "vae" / "vae.pth"
-DEFAULT_BETA_CHECKPOINT = OUTPUT_ROOT / "beta_vae" / "beta_vae.pth"
-DEFAULT_OUTPUT_DIR = OUTPUT_ROOT / "beta_vae" / "evaluation"
+DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
+STANDARD_CHECKPOINT = OUTPUT_ROOT / "vae" / "vae.pth"
+BETA_CHECKPOINT = OUTPUT_ROOT / "beta_vae" / "beta_vae.pth"
+OUTPUT_DIR = OUTPUT_ROOT / "beta_vae" / "evaluation"
 
+BATCH_SIZE = 16
+MAXIMUM_BATCHES = 100
+ACTIVE_KL_THRESHOLD = 0.05
+NUM_WORKERS = 0
+SEED = 42
 NUM_COMPARISON_IMAGES = 8
 NUM_PRIOR_SAMPLES = 18
 PRIOR_GRID_COLUMNS = 6
@@ -245,29 +249,29 @@ def save_summary_plot(
         plt.close(figure)
 
 
-def analyze(args: argparse.Namespace) -> None:
-    if not args.data.is_dir():
-        raise FileNotFoundError(f"dataset not found: {args.data}")
-    set_seed(args.seed)
+def analyze() -> None:
+    if not DATA_DIR.is_dir():
+        raise FileNotFoundError(f"dataset not found: {DATA_DIR}")
+    set_seed(SEED)
     device = try_gpu()
     standard_model, standard_info = load_checkpoint(
-        args.standard_checkpoint, device
+        STANDARD_CHECKPOINT, device
     )
-    beta_model, beta_info = load_checkpoint(args.beta_checkpoint, device)
+    beta_model, beta_info = load_checkpoint(BETA_CHECKPOINT, device)
     if standard_info.model_name != "vae":
-        raise ValueError("--standard-checkpoint must contain the standard VAE")
+        raise ValueError("STANDARD_CHECKPOINT must contain the standard VAE")
     if beta_info.model_name != "beta_vae":
-        raise ValueError("--beta-checkpoint must contain a beta-VAE")
+        raise ValueError("BETA_CHECKPOINT must contain a beta-VAE")
     if standard_info.model_config != beta_info.model_config:
         raise ValueError("compared checkpoints must use the same model_config")
 
     loader = DataLoader(
-        image_folder_dataset(args.data),
-        batch_size=args.batch_size,
+        image_folder_dataset(DATA_DIR),
+        batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=args.workers,
+        num_workers=NUM_WORKERS,
         pin_memory=device.type == "cuda",
-        persistent_workers=args.workers > 0,
+        persistent_workers=NUM_WORKERS > 0,
     )
     fixed_z = torch.randn(
         NUM_PRIOR_SAMPLES, standard_info.z_dim, device=device
@@ -283,8 +287,8 @@ def analyze(args: argparse.Namespace) -> None:
             model,
             loader,
             info=info,
-            maximum_batches=args.maximum_batches,
-            active_kl_threshold=args.active_kl_threshold,
+            maximum_batches=MAXIMUM_BATCHES,
+            active_kl_threshold=ACTIVE_KL_THRESHOLD,
             fixed_z=fixed_z,
             device=device,
         )
@@ -297,9 +301,9 @@ def analyze(args: argparse.Namespace) -> None:
             f"active_KL={result.active_kl_dimensions}/{info.z_dim}"
         )
 
-    reset_dir(str(args.output))
+    reset_dir(str(OUTPUT_DIR))
     for run_name, comparison, prior_samples in artifacts:
-        run_dir = args.output / run_name
+        run_dir = OUTPUT_DIR / run_name
         reset_dir(str(run_dir))
         save_image(
             comparison,
@@ -315,7 +319,7 @@ def analyze(args: argparse.Namespace) -> None:
         "protocol": {
             "dataset": "glasses-256",
             "distortion": "posterior-mean summed-pixel MSE per image",
-            "active_kl_threshold_nats": args.active_kl_threshold,
+            "active_kl_threshold_nats": ACTIVE_KL_THRESHOLD,
             "interpretation_warning": (
                 "Capacity diagnostics do not establish semantic "
                 "disentanglement without ground-truth factors."
@@ -323,54 +327,15 @@ def analyze(args: argparse.Namespace) -> None:
         },
         "runs": [asdict(result) for result in results],
     }
-    (args.output / "metrics.json").write_text(
+    (OUTPUT_DIR / "metrics.json").write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
-    save_summary_plot(results, args.output / "beta_comparison.png")
-    print(f"saved evaluation to {args.output}")
-
-
-def smoke_test() -> None:
-    rate, per_dimension, active = summarize_kl(
-        torch.tensor([0.0, 0.2, 1.0], dtype=torch.float64),
-        examples=2,
-        active_kl_threshold=0.05,
-    )
-    assert rate == 0.6
-    assert per_dimension == [0.0, 0.1, 0.5]
-    assert active == 2
-    print("smoke test passed: rate and active dimensions are correct")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument(
-        "--standard-checkpoint",
-        type=Path,
-        default=DEFAULT_STANDARD_CHECKPOINT,
-    )
-    parser.add_argument(
-        "--beta-checkpoint",
-        type=Path,
-        default=DEFAULT_BETA_CHECKPOINT,
-    )
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--maximum-batches", type=int, default=100)
-    parser.add_argument("--active-kl-threshold", type=float, default=0.05)
-    parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args()
+    save_summary_plot(results, OUTPUT_DIR / "beta_comparison.png")
+    print(f"saved evaluation to {OUTPUT_DIR}")
 
 
 def main() -> None:
-    args = parse_args()
-    if args.smoke_test:
-        smoke_test()
-    else:
-        analyze(args)
+    analyze()
 
 
 if __name__ == "__main__":

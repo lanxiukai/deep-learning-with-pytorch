@@ -16,8 +16,11 @@ Data:
     data/mnist, downloaded automatically by torchvision when absent.
 
 Outputs:
-    output/vae/conditional_vae/<variant>/conditional_vae.pth: final variant checkpoint
-    output/vae/conditional_vae/<variant>/conditional_samples.png: class grid
+    output/vae/conditional_vae/conditional_vae.pth: final checkpoint
+    output/vae/conditional_vae/conditional_samples.png: final class grid
+    output/vae/conditional_vae/training/epoch_*.png: saved after each selected epoch's validation
+    output/vae/conditional_vae/cvae_metrics.csv: saved after all training epochs
+    output/vae/conditional_vae/cvae_metrics_*.png: final metric curves
 
 Training data -- MNIST:
 Training images:          60,000
@@ -64,12 +67,12 @@ from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "mnist"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "conditional_vae" / "standard-prior"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "conditional_vae"
 CHECKPOINT_NAME = "conditional_vae.pth"
 NUM_CLASSES = 10
 IMAGE_SIZE = 32
 SAMPLES_PER_CLASS = 8
-SAMPLE_EVERY = 5
+SAMPLE_EVERY = 5  # Save after epochs 1, 5, 10, ... and the final epoch.
 ACTIVE_RATE_THRESHOLD = 0.05
 PROGRESS_INTERVAL = 0.5
 MAX_METRIC_PANELS = 4
@@ -199,9 +202,10 @@ def train_cvae(
     device: torch.device,
 ) -> None:
     out_dir = OUTPUT_DIR
-    reset_dir(str(out_dir))
     training_dir = out_dir / "training"
-    training_dir.mkdir()
+    if not out_dir.exists():
+        reset_dir(str(out_dir))
+    reset_dir(str(training_dir))
     history = []
     model_config = {
         "num_classes": NUM_CLASSES,
@@ -212,48 +216,58 @@ def train_cvae(
     model = ConditionalVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 
-    for epoch in range(1, EPOCHS + 1):
-        model.train()
-        total_metrics: dict[str, float] = {}
-        total_examples = 0
-        progress = tqdm(
-            train_loader, desc=f"CVAE {epoch}/{EPOCHS}", mininterval=PROGRESS_INTERVAL
-        )
-        for images, labels in progress:
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            reconstruction, statistics = model(images, labels)
-            loss, terms = conditional_vae_loss(reconstruction, images, statistics)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            _accumulate(
-                total_metrics,
-                {"loss": loss.detach(), **terms},
-                images.shape[0],
-            )
-            total_examples += images.shape[0]
-            progress.set_postfix(
-                loss=f"{total_metrics['loss'] / total_examples:.3f}",
-                refresh=False,
-            )
+    with tqdm(
+        total=EPOCHS * len(train_loader),
+        desc=f"CVAE 1/{EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, EPOCHS + 1):
+            progress.set_description(f"CVAE {epoch}/{EPOCHS}", refresh=False)
+            model.train()
+            total_metrics: dict[str, float] = {}
+            total_examples = 0
+            for images, labels in train_loader:
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
+                reconstruction, statistics = model(images, labels)
+                loss, terms = conditional_vae_loss(reconstruction, images, statistics)
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                _accumulate(
+                    total_metrics,
+                    {"loss": loss.detach(), **terms},
+                    images.shape[0],
+                )
+                total_examples += images.shape[0]
+                progress.set_postfix(
+                    loss=f"{total_metrics['loss'] / total_examples:.3f}",
+                    refresh=False,
+                )
+                progress.update(1)
 
-        train_metrics = {
-            name: value / total_examples for name, value in total_metrics.items()
-        }
-        validation_metrics = evaluate_cvae(model, validation_loader, device)
-        history.append(
-            {
-                **{f"train_{name}": value for name, value in train_metrics.items()},
-                **{f"val_{name}": value for name, value in validation_metrics.items()},
+            train_metrics = {
+                name: value / total_examples for name, value in total_metrics.items()
             }
-        )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
-            _save_conditional_samples(
-                model, training_dir / f"epoch_{epoch:03d}.png", device=device
+            validation_metrics = evaluate_cvae(model, validation_loader, device)
+            history.append(
+                {
+                    **{f"train_{name}": value for name, value in train_metrics.items()},
+                    **{f"val_{name}": value for name, value in validation_metrics.items()},
+                }
             )
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
+                _save_conditional_samples(
+                    model, training_dir / f"epoch_{epoch:03d}.png", device=device
+                )
 
-    save_training_metrics(history, out_dir, prefix="cvae", max_panels=MAX_METRIC_PANELS)
+    save_training_metrics(
+        history,
+        out_dir,
+        prefix="cvae",
+        max_panels=MAX_METRIC_PANELS,
+    )
     torch.save(
         {
             "state_dict": model.state_dict(),

@@ -1,4 +1,4 @@
-"""Save VAE epoch metrics as paginated panels and training-only raw data."""
+"""Save VAE epoch metric CSV files and paginated panels in each run root."""
 
 from pathlib import Path
 
@@ -13,12 +13,12 @@ def save_training_metrics(
     prefix: str,
     max_panels: int,
 ) -> None:
-    """Keep curves in the run root and their numeric values in training/."""
+    """Keep metric curves and their numeric values together in the run root."""
     metrics = {name: [row[name] for row in history] for name in history[0]}
     epochs = list(range(1, len(history) + 1))
     save_metrics_csv(
         {"epoch": epochs, **metrics},
-        out_dir / "training" / f"{prefix}_metrics.csv",
+        out_dir / f"{prefix}_metrics.csv",
     )
     names = list(metrics)
     for start in range(0, len(names), max_panels):

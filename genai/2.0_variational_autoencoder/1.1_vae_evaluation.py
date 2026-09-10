@@ -40,11 +40,9 @@ Model size:
 Frozen standard VAE:         63.33 M parameters
 """
 
-import argparse
 import json
 import math
 from itertools import islice
-from pathlib import Path
 
 import torch
 from torchvision.utils import save_image
@@ -59,15 +57,15 @@ from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.vae import VAE, diagonal_gaussian_kl, reparameterize
 
 PROJECT_ROOT = infer_project_root()
-DEFAULT_CHECKPOINT = PROJECT_ROOT / "output" / "vae" / "vae" / "vae.pth"
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vae" / "evaluation"
+CHECKPOINT = PROJECT_ROOT / "output" / "vae" / "vae" / "vae.pth"
+DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vae" / "evaluation"
 
-DEFAULT_BATCH_SIZE = 16
-DEFAULT_MAXIMUM_BATCHES = 100
-DEFAULT_ACTIVE_VARIANCE_THRESHOLD = 1e-2
-DEFAULT_NUM_WORKERS = 0
-DEFAULT_SEED = 42
+BATCH_SIZE = 16
+MAXIMUM_BATCHES = 100
+ACTIVE_VARIANCE_THRESHOLD = 1e-2
+NUM_WORKERS = 0
+SEED = 42
 NUM_COMPARISON_IMAGES = 8
 NUM_PRIOR_SAMPLES = 18
 PRIOR_GRID_COLUMNS = 6
@@ -171,34 +169,14 @@ def evaluate(
     return metrics, comparison, prior_samples, interpolation
 
 
-def smoke_test(device):
-    """Check the distinct reconstruction and prior paths on a tiny batch."""
-    torch.manual_seed(7)
-    z_dim = 2
-    model = VAE(z_dim=z_dim).to(device).eval()
-    images = torch.rand(2, 3, 256, 256, device=device)
-    with torch.inference_mode():
-        mu, std = model.encoder.statistics(images)
-        mean_reconstructions = model.decoder(mu)
-        sample_reconstructions = model.decoder(reparameterize(mu, std))
-        prior_samples = model.decoder(torch.randn(2, z_dim, device=device))
-    kl_nats_per_image = float(
-        diagonal_gaussian_kl(mu, std).sum(dim=1).mean()
-    )
-    assert mean_reconstructions.shape == sample_reconstructions.shape == images.shape
-    assert prior_samples.shape == images.shape
-    assert kl_nats_per_image >= 0
-    print("smoke test passed: reconstruction and prior paths are distinct")
-
-
-def analyze(args, device):
+def analyze(device):
     """Load the final checkpoint and write all standard-VAE diagnostics."""
-    if not args.checkpoint.is_file():
+    if not CHECKPOINT.is_file():
         raise FileNotFoundError(
-            f"checkpoint not found at {args.checkpoint}; run 1.0_vae.py first"
+            f"checkpoint not found at {CHECKPOINT}; run 1.0_vae.py first"
         )
     model, model_config = load_model_weights(
-        args.checkpoint,
+        CHECKPOINT,
         VAE,
         device=device,
         expected_metadata={"model_name": "vae"},
@@ -208,37 +186,37 @@ def analyze(args, device):
         raise ValueError("checkpoint model_config has an invalid z_dim")
 
     loader = image_folder_loader(
-        args.data,
-        batch_size=args.batch_size,
+        DATA_DIR,
+        batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=args.workers,
+        num_workers=NUM_WORKERS,
         pin_memory=device.type == "cuda",
     )
     metrics, comparison, prior_samples, interpolation = evaluate(
         model,
         loader,
         z_dim=z_dim,
-        maximum_batches=args.maximum_batches,
-        active_variance_threshold=args.active_variance_threshold,
+        maximum_batches=MAXIMUM_BATCHES,
+        active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
         device=device,
     )
-    reset_dir(str(args.output))
+    reset_dir(str(OUTPUT_DIR))
     save_image(
         comparison,
-        args.output / "real_mean_and_sample_reconstruction.png",
+        OUTPUT_DIR / "real_mean_and_sample_reconstruction.png",
         nrow=comparison.shape[0] // 3,
     )
     save_image(
         prior_samples,
-        args.output / "standard_normal_prior_samples.png",
+        OUTPUT_DIR / "standard_normal_prior_samples.png",
         nrow=PRIOR_GRID_COLUMNS,
     )
     save_image(
         interpolation,
-        args.output / "posterior_mean_interpolation_not_generation.png",
+        OUTPUT_DIR / "posterior_mean_interpolation_not_generation.png",
         nrow=len(interpolation),
     )
-    with (args.output / "metrics.json").open("w", encoding="utf-8") as metrics_file:
+    with (OUTPUT_DIR / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, indent=2)
     console_metrics = {
         "posterior_mean_reconstruction": metrics["posterior_mean_reconstruction"],
@@ -254,40 +232,10 @@ def analyze(args, device):
     print(json.dumps(console_metrics, indent=2))
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default=DEFAULT_CHECKPOINT,
-    )
-    parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
-    parser.add_argument(
-        "--maximum-batches",
-        type=int,
-        default=DEFAULT_MAXIMUM_BATCHES,
-    )
-    parser.add_argument(
-        "--active-variance-threshold",
-        type=float,
-        default=DEFAULT_ACTIVE_VARIANCE_THRESHOLD,
-    )
-    parser.add_argument("--workers", type=int, default=DEFAULT_NUM_WORKERS)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    return parser.parse_args()
-
-
 def main():
-    args = parse_args()
-    set_seed(args.seed)
+    set_seed(SEED)
     device = try_gpu()
-    if args.smoke_test:
-        smoke_test(device)
-    else:
-        analyze(args, device)
+    analyze(device)
 
 
 if __name__ == "__main__":

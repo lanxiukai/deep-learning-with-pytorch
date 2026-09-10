@@ -161,50 +161,54 @@ def train_one(
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     out_dir = OUTPUT_ROOT / f"k{particles}"
-    reset_dir(str(out_dir))
+    if not out_dir.exists():
+        reset_dir(str(out_dir))
     training_dir = out_dir / "training"
-    training_dir.mkdir()
+    reset_dir(str(training_dir))
     history = []
-    for epoch in range(1, EPOCHS + 1):
-        model.train()
-        loss_sum = 0.0
-        ess_sum = 0.0
-        examples = 0
-        progress = tqdm(
-            train_loader,
-            desc=f"IWAE K={particles} {epoch}/{EPOCHS}",
-            mininterval=PROGRESS_INTERVAL,
-        )
-        for images, _ in progress:
-            images = images.to(device, non_blocking=True)
-            log_weights, terms = importance_log_weights(
-                model, images, particles=particles
+    with tqdm(
+        total=EPOCHS * len(train_loader),
+        desc=f"IWAE K={particles} 1/{EPOCHS}",
+        unit="batch",
+        mininterval=PROGRESS_INTERVAL,
+    ) as progress:
+        for epoch in range(1, EPOCHS + 1):
+            progress.set_description(f"IWAE K={particles} {epoch}/{EPOCHS}", refresh=False)
+            model.train()
+            loss_sum = 0.0
+            ess_sum = 0.0
+            examples = 0
+            for images, _ in train_loader:
+                images = images.to(device, non_blocking=True)
+                log_weights, terms = importance_log_weights(
+                    model, images, particles=particles
+                )
+                loss = -log_mean_exp(log_weights).mean()
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                diagnostics = importance_diagnostics(log_weights, terms)
+                loss_sum += loss.item() * images.shape[0]
+                ess_sum += float(diagnostics["ess_fraction"]) * images.shape[0]
+                examples += images.shape[0]
+                progress.set_postfix(
+                    loss=f"{loss_sum / examples:.3f}",
+                    ess=f"{ess_sum / examples:.3f}",
+                    refresh=False,
+                )
+                progress.update(1)
+            history.append(
+                {"loss": loss_sum / examples, "ess_fraction": ess_sum / examples}
             )
-            loss = -log_mean_exp(log_weights).mean()
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            diagnostics = importance_diagnostics(log_weights, terms)
-            loss_sum += loss.item() * images.shape[0]
-            ess_sum += float(diagnostics["ess_fraction"]) * images.shape[0]
-            examples += images.shape[0]
-            progress.set_postfix(
-                loss=f"{loss_sum / examples:.3f}",
-                ess=f"{ess_sum / examples:.3f}",
-                refresh=False,
-            )
-        history.append(
-            {"loss": loss_sum / examples, "ess_fraction": ess_sum / examples}
-        )
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
-            model.eval()
-            with torch.inference_mode():
-                samples = model.sample(SAMPLE_COUNT, device=device)
-            save_image(
-                samples,
-                training_dir / f"epoch_{epoch:03d}.png",
-                nrow=SAMPLE_GRID_COLUMNS,
-            )
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
+                model.eval()
+                with torch.inference_mode():
+                    samples = model.sample(SAMPLE_COUNT, device=device)
+                save_image(
+                    samples,
+                    training_dir / f"epoch_{epoch:03d}.png",
+                    nrow=SAMPLE_GRID_COLUMNS,
+                )
 
     validation = evaluate_bound(
         model,

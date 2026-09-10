@@ -1,57 +1,37 @@
-"""Evaluate cVAE generation paths that the training loss cannot validate.
+"""Evaluate a frozen cVAE checkpoint without training any model.
 
-This script trains a small MNIST classifier only as an evaluator,
-then measures:
-
-* class compliance after decoding z ~ N(0, I) with each label;
-* within-class feature diversity relative to real test images;
-* posterior-mean reconstruction and a decoder condition-shuffle intervention.
-
-The classifier is trained on MNIST train and checked on MNIST test. Its test
-accuracy provides context for the generation metrics; it is separate from
-the cVAE checkpoint and generation path.
+Generate digits 0-9 from the conditional prior p(z | c), compare real test
+images with posterior-mean reconstructions, and report reconstruction BCE
+and KL(q(z | x, c) || p(z | c)). Both metrics sum over dimensions and average
+per image; posterior-mean BCE is a deterministic reconstruction diagnostic.
 
 Data:
-    data/mnist, downloaded automatically by torchvision when absent. Digit
-    labels train the evaluator and condition the generator.
+    data/mnist, downloaded automatically by torchvision when absent.
+    Only the MNIST test split is loaded.
 
-Checkpoints:
-    output/vae/conditional_vae/standard-prior/conditional_vae.pth: required main model
+Checkpoint:
+    output/vae/conditional_vae/conditional_vae.pth: saved by 3.0_conditional_vae.py
 
 Outputs:
-    output/vae/conditional_vae/standard-prior/evaluation/metrics.json: complete comparison
-    output/vae/conditional_vae/standard-prior/evaluation/<variant>_conditional_samples.png
+    output/vae/conditional_vae/evaluation/metrics.json
+    output/vae/conditional_vae/evaluation/conditional_samples.png: one row per digit
+    output/vae/conditional_vae/evaluation/reconstructions.png: originals above reconstructions
 
-Evaluation data -- MNIST:
-Classifier training images:        60,000
-Classifier samples per epoch:      59,904 (234 full batches)
-Classifier epochs:                      3
-Classifier optimizer updates:         702
-Test images:                       10,000
-Batch size:                           256
-Generated samples per model:         1,280 (128 per class)
-Real diversity reference:            1,280 (128 per class)
-Maximum reconstruction examples:     5,000
-
-Default dimensions:
-Evaluation input:                  32x32 grayscale
-Generated image:                   32x32 grayscale
-Latent vector:                         16 values
-
-Model size:
-Standard-prior CVAE:                0.971 M parameters (required)
-Evaluator classifier:               0.056 M parameters
+Evaluation defaults:
+    Test images: 5,000 of 10,000; batch size: 256.
+    Generated images: 8 per digit; reconstruction comparisons: 8.
+    Input and generated images: 32x32 grayscale.
+    Model dimensions are loaded from the checkpoint.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
-from torch.utils.data import DataLoader
+from torch import Tensor
+from torch.utils.data import DataLoader, Subset
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
@@ -59,305 +39,114 @@ from tqdm.auto import tqdm
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.conditional_vae import (
-    ConditionalVAE,
-)
+from dl_utils.vae.conditional_vae import ConditionalVAE
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "mnist"
-IMAGE_SIZE = 32
-NUM_CLASSES = 10
-DISPLAY_SAMPLES_PER_CLASS = 8
-CLASSIFIER_LR = 1e-3
-PROGRESS_INTERVAL = 0.5
-DEFAULT_ROOT = PROJECT_ROOT / "output" / "vae" / "conditional_vae"
-
+CHECKPOINT = PROJECT_ROOT / "output" / "vae" / "conditional_vae" / "conditional_vae.pth"
+OUTPUT_DIR = CHECKPOINT.parent / "evaluation"
 
 # Edit these defaults to explore the lesson.
-CLASSIFIER_EPOCHS = 3
+IMAGE_SIZE = 32
 BATCH_SIZE = 256
-SAMPLES_PER_CLASS = 128
 MAX_RECONSTRUCTION_EXAMPLES = 5_000
+SAMPLES_PER_CLASS = 8
+NUM_COMPARISON_IMAGES = 8
 WORKERS = 4
 SEED = 123
-STANDARD_PRIOR_CHECKPOINT = DEFAULT_ROOT / "standard-prior" / "conditional_vae.pth"
-OUTPUT_DIR = STANDARD_PRIOR_CHECKPOINT.parent / "evaluation"
 
 
-class DigitClassifier32(nn.Module):
-    """Small task network used only to audit generated-condition compliance."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-        )
-        self.classifier = nn.Linear(64, NUM_CLASSES)
-
-    def encode(self, images: Tensor) -> Tensor:
-        return self.features(images)
-
-    def forward(self, images: Tensor) -> Tensor:
-        return self.classifier(self.encode(images))
-
-
-def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose(
-        [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
-    )
-    train_set = datasets.MNIST(
-        DATA_DIR,
-        train=True,
-        download=True,
-        transform=transform,
-    )
+def make_test_loader(device: torch.device) -> DataLoader:
     test_set = datasets.MNIST(
         DATA_DIR,
         train=False,
         download=True,
-        transform=transform,
+        transform=transforms.Compose(
+            [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
+        ),
     )
-    common = {
-        "batch_size": BATCH_SIZE,
-        "num_workers": WORKERS,
-        "pin_memory": device.type == "cuda",
-        "persistent_workers": WORKERS > 0,
-    }
-    return (
-        DataLoader(train_set, shuffle=True, drop_last=True, **common),
-        DataLoader(test_set, shuffle=False, drop_last=False, **common),
+    subset = Subset(test_set, range(min(MAX_RECONSTRUCTION_EXAMPLES, len(test_set))))
+    return DataLoader(
+        subset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=WORKERS,
+        pin_memory=device.type == "cuda",
+        persistent_workers=WORKERS > 0,
     )
 
 
-def train_classifier(
-    model: DigitClassifier32,
-    train_loader: DataLoader,
-    test_loader: DataLoader,
-    *,
-    epochs: int,
+@torch.inference_mode()
+def evaluate_reconstruction(
+    model: ConditionalVAE,
+    loader: DataLoader,
     device: torch.device,
-) -> float:
-    optimizer = torch.optim.Adam(model.parameters(), lr=CLASSIFIER_LR)
-    for epoch in range(1, epochs + 1):
-        model.train()
-        correct = 0
-        examples = 0
-        progress = tqdm(
-            train_loader,
-            desc=f"Classifier {epoch}/{epochs}",
-            mininterval=PROGRESS_INTERVAL,
-        )
+) -> tuple[dict[str, float | int], Tensor]:
+    model.eval()
+    reconstruction_total = 0.0
+    kl_total = 0.0
+    examples = 0
+    comparison = None
+    with tqdm(loader, desc="Evaluate CVAE", unit="batch", mininterval=0.5) as progress:
         for images, labels in progress:
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            logits = model(images)
-            loss = F.cross_entropy(logits, labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            correct += int((logits.argmax(dim=1) == labels).sum())
-            examples += images.shape[0]
-            progress.set_postfix(
-                loss=f"{loss.item():.4f}",
-                acc=f"{correct / examples:.4f}",
-                refresh=False,
+            q_mu, q_logvar = model.encode(images, labels)
+            p_mu, p_logvar = model.prior(labels)
+            reconstruction = model.decode(q_mu, labels)
+            reconstruction_total += float(
+                F.binary_cross_entropy(reconstruction, images, reduction="sum")
             )
-
-    model.eval()
-    correct = 0
-    examples = 0
-    with torch.inference_mode():
-        for images, labels in test_loader:
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
-            correct += int((model(images).argmax(dim=1) == labels).sum())
+            kl_total += float(
+                diagonal_gaussian_kl_from_logvar(q_mu, q_logvar, p_mu, p_logvar).sum()
+            )
             examples += images.shape[0]
-    return correct / examples
+            if comparison is None:
+                count = min(NUM_COMPARISON_IMAGES, images.shape[0])
+                comparison = torch.cat((images[:count], reconstruction[:count])).cpu()
 
-
-def _load_model(path: Path, device: torch.device) -> ConditionalVAE:
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
-    model = ConditionalVAE(**checkpoint["model_config"])
-    model.load_state_dict(checkpoint["state_dict"])
-    return model.to(device).eval()
-
-
-def _mean_pairwise_distance(features: Tensor) -> float:
-    if features.shape[0] < 2:
-        return 0.0
-    return float(torch.pdist(features.float(), p=2).mean())
+    if comparison is None:
+        raise ValueError("cannot evaluate an empty loader")
+    return {
+        "examples": examples,
+        "posterior_mean_reconstruction_bce_nats_per_image": reconstruction_total
+        / examples,
+        "kl_nats_per_image": kl_total / examples,
+    }, comparison
 
 
 @torch.inference_mode()
-def generation_metrics(
-    model: ConditionalVAE,
-    classifier: DigitClassifier32,
-    *,
-    samples_per_class: int,
-    device: torch.device,
-) -> tuple[dict[str, object], Tensor]:
-    labels = torch.arange(NUM_CLASSES, device=device).repeat_interleave(
-        samples_per_class
-    )
-    images = model.generate(labels)
-    features = classifier.encode(images)
-    probabilities = classifier(images).softmax(dim=1)
-    predictions = probabilities.argmax(dim=1)
-    per_class_compliance = []
-    per_class_diversity = []
-    for class_index in range(NUM_CLASSES):
-        mask = labels == class_index
-        per_class_compliance.append(
-            float((predictions[mask] == class_index).float().mean())
-        )
-        per_class_diversity.append(_mean_pairwise_distance(features[mask]))
-    return {
-        "condition_compliance": float((predictions == labels).float().mean()),
-        "target_probability": float(probabilities.gather(1, labels[:, None]).mean()),
-        "feature_diversity": sum(per_class_diversity) / NUM_CLASSES,
-        "per_class_compliance": per_class_compliance,
-        "per_class_feature_diversity": per_class_diversity,
-    }, images
-
-
-@torch.inference_mode()
-def real_diversity_reference(
-    loader: DataLoader,
-    classifier: DigitClassifier32,
-    *,
-    samples_per_class: int,
-    device: torch.device,
-) -> dict[str, object]:
-    buckets: list[list[Tensor]] = [[] for _ in range(NUM_CLASSES)]
-    for images, labels in loader:
-        for image, label in zip(images, labels):
-            bucket = buckets[int(label)]
-            if len(bucket) < samples_per_class:
-                bucket.append(image)
-        if all(len(bucket) == samples_per_class for bucket in buckets):
-            break
-    per_class = []
-    for bucket in buckets:
-        images = torch.stack(bucket).to(device)
-        per_class.append(_mean_pairwise_distance(classifier.encode(images)))
-    return {
-        "feature_diversity": sum(per_class) / NUM_CLASSES,
-        "per_class_feature_diversity": per_class,
-    }
-
-
-@torch.inference_mode()
-def posterior_and_shuffle_metrics(
-    model: ConditionalVAE,
-    loader: DataLoader,
-    *,
-    device: torch.device,
-    max_examples: int,
-) -> dict[str, float]:
-    correct_distortion = 0.0
-    shuffled_distortion = 0.0
-    rate = 0.0
-    posterior_prior_mean_gap = 0.0
-    examples = 0
-    for images, labels in loader:
-        remaining = max_examples - examples
-        if remaining <= 0:
-            break
-        images = images[:remaining].to(device, non_blocking=True)
-        labels = labels[:remaining].to(device, non_blocking=True)
-        q_mu, q_logvar = model.encode(images, labels)
-        p_mu, p_logvar = model.prior(labels)
-        correct = model.decode(q_mu, labels)
-        shuffled_labels = (labels + 1) % model.num_classes
-        shuffled = model.decode(q_mu, shuffled_labels)
-        correct_distortion += float(
-            F.binary_cross_entropy(correct, images, reduction="sum")
-        )
-        shuffled_distortion += float(
-            F.binary_cross_entropy(shuffled, images, reduction="sum")
-        )
-        rate += float(
-            diagonal_gaussian_kl_from_logvar(q_mu, q_logvar, p_mu, p_logvar).sum()
-        )
-        posterior_prior_mean_gap += float((q_mu - p_mu).square().sum())
-        examples += images.shape[0]
-    return {
-        "posterior_mean_distortion": correct_distortion / examples,
-        "shuffled_decoder_condition_distortion": (shuffled_distortion / examples),
-        "condition_shuffle_distortion_ratio": (
-            shuffled_distortion / correct_distortion
-        ),
-        "conditional_rate": rate / examples,
-        "posterior_prior_mean_squared_gap": (posterior_prior_mean_gap / examples),
-    }
-
-
 def evaluate() -> None:
     set_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _load_model(STANDARD_PRIOR_CHECKPOINT, device)
-    train_loader, test_loader = make_loaders(device)
-    classifier = DigitClassifier32().to(device)
-    classifier_accuracy = train_classifier(
-        classifier,
-        train_loader,
-        test_loader,
-        epochs=CLASSIFIER_EPOCHS,
-        device=device,
-    )
-    metrics, images = generation_metrics(
-        model,
-        classifier,
-        samples_per_class=SAMPLES_PER_CLASS,
-        device=device,
-    )
-    metrics.update(
-        posterior_and_shuffle_metrics(
-            model,
-            test_loader,
-            device=device,
-            max_examples=MAX_RECONSTRUCTION_EXAMPLES,
+    if not CHECKPOINT.is_file():
+        raise FileNotFoundError(
+            f"checkpoint not found: {CHECKPOINT}; run 3.0_conditional_vae.py first"
         )
+    checkpoint = torch.load(CHECKPOINT, map_location=device, weights_only=True)
+    model = ConditionalVAE(**checkpoint["model_config"]).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    model.eval()
+
+    metrics, comparison = evaluate_reconstruction(
+        model, make_test_loader(device), device
     )
-    results = {
-        "classifier_test_accuracy": classifier_accuracy,
-        "real_reference": real_diversity_reference(
-            test_loader,
-            classifier,
-            samples_per_class=SAMPLES_PER_CLASS,
-            device=device,
-        ),
-        "models": {"standard-prior": metrics},
-    }
-    out_dir = OUTPUT_DIR
-    reset_dir(str(out_dir))
-    display = images.reshape(NUM_CLASSES, SAMPLES_PER_CLASS, 1, IMAGE_SIZE, IMAGE_SIZE)[
-        :, :DISPLAY_SAMPLES_PER_CLASS
-    ].flatten(0, 1)
+    labels = torch.arange(model.num_classes, device=device).repeat_interleave(
+        SAMPLES_PER_CLASS
+    )
+    samples = model.generate(labels)
+
+    reset_dir(str(OUTPUT_DIR))
+    save_image(samples, OUTPUT_DIR / "conditional_samples.png", nrow=SAMPLES_PER_CLASS)
     save_image(
-        display,
-        out_dir / "standard-prior_conditional_samples.png",
-        nrow=min(DISPLAY_SAMPLES_PER_CLASS, SAMPLES_PER_CLASS),
+        comparison, OUTPUT_DIR / "reconstructions.png", nrow=comparison.shape[0] // 2
     )
-    (out_dir / "metrics.json").write_text(
-        json.dumps(results, indent=2) + "\n",
-        encoding="utf-8",
+    (OUTPUT_DIR / "metrics.json").write_text(
+        json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
     )
-    print(
-        f"classifier accuracy={classifier_accuracy:.4f}, "
-        f"condition compliance={metrics['condition_compliance']:.4f}, "
-        f"feature diversity={metrics['feature_diversity']:.4f}"
-    )
+    print(json.dumps(metrics, indent=2))
+    print(f"saved evaluation to {OUTPUT_DIR}")
 
 
 def main() -> None:
