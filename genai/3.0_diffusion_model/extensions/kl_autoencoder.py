@@ -54,7 +54,7 @@ def kl_autoencoder_step(
     discriminator: PatchDiscriminator,
     perceptual: nn.Module,
     reconstruction_logvar: Tensor,
-    x: Tensor,
+    images: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
     step: int,
@@ -64,9 +64,9 @@ def kl_autoencoder_step(
     discriminator_weight: float,
 ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
     """Update the autoencoder while keeping D frozen but differentiable."""
-    reconstruction, mu, logvar, _ = model(x)
-    pixel_map = (reconstruction - x).abs()
-    perceptual_per_sample = perceptual(reconstruction, x, reduction="none")
+    reconstruction, mu, logvar, _ = model(images)
+    pixel_map = (reconstruction - images).abs()
+    perceptual_per_sample = perceptual(reconstruction, images, reduction="none")
     feature_loss = perceptual_per_sample.mean()
     reconstruction_map = (
         pixel_map
@@ -91,7 +91,7 @@ def kl_autoencoder_step(
                 scale=discriminator_weight,
             )
         else:
-            adaptive = x.new_zeros(())
+            adaptive = images.new_zeros(())
         loss = nll + float(kl_weight) * kl + adaptive * adversarial
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -116,7 +116,7 @@ def kl_autoencoder_step(
 
 def discriminator_step(
     discriminator: PatchDiscriminator,
-    x: Tensor,
+    images: Tensor,
     reconstruction: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
@@ -125,9 +125,9 @@ def discriminator_step(
 ) -> dict[str, Tensor]:
     """Update D from real images and detached posterior reconstructions."""
     if step < discriminator_start:
-        zero = x.new_zeros(())
+        zero = images.new_zeros(())
         return {"discriminator": zero, "real_logit": zero, "fake_logit": zero}
-    real_logits = discriminator(x)
+    real_logits = discriminator(images)
     fake_logits = discriminator(reconstruction.detach())
     loss = 0.5 * discriminator_hinge_loss(real_logits, fake_logits)
     optimizer.zero_grad(set_to_none=True)
@@ -161,11 +161,11 @@ def estimate_latent_interface(
     values_per_channel = 0
     examples = 0
     batches = 0
-    for batch_index, (x, _) in enumerate(loader):
+    for batch_index, (images, _) in enumerate(loader):
         if batch_index >= maximum_batches:
             break
-        x = x.to(device, non_blocking=True)
-        mu, logvar = model.encode(x)
+        images = images.to(device, non_blocking=True)
+        mu, logvar = model.encode(images)
         mu = mu.double()
         logvar = logvar.double()
         variance = logvar.exp()
@@ -227,38 +227,38 @@ def evaluate(
     examples = 0
     comparison = None
     normal_decode = None
-    for x, _ in loader:
-        x = x.to(device, non_blocking=True)
-        mu, logvar = model.encode(x)
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        mu, logvar = model.encode(images)
         mean_reconstruction = model.decoder(mu)
         sample_reconstruction = model.decoder(reparameterize_logvar(mu, logvar))
-        mean_mse = F.mse_loss(mean_reconstruction, x)
-        sample_mse = F.mse_loss(sample_reconstruction, x)
+        mean_mse = F.mse_loss(mean_reconstruction, images)
+        sample_mse = F.mse_loss(sample_reconstruction, images)
         values = torch.stack(
             [
-                F.l1_loss(mean_reconstruction, x),
+                F.l1_loss(mean_reconstruction, images),
                 mean_mse,
-                structural_similarity_index(mean_reconstruction, x),
-                perceptual(mean_reconstruction, x),
-                F.l1_loss(sample_reconstruction, x),
+                structural_similarity_index(mean_reconstruction, images),
+                perceptual(mean_reconstruction, images),
+                F.l1_loss(sample_reconstruction, images),
                 sample_mse,
-                structural_similarity_index(sample_reconstruction, x),
-                perceptual(sample_reconstruction, x),
+                structural_similarity_index(sample_reconstruction, images),
+                perceptual(sample_reconstruction, images),
                 F.mse_loss(sample_reconstruction, mean_reconstruction),
                 diagonal_gaussian_kl_from_logvar(mu, logvar)
                 .flatten(1)
                 .sum(dim=1)
                 .mean(),
-                discriminator(x).mean(),
+                discriminator(images).mean(),
                 discriminator(mean_reconstruction).mean(),
                 discriminator(sample_reconstruction).mean(),
             ]
         ).double()
-        totals += values * x.shape[0]
-        examples += x.shape[0]
+        totals += values * images.shape[0]
+        examples += images.shape[0]
         if comparison is None:
             comparison = torch.cat(
-                (x[:8], mean_reconstruction[:8], sample_reconstruction[:8])
+                (images[:8], mean_reconstruction[:8], sample_reconstruction[:8])
             ).cpu()
             normal_decode = model.decoder(torch.randn_like(mu[:8])).cpu()
     if examples == 0 or comparison is None or normal_decode is None:
@@ -378,14 +378,14 @@ def train(args: argparse.Namespace) -> None:
         discriminator.train()
         sums = torch.zeros(10, device=device)
         examples = 0
-        for x, _ in train_loader:
-            x = x.to(device, non_blocking=True)
+        for images, _ in train_loader:
+            images = images.to(device, non_blocking=True)
             reconstruction, _, _, metrics = kl_autoencoder_step(
                 model,
                 discriminator,
                 perceptual,
                 reconstruction_logvar,
-                x,
+                images,
                 optimizer,
                 step=global_step,
                 discriminator_start=args.discriminator_start,
@@ -395,14 +395,14 @@ def train(args: argparse.Namespace) -> None:
             )
             d_metrics = discriminator_step(
                 discriminator,
-                x,
+                images,
                 reconstruction,
                 d_optimizer,
                 step=global_step,
                 discriminator_start=args.discriminator_start,
             )
-            sums += torch.stack([*metrics.values(), *d_metrics.values()]) * x.shape[0]
-            examples += x.shape[0]
+            sums += torch.stack([*metrics.values(), *d_metrics.values()]) * images.shape[0]
+            examples += images.shape[0]
             global_step += 1
         means = (sums / examples).tolist()
         print(
@@ -416,9 +416,9 @@ def train(args: argparse.Namespace) -> None:
         if epoch == 1 or epoch % args.sample_every == 0:
             model.eval()
             with torch.inference_mode():
-                deterministic = model.reconstruct(x[:8])
+                deterministic = model.reconstruct(images[:8])
             save_image(
-                torch.cat((x[:8], deterministic)).mul(0.5).add(0.5),
+                torch.cat((images[:8], deterministic)).mul(0.5).add(0.5),
                 out_dir / f"reconstruction_{epoch:03d}.png",
                 nrow=8,
             )

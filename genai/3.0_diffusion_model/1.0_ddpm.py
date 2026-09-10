@@ -82,7 +82,7 @@ def train(args):
     prepare_output(args)
     monitor = DiffusionQualityMonitor(args, device) if args.eval_every else None
     print(
-        f"CelebA training_batches={len(loader)}; RGB={args.image_size}; parameters={sum(p.numel() for p in model.parameters()):,}"
+        f"CelebA training_batches={len(loader)}; RGB={args.image_size}; parameters={sum(parameter.numel() for parameter in model.parameters()):,}"
     )
 
     def sample_batch(count, generator):

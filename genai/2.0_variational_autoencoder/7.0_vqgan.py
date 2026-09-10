@@ -133,7 +133,7 @@ def vqgan_autoencoder_step(
     model: VQPerceptualAutoencoder,
     discriminator: PatchDiscriminator,
     perceptual: nn.Module,
-    x: Tensor,
+    images: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
     step: int,
@@ -142,14 +142,14 @@ def vqgan_autoencoder_step(
     vq_weight: float,
     discriminator_weight: float,
 ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-    reconstruction, indices, vq_loss, diagnostics = model(x)
-    pixel_l1 = F.l1_loss(reconstruction, x)
-    perceptual_loss = perceptual(reconstruction, x)
+    reconstruction, indices, vq_loss, diagnostics = model(images)
+    pixel_l1 = F.l1_loss(reconstruction, images)
+    perceptual_loss = perceptual(reconstruction, images)
     reconstruction_objective = pixel_l1 + float(perceptual_weight) * perceptual_loss
 
     discriminator.requires_grad_(False)
     adversarial = generator_hinge_loss(discriminator(reconstruction))
-    adversarial_scale = x.new_tensor(
+    adversarial_scale = images.new_tensor(
         discriminator_weight if step >= discriminator_start else 0.0
     )
     loss = (
@@ -177,7 +177,7 @@ def vqgan_autoencoder_step(
 
 def vqgan_discriminator_step(
     discriminator: PatchDiscriminator,
-    x: Tensor,
+    images: Tensor,
     reconstruction: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
@@ -185,9 +185,9 @@ def vqgan_discriminator_step(
     discriminator_start: int,
 ) -> dict[str, Tensor]:
     if step < discriminator_start:
-        zero = x.new_zeros(())
+        zero = images.new_zeros(())
         return {"discriminator": zero, "real_logit": zero, "fake_logit": zero}
-    real_logits = discriminator(x)
+    real_logits = discriminator(images)
     fake_logits = discriminator(reconstruction.detach())
     loss = 0.5 * discriminator_hinge_loss(real_logits, fake_logits)
     optimizer.zero_grad(set_to_none=True)
@@ -217,26 +217,26 @@ def validate_tokenizer(
     totals = torch.zeros(5, device=device)
     examples = 0
     usage = TokenUsageAccumulator(vocabulary_size)
-    for x, _ in loader:
+    for images, _ in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
-        reconstruction, indices, _, diagnostics = model(x)
+        images = images[:remaining].to(device, non_blocking=True)
+        reconstruction, indices, _, diagnostics = model(images)
         totals += (
             torch.stack(
                 [
-                    F.l1_loss(reconstruction, x),
-                    perceptual(reconstruction, x),
+                    F.l1_loss(reconstruction, images),
+                    perceptual(reconstruction, images),
                     diagnostics["quantization_mse"],
-                    discriminator(x).mean(),
+                    discriminator(images).mean(),
                     discriminator(reconstruction).mean(),
                 ]
             )
-            * x.shape[0]
+            * images.shape[0]
         )
         usage.update(indices)
-        examples += x.shape[0]
+        examples += images.shape[0]
     if examples == 0:
         raise ValueError("tokenizer validation observed no examples")
     values = (totals / examples).tolist()
@@ -273,17 +273,17 @@ def validate_prior(
     prior.eval()
     nll = 0.0
     examples = 0
-    for x, labels in loader:
+    for images, labels in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
+        images = images[:remaining].to(device, non_blocking=True)
         labels = labels[:remaining].to(device, non_blocking=True)
-        indices = tokenizer.encode_indices(x)
+        indices = tokenizer.encode_indices(images)
         logits, targets = prior.teacher_forcing(indices, labels)
         loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-        nll += float(loss) * x.shape[0]
-        examples += x.shape[0]
+        nll += float(loss) * images.shape[0]
+        examples += images.shape[0]
     if examples == 0:
         raise ValueError("prior validation observed no examples")
     nll /= examples
@@ -325,13 +325,13 @@ def train_tokenizer(
         examples = 0
         usage = TokenUsageAccumulator(CODEBOOK_SIZE)
         preview = None
-        for x, _ in train_loader:
-            x = x.to(device, non_blocking=True)
+        for images, _ in train_loader:
+            images = images.to(device, non_blocking=True)
             reconstruction, indices, metrics = vqgan_autoencoder_step(
                 model,
                 discriminator,
                 perceptual,
-                x,
+                images,
                 ae_optimizer,
                 step=global_step,
                 discriminator_start=DISCRIMINATOR_START,
@@ -341,7 +341,7 @@ def train_tokenizer(
             )
             d_metrics = vqgan_discriminator_step(
                 discriminator,
-                x,
+                images,
                 reconstruction,
                 d_optimizer,
                 step=global_step,
@@ -358,11 +358,11 @@ def train_tokenizer(
                 d_metrics["real_logit"],
                 d_metrics["fake_logit"],
             ]
-            sums += torch.stack(values) * x.shape[0]
+            sums += torch.stack(values) * images.shape[0]
             usage.update(indices)
-            examples += x.shape[0]
+            examples += images.shape[0]
             global_step += 1
-            preview = (x[:8].detach(), reconstruction[:8].detach())
+            preview = (images[:8].detach(), reconstruction[:8].detach())
         if preview is None:
             raise ValueError("training loader produced no batches; reduce batch size")
         means = (sums / examples).tolist()
@@ -436,19 +436,19 @@ def train_prior(
         prior.train()
         nll_sum = 0.0
         examples = 0
-        for x, labels in train_loader:
-            x = x.to(device, non_blocking=True)
+        for images, labels in train_loader:
+            images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             # Frozen tokens still participate in the prior's backward pass.
             with torch.no_grad():
-                indices = tokenizer.encode_indices(x)
+                indices = tokenizer.encode_indices(images)
             logits, targets = prior.teacher_forcing(indices, labels)
             loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
-            nll_sum += loss.item() * x.shape[0]
-            examples += x.shape[0]
+            nll_sum += loss.item() * images.shape[0]
+            examples += images.shape[0]
         nll = nll_sum / examples
         print(
             f"prior {epoch:03d}: train nll={nll:.4f}, "

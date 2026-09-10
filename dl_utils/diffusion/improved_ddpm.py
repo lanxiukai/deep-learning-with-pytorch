@@ -14,11 +14,11 @@ import torch
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion, _extract, _randn_like
 
 
-def discretized_gaussian_nll(x, mean, log_variance):
+def discretized_gaussian_nll(values, mean, log_variance):
     """Per-image bits/dimension for 256 bins over [-1, 1], with edge tails."""
     inverse_std = torch.exp(-0.5 * log_variance)
-    plus = (x - mean + 1.0 / 255.0) * inverse_std
-    minus = (x - mean - 1.0 / 255.0) * inverse_std
+    plus = (values - mean + 1.0 / 255.0) * inverse_std
+    minus = (values - mean - 1.0 / 255.0) * inverse_std
     cdf_plus = torch.special.ndtr(plus)
     cdf_minus = torch.special.ndtr(minus)
     # Survival functions avoid cancellation in the upper Gaussian tail.
@@ -28,7 +28,7 @@ def discretized_gaussian_nll(x, mean, log_variance):
         cdf_plus - cdf_minus,
     )
     mass = torch.where(
-        x < -0.999, cdf_plus, torch.where(x > 0.999, torch.special.ndtr(-minus), middle)
+        values < -0.999, cdf_plus, torch.where(values > 0.999, torch.special.ndtr(-minus), middle)
     )
     return -mass.clamp_min(1e-12).log().flatten(1).mean(1) / math.log(2)
 

@@ -129,14 +129,14 @@ def evaluate_model(
         set_seed(seed + repeat)
         bound_total = 0.0
         examples = 0
-        for x, _ in loader:
+        for images, _ in loader:
             remaining = max_examples - examples
             if remaining <= 0:
                 break
-            x = x[:remaining].to(device, non_blocking=True)
+            images = images[:remaining].to(device, non_blocking=True)
             log_weights, terms = importance_log_weights(
                 model,
-                x,
+                images,
                 particles=particles,
                 particle_chunk_size=particle_chunk_size,
             )
@@ -150,14 +150,14 @@ def evaluate_model(
             all_weight_ranges.append(weight_range.cpu())
             all_rates.append(rate_samples.mean(dim=1).cpu())
             if repeat == 0:
-                posterior_mean, _ = model.encode(x)
+                posterior_mean, _ = model.encode(images)
                 reconstruction = model.decode(posterior_mean)
                 distortion_total += float(
-                    F.binary_cross_entropy(reconstruction, x, reduction="sum")
+                    F.binary_cross_entropy(reconstruction, images, reduction="sum")
                 )
-                distortion_examples += x.shape[0]
+                distortion_examples += images.shape[0]
                 posterior_codes.append(posterior_mean.cpu())
-            examples += x.shape[0]
+            examples += images.shape[0]
         repeat_bounds.append(bound_total / examples)
 
     ess = torch.cat(all_ess_fractions)

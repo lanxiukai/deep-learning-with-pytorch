@@ -82,18 +82,20 @@ class ConditionalVAE(nn.Module):
 
     def prior(self, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return the standard normal prior, independent of the class label."""
+        # new_zeros creates a separate tensor matching the embedding's dtype/device;
+        # it does not modify condition_embedding.weight.
         zeros = self.condition_embedding.weight.new_zeros(
             labels.shape[0], self.latent_dim
         )
         return zeros, zeros
 
-    def encode(self, x: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
+    def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""
-        condition = self.condition_embedding(labels)
-        features = self.image_encoder(x)
+        condition = self.condition_embedding(labels)  # (B, condition_dim)
+        features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(
             self.posterior(torch.cat((features, condition), dim=1))
-        )
+        )  # mu, logvar
 
     def decode(self, z: Tensor, labels: Tensor) -> Tensor:
         """Return the Bernoulli mean p(x | z, c)."""
@@ -109,8 +111,8 @@ class ConditionalVAE(nn.Module):
         )
         return self.decode(z, labels)
 
-    def forward(self, x: Tensor, labels: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        q_mu, q_logvar = self.encode(x, labels)
+    def forward(self, images: Tensor, labels: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+        q_mu, q_logvar = self.encode(images, labels)
         p_mu, p_logvar = self.prior(labels)
         z = reparameterize_logvar(q_mu, q_logvar)
         reconstruction = self.decode(z, labels)

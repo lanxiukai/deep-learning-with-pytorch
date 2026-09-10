@@ -141,13 +141,13 @@ def _decode_distortion(model: HierarchicalVAE32, z1: Tensor, target: Tensor) -> 
 @torch.inference_mode()
 def sampled_counterfactual_distortions(
     model: HierarchicalVAE32,
-    x: Tensor,
+    images: Tensor,
     *,
     samples: int,
 ) -> dict[str, Tensor]:
     """Use paired top samples to isolate lower and upper posterior removal."""
-    lower_evidence, q2_mu, q2_logvar = model.bottom_up(x)
-    batch_size = x.shape[0]
+    lower_evidence, q2_mu, q2_logvar = model.bottom_up(images)
+    batch_size = images.shape[0]
     repeated_evidence = (
         lower_evidence[:, None, :]
         .expand(-1, samples, -1)
@@ -178,10 +178,10 @@ def sampled_counterfactual_distortions(
         batch_size, samples, model.z1_dim
     )
     return {
-        "posterior": _decode_distortion(model, posterior_z1, x),
-        "lower_prior": _decode_distortion(model, lower_prior_z1, x),
-        "top_prior": _decode_distortion(model, top_replaced_z1, x),
-        "both_priors": _decode_distortion(model, both_replaced_z1, x),
+        "posterior": _decode_distortion(model, posterior_z1, images),
+        "lower_prior": _decode_distortion(model, lower_prior_z1, images),
+        "top_prior": _decode_distortion(model, top_replaced_z1, images),
+        "both_priors": _decode_distortion(model, both_replaced_z1, images),
     }
 
 
@@ -205,12 +205,12 @@ def evaluate_model(
     kl_z2 = 0.0
     examples = 0
     active = ActiveUnitAccumulator()
-    for x, _ in loader:
-        x = x.to(device, non_blocking=True)
-        latents = model.infer(x, sample=False)
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        latents = model.infer(images, sample=False)
         reconstruction = model.decode(latents["z1"])
         deterministic_distortion += float(
-            F.binary_cross_entropy(reconstruction, x, reduction="sum")
+            F.binary_cross_entropy(reconstruction, images, reduction="sum")
         )
         kl_z1 += float(
             diagonal_gaussian_kl_from_logvar(
@@ -227,11 +227,11 @@ def evaluate_model(
         )
         active.update(latents)
         counterfactuals = sampled_counterfactual_distortions(
-            model, x, samples=intervention_samples
+            model, images, samples=intervention_samples
         )
         for name, values in counterfactuals.items():
             totals[name] += float(values.sum()) / intervention_samples
-        examples += x.shape[0]
+        examples += images.shape[0]
     active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     sampled_posterior = totals["posterior"] / examples
     return {
@@ -264,9 +264,9 @@ def save_counterfactual_grids(
     variants: int,
     device: torch.device,
 ) -> dict[str, float]:
-    x, _ = next(iter(loader))
-    x = x[:8].to(device)
-    lower_evidence, q2_mu, q2_logvar = model.bottom_up(x)
+    images, _ = next(iter(loader))
+    images = images[:8].to(device)
+    lower_evidence, q2_mu, q2_logvar = model.bottom_up(images)
     posterior = model.infer_from_top(
         lower_evidence,
         q2_mu,
@@ -285,7 +285,7 @@ def save_counterfactual_grids(
     zero_p1_mu, _, _, _ = model.lower_distributions(lower_evidence, zero_z2)
     summary = torch.cat(
         (
-            x,
+            images,
             model.decode(posterior["q1_mu"]),
             model.decode(posterior["p1_mu"]),
             model.decode(top_replaced["q1_mu"]),

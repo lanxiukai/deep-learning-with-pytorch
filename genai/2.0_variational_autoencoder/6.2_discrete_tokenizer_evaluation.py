@@ -121,12 +121,12 @@ class DiscreteSystem:
         return self.image_size // (2**self.tokenizer.downsample_steps)
 
     def reconstruct_and_tokens(
-        self, x: Tensor
+        self, images: Tensor
     ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         if isinstance(self.tokenizer, VQVAE):
-            reconstruction, indices, _, diagnostics = self.tokenizer(x)
+            reconstruction, indices, _, diagnostics = self.tokenizer(images)
         else:
-            reconstruction, indices, diagnostics = self.tokenizer(x)
+            reconstruction, indices, diagnostics = self.tokenizer(images)
         return reconstruction, indices, diagnostics
 
     @torch.inference_mode()
@@ -225,19 +225,19 @@ def evaluate_tokenizer(
     prior_nll_sum = 0.0
     examples = 0
     comparison = None
-    for x, labels in loader:
+    for images, labels in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
+        images = images[:remaining].to(device, non_blocking=True)
         labels = labels[:remaining].to(device, non_blocking=True)
-        reconstruction, indices, diagnostics = system.reconstruct_and_tokens(x)
+        reconstruction, indices, diagnostics = system.reconstruct_and_tokens(images)
         if comparison is None:
-            comparison = torch.cat((x[:16], reconstruction[:16])).cpu()
+            comparison = torch.cat((images[:16], reconstruction[:16])).cpu()
         reconstruction_moments.update(feature_extractor(reconstruction))
-        squared_error += float((reconstruction - x).square().sum())
-        elements += x.numel()
-        quantization_sum += float(diagnostics["quantization_mse"]) * x.shape[0]
+        squared_error += float((reconstruction - images).square().sum())
+        elements += images.numel()
+        quantization_sum += float(diagnostics["quantization_mse"]) * images.shape[0]
         prior_nll_sum += (
             float(
                 F.cross_entropy(
@@ -245,10 +245,10 @@ def evaluate_tokenizer(
                     indices,
                 )
             )
-            * x.shape[0]
+            * images.shape[0]
         )
         usage.update(indices)
-        examples += x.shape[0]
+        examples += images.shape[0]
 
     mse = squared_error / elements
     statistics = usage.statistics()

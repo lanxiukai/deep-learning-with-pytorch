@@ -1,9 +1,8 @@
-"""Small Gaussian-VAE primitives shared by the post-beta-VAE lessons.
+"""Gaussian-distribution primitives shared by the post-beta-VAE lessons.
 
 The older :mod:`dl_utils.vae.vae` module intentionally keeps the 256x256
-face model used by the first VAE lessons.  This module contains only the
-distribution algebra and the compact 28x28 model reused by the later
-algorithm-comparison scripts.
+face model used by the first VAE lessons. This module contains the shared
+distribution algebra used by the later algorithm-comparison scripts.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from __future__ import annotations
 import math
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 LOG_2PI = math.log(2.0 * math.pi)
 
@@ -96,54 +95,8 @@ def fuse_diagonal_gaussians(
     return fused_mu, fused_variance.log()
 
 
-class ConvGaussianVAE28(nn.Module):
-    """Compact convolutional Gaussian VAE for 28x28 grayscale lessons."""
-
-    def __init__(self, latent_dim: int = 10, hidden_dim: int = 256) -> None:
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 4, 2, 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 4, 2, 1),
-            nn.ReLU(inplace=True),
-            nn.Flatten(),
-            nn.Linear(64 * 7 * 7, hidden_dim),
-            nn.ReLU(inplace=True),
-        )
-        self.posterior = nn.Linear(hidden_dim, 2 * latent_dim)
-        self.decoder_input = nn.Linear(latent_dim, 64 * 7 * 7)
-        self.decoder = nn.Sequential(
-            nn.Unflatten(1, (64, 7, 7)),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(32, 1, 4, 2, 1),
-            nn.Sigmoid(),
-        )
-
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        return split_gaussian_parameters(self.posterior(self.encoder(x)))
-
-    def decode(self, z: Tensor) -> Tensor:
-        return self.decoder(self.decoder_input(z))
-
-    def reconstruct(self, x: Tensor, *, sample: bool = False) -> Tensor:
-        mu, logvar = self.encode(x)
-        z = reparameterize_logvar(mu, logvar) if sample else mu
-        return self.decode(z)
-
-    def sample(self, count: int, *, device: torch.device) -> Tensor:
-        return self.decode(torch.randn(count, self.latent_dim, device=device))
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        mu, logvar = self.encode(x)
-        z = reparameterize_logvar(mu, logvar)
-        return self.decode(z), mu, logvar, z
-
-
 __all__ = [
     "LOG_2PI",
-    "ConvGaussianVAE28",
     "diagonal_gaussian_kl_from_logvar",
     "diagonal_gaussian_log_density",
     "fuse_diagonal_gaussians",

@@ -61,8 +61,8 @@ class GaussianVAE32(nn.Module):
             nn.Sigmoid(),
         )
 
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        context = self.context(self.encoder(x))
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor]:
+        context = self.context(self.encoder(images))
         mu, logvar = split_gaussian_parameters(self.base_posterior(context))
         return mu, logvar
 
@@ -92,8 +92,8 @@ class GaussianVAE32(nn.Module):
         ).sum(dim=-1)
         return z, log_q
 
-    def reconstruct(self, x: Tensor) -> Tensor:
-        mu, _ = self.encode(x)
+    def reconstruct(self, images: Tensor) -> Tensor:
+        mu, _ = self.encode(images)
         return self.decode(mu)
 
     def sample(self, count: int, *, device: torch.device) -> Tensor:
@@ -117,14 +117,14 @@ def bernoulli_log_density(mean: Tensor, target: Tensor) -> Tensor:
 
 def importance_log_weights(
     model: GaussianVAE32,
-    x: Tensor,
+    images: Tensor,
     *,
     particles: int,
     particle_chunk_size: int | None = None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Compute per-example importance log weights entirely in log space."""
     chunk_size = particles if particle_chunk_size is None else particle_chunk_size
-    mu, logvar = model.encode(x)
+    mu, logvar = model.encode(images)
     log_weight_chunks = []
     log_px_chunks = []
     log_pz_chunks = []
@@ -134,7 +134,7 @@ def importance_log_weights(
         count = min(remaining, chunk_size)
         z, log_q = model.sample_from_statistics(mu, logvar, particles=count)
         reconstruction = model.decode(z)
-        log_px = bernoulli_log_density(reconstruction, x)
+        log_px = bernoulli_log_density(reconstruction, images)
         log_pz = standard_normal_log_density(z)
         log_weight_chunks.append(log_px + log_pz - log_q)
         log_px_chunks.append(log_px)

@@ -89,9 +89,9 @@ class EvaluatedSystem:
         return self.tokenizer.quantizer.codebook_size
 
     def reconstruct_and_tokens(
-        self, x: Tensor
+        self, images: Tensor
     ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        reconstruction, indices, _, diagnostics = self.tokenizer(x)
+        reconstruction, indices, _, diagnostics = self.tokenizer(images)
         return reconstruction, indices, diagnostics
 
     def prior_loss(self, indices: Tensor, labels: Tensor) -> Tensor:
@@ -175,44 +175,44 @@ def evaluate_reconstruction(
     examples = 0
     positions = 0
     comparison: Tensor | None = None
-    for x, labels in loader:
+    for images, labels in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
+        images = images[:remaining].to(device, non_blocking=True)
         labels = labels[:remaining].to(device, non_blocking=True)
-        reconstruction, indices, diagnostics = system.reconstruct_and_tokens(x)
+        reconstruction, indices, diagnostics = system.reconstruct_and_tokens(images)
         if comparison is None:
-            comparison = torch.cat((x[:16], reconstruction[:16])).cpu()
+            comparison = torch.cat((images[:16], reconstruction[:16])).cpu()
         positions = indices.shape[1] * indices.shape[2]
         reconstruction_moments.update(feature_extractor(reconstruction))
-        squared_error += float((reconstruction - x).square().sum())
-        element_count += x.numel()
+        squared_error += float((reconstruction - images).square().sum())
+        element_count += images.numel()
         paired_totals += (
             torch.stack(
                 [
-                    F.l1_loss(reconstruction, x),
-                    perceptual(reconstruction, x),
-                    structural_similarity_index(reconstruction, x),
+                    F.l1_loss(reconstruction, images),
+                    perceptual(reconstruction, images),
+                    structural_similarity_index(reconstruction, images),
                     diagnostics["quantization_mse"],
                 ]
             )
-            * x.shape[0]
+            * images.shape[0]
         )
         usage.update(indices)
         loss = system.prior_loss(indices, labels)
-        prior_nll += float(loss) * x.shape[0]
-        prior_examples += x.shape[0]
+        prior_nll += float(loss) * images.shape[0]
+        prior_examples += images.shape[0]
         discriminator_totals += (
             torch.stack(
                 [
-                    system.discriminator(x).mean(),
+                    system.discriminator(images).mean(),
                     system.discriminator(reconstruction).mean(),
                 ]
             )
-            * x.shape[0]
+            * images.shape[0]
         )
-        examples += x.shape[0]
+        examples += images.shape[0]
 
     if comparison is None or examples < 2:
         raise ValueError("evaluation needs at least two held-out examples")

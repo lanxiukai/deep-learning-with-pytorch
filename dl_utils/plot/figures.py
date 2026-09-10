@@ -39,7 +39,7 @@ def set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend):
     axes.grid()
 
 
-def plot(X, Y=None, xlabel=None, ylabel=None, legend=None, xlim=None,
+def plot(horizontal_values, vertical_values=None, xlabel=None, ylabel=None, legend=None, xlim=None,
          ylim=None, xscale='linear', yscale='linear',
          fmts=('-', 'm--', 'g-.', 'r:'), figsize=(3.5, 2.5), axes=None):
     """Plot the data in Matplotlib."""
@@ -49,22 +49,22 @@ def plot(X, Y=None, xlabel=None, ylabel=None, legend=None, xlim=None,
     set_figsize(figsize)
     axes = axes if axes else _plt.gca()
     
-    def has_one_axis(X):
-        return (hasattr(X, "ndim") and X.ndim == 1 or isinstance(X, list)
-                and not hasattr(X[0], "__len__"))
+    def has_one_axis(values):
+        return (hasattr(values, "ndim") and values.ndim == 1 or isinstance(values, list)
+                and not hasattr(values[0], "__len__"))
         
-    x_values = [X] if has_one_axis(X) else X
-    y_values = x_values if Y is None else ([Y] if has_one_axis(Y) else Y)
-    if Y is None:
+    x_values = [horizontal_values] if has_one_axis(horizontal_values) else horizontal_values
+    y_values = x_values if vertical_values is None else ([vertical_values] if has_one_axis(vertical_values) else vertical_values)
+    if vertical_values is None:
         x_values = [[]] * len(x_values)
     if len(x_values) != len(y_values):
         x_values = x_values * len(y_values)
     axes.cla()
-    for x, y, fmt in zip(x_values, y_values, fmts):
-        if len(x):
-            axes.plot(x, y, fmt)
+    for horizontal_series, vertical_series, fmt in zip(x_values, y_values, fmts):
+        if len(horizontal_series):
+            axes.plot(horizontal_series, vertical_series, fmt)
         else:
-            axes.plot(y, fmt)
+            axes.plot(vertical_series, fmt)
     set_axes(axes, xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
 
 
@@ -86,31 +86,31 @@ class Animator:
             self.axes = [self.axes, ]
         self.config_axes = lambda: set_axes(
             self.axes[0], xlabel, ylabel, xlim, ylim, xscale, yscale, legend)
-        self.X, self.Y, self.fmts = None, None, fmts
+        self.horizontal_data, self.vertical_data, self.fmts = None, None, fmts
         if _plt.get_backend().lower() != "agg":
             _plt.ion()
             self.fig.show()
         self._closed = False
 
-    def add(self, x, y):
+    def add(self, horizontal_values, vertical_values):
         """Add the data to the animator."""
-        if not hasattr(y, "__len__"):
-            y = [y]
-        n = len(y)
-        if not hasattr(x, "__len__"):
-            x = [x] * n
-        x_data = self.X
+        if not hasattr(vertical_values, "__len__"):
+            vertical_values = [vertical_values]
+        series_count = len(vertical_values)
+        if not hasattr(horizontal_values, "__len__"):
+            horizontal_values = [horizontal_values] * series_count
+        x_data = self.horizontal_data
         if not x_data:
-            x_data = [[] for _ in range(n)]
-            setattr(self, 'X', x_data)
-        y_data = self.Y
+            x_data = [[] for _ in range(series_count)]
+            self.horizontal_data = x_data
+        y_data = self.vertical_data
         if not y_data:
-            y_data = [[] for _ in range(n)]
-            setattr(self, 'Y', y_data)
-        for i, (a, b) in enumerate(zip(x, y)):
-            if a is not None and b is not None:
-                x_data[i].append(a)
-                y_data[i].append(b)
+            y_data = [[] for _ in range(series_count)]
+            self.vertical_data = y_data
+        for i, (horizontal_value, vertical_value) in enumerate(zip(horizontal_values, vertical_values)):
+            if horizontal_value is not None and vertical_value is not None:
+                x_data[i].append(horizontal_value)
+                y_data[i].append(vertical_value)
         self.axes[0].cla()
         for x_vals, y_vals, fmt in zip(x_data, y_data, self.fmts):
             self.axes[0].plot(x_vals, y_vals, fmt)
@@ -139,19 +139,19 @@ def heatmap(matrices, xlabel, ylabel, titles=None, figsize=(2.5, 2.5),
                               sharex=True, sharey=True, squeeze=False)
     pcm = None
     for i, (row_axes, row_matrices) in enumerate(zip(axes, matrices)):
-        for j, (ax, matrix) in enumerate(zip(row_axes, row_matrices)):
-            pcm = ax.imshow(matrix.detach().numpy(), cmap=cmap)
+        for column_index, (axis, matrix) in enumerate(zip(row_axes, row_matrices)):
+            pcm = axis.imshow(matrix.detach().numpy(), cmap=cmap)
             if i == num_rows - 1:
-                ax.set_xlabel(xlabel)
-            if j == 0:
-                ax.set_ylabel(ylabel)
+                axis.set_xlabel(xlabel)
+            if column_index == 0:
+                axis.set_ylabel(ylabel)
             if titles:
-                ax.set_title(titles[j])
+                axis.set_title(titles[column_index])
     if pcm is not None:
         fig.colorbar(pcm, ax=axes, shrink=0.6)
 
 
-def trace2d(f, results):
+def trace2d(objective, results):
     """Show the trace of 2D variables during optimization"""
     import torch
 
@@ -159,7 +159,7 @@ def trace2d(f, results):
     _plt.plot(*zip(*results), '-o', color='#ff7f0e')
     x1, x2 = torch.meshgrid(torch.arange(-5.5, 1.0, 0.1),
                             torch.arange(-3.0, 1.0, 0.1), indexing='ij')
-    _plt.contour(x1, x2, f(x1, x2), colors='#1f77b4')
+    _plt.contour(x1, x2, objective(x1, x2), colors='#1f77b4')
     _plt.xlabel('x1')
     _plt.ylabel('x2')
 
@@ -168,7 +168,7 @@ def seq_len_hist(legend, xlabel, ylabel, xlist, ylist):
     """Plot a histogram of sequence length pairs."""
     set_figsize()
     _, _, patches = _plt.hist(
-        [[len(l) for l in xlist], [len(l) for l in ylist]])
+        [[len(sequence) for sequence in xlist], [len(sequence) for sequence in ylist]])
     _plt.xlabel(xlabel)
     _plt.ylabel(ylabel)
     patch_groups: Any = patches
@@ -178,7 +178,7 @@ def seq_len_hist(legend, xlabel, ylabel, xlist, ylist):
 
 
 def save_curve(
-    x: Sequence[float],
+    steps: Sequence[float],
     curves: Mapping[str, Sequence[float]],
     path: str | PathLike[str],
     *,
@@ -191,7 +191,7 @@ def save_curve(
     Plot one or more curves and optionally save the raw values to CSV.
 
     Args:
-        x: x-axis values (e.g., steps or epochs).
+        steps: x-axis values (e.g., steps or epochs).
         curves: mapping from curve name to y values.
         path: output image path.
         xlabel, ylabel, title: labeling for the figure.
@@ -200,24 +200,24 @@ def save_curve(
     if not curves:
         raise ValueError("save_curve: curves is empty.")
 
-    x_list = list(x)
-    n = len(x_list)
+    x_list = list(steps)
+    step_count = len(x_list)
 
     # Normalize inputs to lists of floats and validate lengths
     norm_curves: dict[str, list[float]] = {}
-    for name, y in curves.items():
-        y_list = list(map(float, y))
-        if len(y_list) != n:
+    for name, curve_values in curves.items():
+        y_list = list(map(float, curve_values))
+        if len(y_list) != step_count:
             raise ValueError(
-                f"save_curve: length mismatch for '{name}', expected {n} got {len(y_list)}."
+                f"save_curve: length mismatch for '{name}', expected {step_count} got {len(y_list)}."
             )
         norm_curves[name] = y_list
 
     path_str = os.fspath(path)
     os.makedirs(os.path.dirname(path_str), exist_ok=True)
     _plt.figure(figsize=(8, 5))
-    for name, y in norm_curves.items():
-        _plt.plot(x_list, y, label=name)
+    for name, curve_values in norm_curves.items():
+        _plt.plot(x_list, curve_values, label=name)
     _plt.xlabel(xlabel)
     _plt.ylabel(ylabel)
     if title:
@@ -234,14 +234,14 @@ def save_curve(
         os.makedirs(os.path.dirname(csv_path_str), exist_ok=True)
         header = [xlabel] + list(norm_curves.keys())
         rows = zip(x_list, *norm_curves.values())
-        with open(csv_path_str, "w", newline="") as f:
-            writer = csv.writer(f)
+        with open(csv_path_str, "w", newline="") as stream:
+            writer = csv.writer(stream)
             writer.writerow(header)
             writer.writerows(rows)
 
 
 def save_loss_curves(
-    x: Sequence[float],
+    steps: Sequence[float],
     discriminator_losses: Sequence[float],
     generator_losses: Sequence[float],
     generator_adversarial_losses: Mapping[str, Sequence[float]],
@@ -253,18 +253,18 @@ def save_loss_curves(
     """Save total and component losses on four independent-y subplots.
 
     The component mappings supply the plotted curves and their legend labels;
-    every series must align with ``x``.
+    every series must align with ``steps``.
     """
-    x_values = list(x)
+    x_values = list(steps)
     discriminator_values = list(map(float, discriminator_losses))
     generator_values = list(map(float, generator_losses))
     if len(discriminator_values) != len(x_values):
         raise ValueError(
-            "save_loss_curves: discriminator loss length does not match x."
+            "save_loss_curves: discriminator loss length does not match steps."
         )
     if len(generator_values) != len(x_values):
         raise ValueError(
-            "save_loss_curves: generator loss length does not match x."
+            "save_loss_curves: generator loss length does not match steps."
         )
 
     def normalize_components(
@@ -279,7 +279,7 @@ def save_loss_curves(
             if len(normalized_values) != len(x_values):
                 raise ValueError(
                     f"save_loss_curves: {name} loss '{label}' length "
-                    "does not match x."
+                    "does not match steps."
                 )
             normalized[label] = normalized_values
         return normalized
@@ -338,7 +338,7 @@ def save_loss_curves(
 
 
 def save_loss_panels(
-    x: Sequence[float],
+    steps: Sequence[float],
     panels: Mapping[str, Mapping[str, Sequence[float]]],
     path: str | PathLike[str],
     *,
@@ -348,11 +348,11 @@ def save_loss_panels(
     """Save related loss groups on vertically stacked independent-y panels.
 
     ``panels`` maps each subplot title to one or more labelled curves. Every
-    curve must have the same number of values as ``x``.
+    curve must have the same number of values as ``steps``.
     """
-    x_values = list(map(float, x))
+    x_values = list(map(float, steps))
     if not x_values:
-        raise ValueError("save_loss_panels: x is empty.")
+        raise ValueError("save_loss_panels: steps is empty.")
     if not panels:
         raise ValueError("save_loss_panels: panels are empty.")
 
@@ -368,7 +368,7 @@ def save_loss_panels(
             if len(normalized_values) != len(x_values):
                 raise ValueError(
                     f"save_loss_panels: curve '{label}' in panel "
-                    f"'{title}' does not match x."
+                    f"'{title}' does not match steps."
                 )
             normalized_curves[label] = normalized_values
         normalized_panels[title] = normalized_curves
@@ -412,7 +412,7 @@ def save_loss_panels(
 
 
 def maybe_save_curve(
-    x: Sequence[float],
+    steps: Sequence[float],
     metrics: MetricHistory,
     series: Mapping[str, str],
     path: str | PathLike[str],
@@ -431,23 +431,23 @@ def maybe_save_curve(
     for label, key in series.items():
         if key not in metrics:
             continue
-        y = as_list(metrics.get(key))
-        if not y:
+        metric_values = as_list(metrics.get(key))
+        if not metric_values:
             continue
-        if not has_any_finite(y):
+        if not has_any_finite(metric_values):
             continue
-        curves[label] = [float(value) for value in y]
-        lengths.append(len(y))
+        curves[label] = [float(value) for value in metric_values]
+        lengths.append(len(metric_values))
 
     if not curves:
         return
 
-    n = min([len(x)] + lengths) if lengths else len(x)
-    if n <= 0:
+    common_length = min([len(steps)] + lengths) if lengths else len(steps)
+    if common_length <= 0:
         return
 
-    x_use = x[:n]
-    curves_use = {key: values[:n] for key, values in curves.items()}
+    x_use = steps[:common_length]
+    curves_use = {key: values[:common_length] for key, values in curves.items()}
     try:
         save_curve(x_use, curves_use, path=path, xlabel=xlabel, ylabel=ylabel, title=title)
     except Exception as err:

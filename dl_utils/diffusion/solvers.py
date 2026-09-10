@@ -69,7 +69,7 @@ def dpm_update(
     sigma_s,
     alpha_t,
     sigma_t,
-    h,
+    log_snr_step,
     *,
     previous_prediction=None,
     previous_h=None,
@@ -79,12 +79,12 @@ def dpm_update(
     estimate = prediction
     if previous_prediction is not None:
         # D1 = (prediction_s - prediction_previous) / (previous_h / h).
-        estimate = prediction + 0.5 * h / previous_h * (
+        estimate = prediction + 0.5 * log_snr_step / previous_h * (
             prediction - previous_prediction
         )
     if data_prediction:
-        return sigma_t / sigma_s * state - alpha_t * torch.expm1(-h) * estimate
-    return alpha_t / alpha_s * state - sigma_t * torch.expm1(h) * estimate
+        return sigma_t / sigma_s * state - alpha_t * torch.expm1(-log_snr_step) * estimate
+    return alpha_t / alpha_s * state - sigma_t * torch.expm1(log_snr_step) * estimate
 
 
 @torch.no_grad()
@@ -110,25 +110,25 @@ def sample_diffusion_ode(
         path.start, path.end, num_steps + 1, device=state.device, dtype=torch.float64
     )
 
-    def predictions(x, coordinate):
+    def predictions(sample, coordinate):
         alpha, sigma = (v.float() for v in vp_coefficients(coordinate))
-        output = model(x, path.model_time(coordinate).expand(len(x)))
-        if output.shape[1] == 2 * x.shape[1]:
+        output = model(sample, path.model_time(coordinate).expand(len(sample)))
+        if output.shape[1] == 2 * sample.shape[1]:
             output = output.chunk(2, dim=1)[0]  # Variance head is unused by ODEs.
         if prediction_type == "epsilon":
             epsilon = output
         elif prediction_type == "x0":
-            epsilon = (x - alpha * output) / sigma
+            epsilon = (sample - alpha * output) / sigma
         elif prediction_type == "v":
-            epsilon = sigma * x + alpha * output
+            epsilon = sigma * sample + alpha * output
         elif prediction_type == "score":
             epsilon = -sigma * output
         else:
             raise ValueError("Unknown prediction type.")
-        clean = (x - sigma * epsilon) / alpha
+        clean = (sample - sigma * epsilon) / alpha
         if clip_x0:
             clean = clean.clamp(-1, 1)
-            epsilon = (x - alpha * clean) / sigma
+            epsilon = (sample - alpha * clean) / sigma
         return epsilon, clean
 
     previous_prediction = previous_h = None
@@ -138,16 +138,16 @@ def sample_diffusion_ode(
         for source, target in pairwise(grid):
             alpha_s, sigma_s = (v.float() for v in vp_coefficients(source))
             alpha_t, sigma_t = (v.float() for v in vp_coefficients(target))
-            h = (target - source).float()
+            log_snr_step = (target - source).float()
             epsilon, clean = predictions(state, source)
             if solver in ("euler", "heun"):
                 # VP ODE in lambda: dx/dlambda = sigma^2*x - sigma*epsilon.
                 velocity = sigma_s.square() * state - sigma_s * epsilon
-                proposal = state + h * velocity
+                proposal = state + log_snr_step * velocity
                 if solver == "heun":
                     next_epsilon, _ = predictions(proposal, target)
                     next_velocity = sigma_t.square() * proposal - sigma_t * next_epsilon
-                    state = state + 0.5 * h * (velocity + next_velocity)
+                    state = state + 0.5 * log_snr_step * (velocity + next_velocity)
                 else:
                     state = proposal
             else:
@@ -159,14 +159,14 @@ def sample_diffusion_ode(
                     sigma_s,
                     alpha_t,
                     sigma_t,
-                    h,
+                    log_snr_step,
                     previous_prediction=previous_prediction
                     if solver != "dpm_1"
                     else None,
                     previous_h=previous_h,
                     data_prediction=solver == "dpmpp_2m",
                 )
-                previous_prediction, previous_h = value, h
+                previous_prediction, previous_h = value, log_snr_step
         _, state = predictions(state, grid[-1])
     finally:
         model.train(was_training)

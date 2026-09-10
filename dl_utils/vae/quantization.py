@@ -151,8 +151,8 @@ class ResidualBlock(nn.Module):
             nn.Conv2d(channels, channels, 1),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        return x + self.net(x)
+    def forward(self, inputs: Tensor) -> Tensor:
+        return inputs + self.net(inputs)
 
 
 class ImageEncoder(nn.Module):
@@ -188,8 +188,8 @@ class ImageEncoder(nn.Module):
         )
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.net(x)
+    def forward(self, images: Tensor) -> Tensor:
+        return self.net(images)
 
 
 class ImageDecoder(nn.Module):
@@ -260,22 +260,18 @@ class VQVAE(nn.Module):
             downsample_steps=downsample_steps,
         )
 
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        return self.quantizer(self.encoder(x))
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+        return self.quantizer(self.encoder(images))
 
-    def encode_indices(self, x: Tensor) -> Tensor:
+    def encode_indices(self, images: Tensor) -> Tensor:
         """Encode images and return only their discrete token grid."""
-        return self.encode(x)[1]
+        return self.encode(images)[1]
 
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.lookup(indices))
 
-    def reconstruct(self, x: Tensor) -> Tensor:
-        z_st, _, _, _ = self.encode(x)
-        return self.decoder(z_st)
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, quantizer_loss, diagnostics = self.encode(x)
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+        z_st, indices, quantizer_loss, diagnostics = self.encode(images)
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
 
@@ -306,22 +302,18 @@ class FSQAutoencoder(nn.Module):
             downsample_steps=downsample_steps,
         )
 
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        return self.quantizer(self.encoder(x))
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+        return self.quantizer(self.encoder(images))
 
-    def encode_indices(self, x: Tensor) -> Tensor:
+    def encode_indices(self, images: Tensor) -> Tensor:
         """Encode images and return only their discrete token grid."""
-        return self.encode(x)[1]
+        return self.encode(images)[1]
 
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.indices_to_values(indices))
 
-    def reconstruct(self, x: Tensor) -> Tensor:
-        z_st, _, _ = self.encode(x)
-        return self.decoder(z_st)
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, diagnostics = self.encode(x)
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+        z_st, indices, diagnostics = self.encode(images)
         return self.decoder(z_st), indices, diagnostics
 
 

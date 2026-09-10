@@ -96,11 +96,11 @@ class DigitClassifier32(nn.Module):
         )
         self.classifier = nn.Linear(64, 10)
 
-    def encode(self, x: Tensor) -> Tensor:
-        return self.features(x)
+    def encode(self, images: Tensor) -> Tensor:
+        return self.features(images)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.classifier(self.encode(x))
+    def forward(self, images: Tensor) -> Tensor:
+        return self.classifier(self.encode(images))
 
 
 def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
@@ -142,27 +142,27 @@ def train_classifier(
         model.train()
         correct = 0
         examples = 0
-        for x, labels in train_loader:
-            x = x.to(device, non_blocking=True)
+        for images, labels in train_loader:
+            images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            logits = model(x)
+            logits = model(images)
             loss = F.cross_entropy(logits, labels)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             correct += int((logits.argmax(dim=1) == labels).sum())
-            examples += x.shape[0]
+            examples += images.shape[0]
         print(f"classifier epoch {epoch:02d}: train accuracy={correct / examples:.4f}")
 
     model.eval()
     correct = 0
     examples = 0
     with torch.inference_mode():
-        for x, labels in test_loader:
-            x = x.to(device, non_blocking=True)
+        for images, labels in test_loader:
+            images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            correct += int((model(x).argmax(dim=1) == labels).sum())
-            examples += x.shape[0]
+            correct += int((model(images).argmax(dim=1) == labels).sum())
+            examples += images.shape[0]
     return correct / examples
 
 
@@ -218,8 +218,8 @@ def real_diversity_reference(
     device: torch.device,
 ) -> dict[str, object]:
     buckets: list[list[Tensor]] = [[] for _ in range(10)]
-    for x, labels in loader:
-        for image, label in zip(x, labels):
+    for images, labels in loader:
+        for image, label in zip(images, labels):
             bucket = buckets[int(label)]
             if len(bucket) < samples_per_class:
                 bucket.append(image)
@@ -248,26 +248,26 @@ def posterior_and_shuffle_metrics(
     rate = 0.0
     posterior_prior_mean_gap = 0.0
     examples = 0
-    for x, labels in loader:
+    for images, labels in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
+        images = images[:remaining].to(device, non_blocking=True)
         labels = labels[:remaining].to(device, non_blocking=True)
-        q_mu, q_logvar = model.encode(x, labels)
+        q_mu, q_logvar = model.encode(images, labels)
         p_mu, p_logvar = model.prior(labels)
         correct = model.decode(q_mu, labels)
         shuffled_labels = (labels + 1) % model.num_classes
         shuffled = model.decode(q_mu, shuffled_labels)
-        correct_distortion += float(F.binary_cross_entropy(correct, x, reduction="sum"))
+        correct_distortion += float(F.binary_cross_entropy(correct, images, reduction="sum"))
         shuffled_distortion += float(
-            F.binary_cross_entropy(shuffled, x, reduction="sum")
+            F.binary_cross_entropy(shuffled, images, reduction="sum")
         )
         rate += float(
             diagonal_gaussian_kl_from_logvar(q_mu, q_logvar, p_mu, p_logvar).sum()
         )
         posterior_prior_mean_gap += float((q_mu - p_mu).square().sum())
-        examples += x.shape[0]
+        examples += images.shape[0]
     return {
         "posterior_mean_distortion": correct_distortion / examples,
         "shuffled_decoder_condition_distortion": (shuffled_distortion / examples),

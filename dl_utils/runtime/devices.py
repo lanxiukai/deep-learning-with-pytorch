@@ -27,17 +27,17 @@ def get_device(device: Optional[Union[str, torch.device]] = None) -> torch.devic
     return resolved
 
 
-def try_gpu(i=0):
+def try_gpu(device_index=0):
     """
-    Return gpu(i) if exists, otherwise return cpu.
+    Return the requested GPU if it exists, otherwise return the CPU.
     
     Args:
-        i: the index of the GPU (Default: 0)
+        device_index: the index of the GPU (Default: 0)
     Returns:
-        The GPU(i) if exists, otherwise return cpu
+        The requested GPU if it exists, otherwise the CPU
     """
-    if torch.cuda.device_count() >= i + 1:
-        return torch.device(f'cuda:{i}')
+    if torch.cuda.device_count() >= device_index + 1:
+        return torch.device(f'cuda:{device_index}')
     return torch.device('cpu')
 
 

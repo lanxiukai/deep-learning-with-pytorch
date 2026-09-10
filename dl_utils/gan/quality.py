@@ -22,18 +22,18 @@ def polynomial_mmd(first: torch.Tensor, second: torch.Tensor) -> float:
     """Unbiased squared MMD with the degree-three KID polynomial kernel."""
     if first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]:
         raise ValueError("Expected feature matrices with matching dimensions.")
-    n, m = len(first), len(second)
-    if min(n, m) < 2:
+    first_count, second_count = len(first), len(second)
+    if min(first_count, second_count) < 2:
         raise ValueError("MMD requires at least two samples per distribution.")
     first, second = first.double(), second.double()
     dim = first.shape[1]
-    xx = (first @ first.T / dim + 1).pow(3)
-    yy = (second @ second.T / dim + 1).pow(3)
-    xy = (first @ second.T / dim + 1).pow(3)
+    first_kernel = (first @ first.T / dim + 1).pow(3)
+    second_kernel = (second @ second.T / dim + 1).pow(3)
+    cross_kernel = (first @ second.T / dim + 1).pow(3)
     return float(
-        (xx.sum() - xx.diagonal().sum()) / (n * (n - 1))
-        + (yy.sum() - yy.diagonal().sum()) / (m * (m - 1))
-        - 2 * xy.mean()
+        (first_kernel.sum() - first_kernel.diagonal().sum()) / (first_count * (first_count - 1))
+        + (second_kernel.sum() - second_kernel.diagonal().sum()) / (second_count * (second_count - 1))
+        - 2 * cross_kernel.mean()
     )
 
 

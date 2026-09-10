@@ -75,11 +75,11 @@ class ResidualBlock(nn.Module):
             else nn.Conv2d(in_channels, out_channels, 1)
         )
 
-    def forward(self, x: Tensor, time_embedding: Tensor) -> Tensor:
-        hidden = self.conv1(F.silu(self.norm1(x)))
+    def forward(self, inputs: Tensor, time_embedding: Tensor) -> Tensor:
+        hidden = self.conv1(F.silu(self.norm1(inputs)))
         hidden = hidden + self.time_projection(time_embedding)[:, :, None, None]
         hidden = self.conv2(self.dropout(F.silu(self.norm2(hidden))))
-        return hidden + self.skip(x)
+        return hidden + self.skip(inputs)
 
 
 class SelfAttention2d(nn.Module):
@@ -96,9 +96,9 @@ class SelfAttention2d(nn.Module):
         self.to_qkv = nn.Conv2d(channels, channels * 3, 1, bias=False)
         self.projection = nn.Conv2d(channels, channels, 1)
 
-    def forward(self, x: Tensor) -> Tensor:
-        batch, channels, height, width = x.shape
-        qkv = self.to_qkv(self.norm(x)).reshape(
+    def forward(self, inputs: Tensor) -> Tensor:
+        batch, channels, height, width = inputs.shape
+        qkv = self.to_qkv(self.norm(inputs)).reshape(
             batch, 3, self.num_heads, self.head_dim, height * width
         )
         query, key, value = qkv.unbind(dim=1)
@@ -106,7 +106,7 @@ class SelfAttention2d(nn.Module):
         attention = attention.softmax(dim=-1)
         attended = torch.einsum("bhnm,bhdm->bhdn", attention, value)
         attended = attended.reshape(batch, channels, height, width)
-        return x + self.projection(attended)
+        return inputs + self.projection(attended)
 
 
 class DownStage(nn.Module):
@@ -133,11 +133,11 @@ class DownStage(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: Tensor, time_embedding: Tensor) -> tuple[Tensor, Tensor]:
-        x = self.block1(x, time_embedding)
-        x = self.block2(x, time_embedding)
-        x = self.attention(x)
-        return self.downsample(x), x
+    def forward(self, hidden_states: Tensor, time_embedding: Tensor) -> tuple[Tensor, Tensor]:
+        hidden_states = self.block1(hidden_states, time_embedding)
+        hidden_states = self.block2(hidden_states, time_embedding)
+        hidden_states = self.attention(hidden_states)
+        return self.downsample(hidden_states), hidden_states
 
 
 class UpStage(nn.Module):
@@ -170,12 +170,12 @@ class UpStage(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: Tensor, skip: Tensor, time_embedding: Tensor) -> Tensor:
-        x = torch.cat((x, skip), dim=1)
-        x = self.block1(x, time_embedding)
-        x = self.block2(x, time_embedding)
-        x = self.attention(x)
-        return self.upsample(x)
+    def forward(self, hidden_states: Tensor, skip: Tensor, time_embedding: Tensor) -> Tensor:
+        hidden_states = torch.cat((hidden_states, skip), dim=1)
+        hidden_states = self.block1(hidden_states, time_embedding)
+        hidden_states = self.block2(hidden_states, time_embedding)
+        hidden_states = self.attention(hidden_states)
+        return self.upsample(hidden_states)
 
 
 class DiffusionUNet(nn.Module):
@@ -310,15 +310,17 @@ class DiffusionUNet(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
+        noisy_images: Tensor,
         timesteps: Tensor,
         labels: Tensor | None = None,
     ) -> Tensor:
-        if x.ndim != 4 or x.shape[1] != self.in_channels:
-            raise ValueError("x must have shape [batch, in_channels, height, width]")
-        if x.shape[-2:] != (self.sample_size, self.sample_size):
+        if noisy_images.ndim != 4 or noisy_images.shape[1] != self.in_channels:
+            raise ValueError(
+                "noisy_images must have shape [batch, in_channels, height, width]"
+            )
+        if noisy_images.shape[-2:] != (self.sample_size, self.sample_size):
             raise ValueError("input spatial size does not match model configuration")
-        if timesteps.reshape(-1).shape[0] != x.shape[0]:
+        if timesteps.reshape(-1).shape[0] != noisy_images.shape[0]:
             raise ValueError("timesteps must contain one value per image")
 
         time_embedding = self.time_embedding(timesteps)
@@ -328,20 +330,20 @@ class DiffusionUNet(nn.Module):
         else:
             if labels is None:
                 labels = torch.full(
-                    (x.shape[0],),
+                    (noisy_images.shape[0],),
                     self.null_class,
-                    device=x.device,
+                    device=noisy_images.device,
                     dtype=torch.long,
                 )
             else:
-                labels = labels.to(device=x.device, dtype=torch.long)
-                if labels.shape != (x.shape[0],):
+                labels = labels.to(device=noisy_images.device, dtype=torch.long)
+                if labels.shape != (noisy_images.shape[0],):
                     raise ValueError("labels must have shape [batch]")
                 if labels.min() < 0 or labels.max() > self.null_class:
                     raise ValueError("class label is outside the configured range")
             time_embedding = time_embedding + self.class_embedding(labels)
 
-        hidden = self.input_projection(x)
+        hidden = self.input_projection(noisy_images)
         skips: list[Tensor] = []
         for stage in self.down_stages:
             hidden, skip = stage(hidden, time_embedding)

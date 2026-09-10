@@ -30,8 +30,8 @@ class ResidualBlock(nn.Module):
             nn.Conv2d(channels, channels, 3, padding=1),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        return x + self.net(x)
+    def forward(self, inputs: Tensor) -> Tensor:
+        return inputs + self.net(inputs)
 
 
 class PerceptualEncoder(nn.Module):
@@ -72,8 +72,8 @@ class PerceptualEncoder(nn.Module):
         )
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x: Tensor) -> Tensor:
-        return self.net(x)
+    def forward(self, images: Tensor) -> Tensor:
+        return self.net(images)
 
 
 class PerceptualDecoder(nn.Module):
@@ -147,22 +147,18 @@ class VQPerceptualAutoencoder(nn.Module):
             latent_channels, hidden_channels, downsample_steps
         )
 
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        return self.quantizer(self.encoder(x))
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+        return self.quantizer(self.encoder(images))
 
-    def encode_indices(self, x: Tensor) -> Tensor:
+    def encode_indices(self, images: Tensor) -> Tensor:
         """Encode images and return only their discrete token grid."""
-        return self.encode(x)[1]
+        return self.encode(images)[1]
 
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.lookup(indices))
 
-    def reconstruct(self, x: Tensor) -> Tensor:
-        z_st, _, _, _ = self.encode(x)
-        return self.decoder(z_st)
-
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, quantizer_loss, diagnostics = self.encode(x)
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+        z_st, indices, quantizer_loss, diagnostics = self.encode(images)
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
 
@@ -192,17 +188,17 @@ class KLPerceptualAutoencoder(nn.Module):
             latent_channels, hidden_channels, downsample_steps
         )
 
-    def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        if x.shape[-2:] != (self.image_size, self.image_size):
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor]:
+        if images.shape[-2:] != (self.image_size, self.image_size):
             raise ValueError(
                 "Image shape does not match the first-stage configuration."
             )
-        mu, logvar = self.encoder(x).chunk(2, dim=1)
+        mu, logvar = self.encoder(images).chunk(2, dim=1)
         return mu, logvar.clamp(-12.0, 12.0)
 
     def encode_latent(
         self,
-        x: Tensor,
+        images: Tensor,
         *,
         sample: bool = True,
         latent_scale: float = 1.0,
@@ -210,7 +206,7 @@ class KLPerceptualAutoencoder(nn.Module):
         """Encode the downstream latent and apply one checkpoint-level scale."""
         if latent_scale <= 0:
             raise ValueError("latent_scale must be positive")
-        mu, logvar = self.encode(x)
+        mu, logvar = self.encode(images)
         z = reparameterize_logvar(mu, logvar) if sample else mu
         return z * latent_scale
 
@@ -219,25 +215,13 @@ class KLPerceptualAutoencoder(nn.Module):
             raise ValueError("latent_scale must be positive")
         return self.decoder(z / latent_scale)
 
-    def reconstruct(self, x: Tensor) -> Tensor:
-        return self.decode_latent(self.encode_latent(x, sample=False), latent_scale=1.0)
+    def reconstruct(self, images: Tensor) -> Tensor:
+        return self.decode_latent(self.encode_latent(images, sample=False), latent_scale=1.0)
 
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        mu, logvar = self.encode(x)
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        mu, logvar = self.encode(images)
         z = reparameterize_logvar(mu, logvar)
         return self.decoder(z), mu, logvar, z
-
-
-class KLPerceptualAutoencoder32(KLPerceptualAutoencoder):
-    """Compatibility for notebooks using the original 32px, factor-four model."""
-
-    def __init__(self, *, latent_channels: int = 4, hidden_channels: int = 128):
-        super().__init__(
-            latent_channels=latent_channels,
-            hidden_channels=hidden_channels,
-            downsample_steps=2,
-            image_size=32,
-        )
 
 
 class PatchDiscriminator(nn.Module):
@@ -265,10 +249,10 @@ class PatchDiscriminator(nn.Module):
             nn.Conv2d(base_channels * 4, 1, 3, 1, 1),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, images: Tensor) -> Tensor:
         for block in self.features:
-            x = block(x)
-        return self.head(x)
+            images = block(images)
+        return self.head(images)
 
 
 class VGGPerceptualLoss(nn.Module):
@@ -350,27 +334,14 @@ def adaptive_adversarial_weight(
     return (float(scale) * ratio.clamp(0.0, maximum)).detach()
 
 
-# Backward-compatible names for the earlier 32x32 lessons. Their defaults keep
-# the original two-step compression, while VQGAN can request four steps.
-PerceptualEncoder32 = PerceptualEncoder
-PerceptualDecoder32 = PerceptualDecoder
-VQPerceptualAutoencoder32 = VQPerceptualAutoencoder
-PatchDiscriminator32 = PatchDiscriminator
-
-
 __all__ = [
     "KLPerceptualAutoencoder",
-    "KLPerceptualAutoencoder32",
     "LPIPSPerceptualLoss",
     "PatchDiscriminator",
-    "PatchDiscriminator32",
     "PerceptualDecoder",
-    "PerceptualDecoder32",
     "PerceptualEncoder",
-    "PerceptualEncoder32",
     "ResidualBlock",
     "VGGPerceptualLoss",
     "VQPerceptualAutoencoder",
-    "VQPerceptualAutoencoder32",
     "adaptive_adversarial_weight",
 ]

@@ -142,13 +142,13 @@ def evaluate_cvae(
     model.eval()
     totals: dict[str, float] = {}
     examples = 0
-    for x, labels in loader:
-        x = x.to(device, non_blocking=True)
+    for images, labels in loader:
+        images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        reconstruction, statistics = model(x, labels)
-        loss, terms = conditional_vae_loss(reconstruction, x, statistics)
-        _accumulate(totals, {"loss": loss.detach(), **terms}, x.shape[0])
-        examples += x.shape[0]
+        reconstruction, statistics = model(images, labels)
+        loss, terms = conditional_vae_loss(reconstruction, images, statistics)
+        _accumulate(totals, {"loss": loss.detach(), **terms}, images.shape[0])
+        examples += images.shape[0]
     return {name: value / examples for name, value in totals.items()}
 
 
@@ -188,20 +188,20 @@ def train_cvae(
         model.train()
         totals: dict[str, float] = {}
         examples = 0
-        for x, labels in train_loader:
-            x = x.to(device, non_blocking=True)
+        for images, labels in train_loader:
+            images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-            reconstruction, statistics = model(x, labels)
-            loss, terms = conditional_vae_loss(reconstruction, x, statistics)
+            reconstruction, statistics = model(images, labels)
+            loss, terms = conditional_vae_loss(reconstruction, images, statistics)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             _accumulate(
                 totals,
                 {"loss": loss.detach(), **terms},
-                x.shape[0],
+                images.shape[0],
             )
-            examples += x.shape[0]
+            examples += images.shape[0]
 
         train_metrics = {name: value / examples for name, value in totals.items()}
         validation_metrics = evaluate_cvae(model, validation_loader, device)

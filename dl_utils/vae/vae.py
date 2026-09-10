@@ -76,12 +76,6 @@ class VAEEncoder(nn.Module):
         std = torch.exp(log_std)  # σ: (B, z_dim)
         return mu, std
 
-    def forward(self, inputs):
-        mu, std = self.statistics(inputs)
-        z = reparameterize(mu, std)  # (B, z_dim)
-        return mu, std, z
-
-
 class VAEDecoder(nn.Module):
     """Decode latent vectors into 256x256 RGB Gaussian means with fixed scale."""
 

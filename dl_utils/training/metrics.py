@@ -67,56 +67,56 @@ class MetricAccumulator:
 
 class Accumulator:
     """
-    Accumulate sum over n variables (for multiple metrics).
+    Accumulate sums for multiple metrics.
 
     Args:
-        n: the number of variables, initialize the data with n zeros
+        metric_count: the number of metrics to initialize
     """
 
-    def __init__(self, n):
-        self.data = [0.0] * n  # initialize the data with n zeros
+    def __init__(self, metric_count):
+        self.data = [0.0] * metric_count  # initialize one zero per metric
 
     def add(self, *args):
         """Add the arguments to the data."""
         vals = []
-        for b in args:
-            if torch.is_tensor(b):
-                b = b.detach()
-                if b.dim() == 0:
-                    vals.append(b.item())
+        for value in args:
+            if torch.is_tensor(value):
+                value = value.detach()
+                if value.dim() == 0:
+                    vals.append(value.item())
                 else:
-                    vals.append(b.float().sum().item())
+                    vals.append(value.float().sum().item())
             else:
-                vals.append(float(b))
-        self.data = [a + v for a, v in zip(self.data, vals)]
+                vals.append(float(value))
+        self.data = [current + v for current, v in zip(self.data, vals)]
 
     def reset(self):
-        """Reset the data to n zeros."""
-        self.data = [0.0] * len(self.data)  # reset the data to n zeros
+        """Reset every accumulated metric to zero."""
+        self.data = [0.0] * len(self.data)  # reset every metric to zero
 
     def __getitem__(self, idx):  # double underscores getitem: get the data at the index
         """Get the data at the index."""
         return self.data[idx]  # return the data at the index
 
 
-def accuracy(y_hat, y):
+def accuracy(predictions, targets):
     """
     Compute the number of correct predictions.
 
     Args:
-        y_hat: the predicted value (batch_size, num_outputs) or (batch_size,)
-        y: the true value (batch_size,)
+        predictions: the predicted value (batch_size, num_outputs) or (batch_size,)
+        targets: the true value (batch_size,)
     Returns:
         the number of correct predictions
     """
-    # len(y_hat.shape) > 1 and y_hat.shape[1] > 1: means y_hat is a matrix
-    if len(y_hat.shape) > 1 and y_hat.shape[1] > 1:
-        y_hat_idx = y_hat.argmax(
+    # A second dimension with multiple entries means predictions is a matrix.
+    if len(predictions.shape) > 1 and predictions.shape[1] > 1:
+        predicted_indices = predictions.argmax(
             axis=1
-        )  # y_hat_idx: (batch_size,), obtain the index of the maximum probability
-        cmp = y_hat_idx.type(y.dtype) == y  # cmp: (batch_size,), True or False
-        return float(cmp.type(y.dtype).sum())  # sum the True values, convert to float
-    return 0.0  # return 0.0 if y_hat is not a matrix
+        )  # (batch_size,), index of the maximum probability
+        matches = predicted_indices.type(targets.dtype) == targets  # True or False
+        return float(matches.type(targets.dtype).sum())  # sum True values as a float
+    return 0.0  # return 0.0 if predictions is not a matrix
 
 
 def evaluate_accuracy(net, data_iter):
@@ -188,8 +188,8 @@ def evaluate_loss(net, data_iter, loss):
     for features, labels in data_iter:
         out = net(features)
         labels = labels.reshape(out.shape)
-        l = loss(out, labels)
-        metric.add(l.sum(), l.numel())
+        batch_loss = loss(out, labels)
+        metric.add(batch_loss.sum(), batch_loss.numel())
     return metric[0] / metric[1]
 
 
@@ -210,16 +210,16 @@ def align_metrics_for_csv(metrics: MetricHistory) -> dict[str, list[NumericScala
     """
     if not metrics:
         return {}
-    lengths = [len(as_list(v)) for v in metrics.values()]
-    n = max(lengths) if lengths else 0
+    lengths = [len(as_list(values)) for values in metrics.values()]
+    maximum_length = max(lengths) if lengths else 0
     aligned: dict[str, list[NumericScalar]] = {}
-    for k, v in metrics.items():
-        lst = as_list(v)
-        if len(lst) < n:
-            lst = lst + [math.nan] * (n - len(lst))
+    for key, values in metrics.items():
+        lst = as_list(values)
+        if len(lst) < maximum_length:
+            lst = lst + [math.nan] * (maximum_length - len(lst))
         else:
-            lst = lst[:n]
-        aligned[k] = lst
+            lst = lst[:maximum_length]
+        aligned[key] = lst
     return aligned
 
 
@@ -253,28 +253,28 @@ def align_and_drop_all_nan_rows(
         return {}
 
     # Determine which keys are "value columns" we use to decide keep/drop.
-    value_keys = [k for k in aligned if k not in exclude]
+    value_keys = [key for key in aligned if key not in exclude]
     if not value_keys:
         return aligned
 
     # All lists should now be the same length.
     first_key = next(iter(aligned.keys()))
-    n = len(as_list(aligned[first_key]))
-    if n <= 0:
+    row_count = len(as_list(aligned[first_key]))
+    if row_count <= 0:
         return aligned
 
     keep_mask: list[bool] = []
-    for i in range(n):
-        keep_mask.append(any(math.isfinite(aligned[k][i]) for k in value_keys))
+    for i in range(row_count):
+        keep_mask.append(any(math.isfinite(aligned[key][i]) for key in value_keys))
 
     # Fast path: nothing to drop
     if all(keep_mask):
         return aligned
 
     filtered: dict[str, list[NumericScalar]] = {}
-    for k, v in aligned.items():
-        lst = as_list(v)[:n]
-        filtered[k] = [lst[i] for i, keep in enumerate(keep_mask) if keep]
+    for key, values in aligned.items():
+        lst = as_list(values)[:row_count]
+        filtered[key] = [lst[i] for i, keep in enumerate(keep_mask) if keep]
     return filtered
 
 
@@ -288,17 +288,17 @@ def save_metrics_csv(metrics: MetricHistory, path: str | PathLike[str]) -> None:
         raise ValueError("save_metrics_csv: metrics is empty.")
 
     keys = list(metrics.keys())
-    n = len(metrics[keys[0]])
-    for k in keys[1:]:
-        if len(metrics[k]) != n:
+    row_count = len(metrics[keys[0]])
+    for key in keys[1:]:
+        if len(metrics[key]) != row_count:
             raise ValueError(
-                f"save_metrics_csv: length mismatch for '{k}', expected {n} got {len(metrics[k])}."
+                f"save_metrics_csv: length mismatch for '{key}', expected {row_count} got {len(metrics[key])}."
             )
 
     path_str = os.fspath(path)
     os.makedirs(os.path.dirname(path_str), exist_ok=True)
-    with open(path_str, "w", newline="") as f:
-        writer = csv.writer(f)
+    with open(path_str, "w", newline="") as stream:
+        writer = csv.writer(stream)
         writer.writerow(keys)
-        for i in range(n):
-            writer.writerow([metrics[k][i] for k in keys])
+        for i in range(row_count):
+            writer.writerow([metrics[key][i] for key in keys])

@@ -78,8 +78,8 @@ class HierarchicalVAE32(nn.Module):
             nn.Sigmoid(),
         )
 
-    def bottom_up(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        lower_evidence = self.bottom_up_lower(self.bottom_up_image(x))
+    def bottom_up(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        lower_evidence = self.bottom_up_lower(self.bottom_up_image(images))
         top_evidence = self.bottom_up_top(lower_evidence)
         q2_mu, q2_logvar = split_gaussian_parameters(self.top_posterior(top_evidence))
         return lower_evidence, q2_mu, q2_logvar
@@ -123,8 +123,8 @@ class HierarchicalVAE32(nn.Module):
             "lower_evidence": lower_evidence,
         }
 
-    def infer(self, x: Tensor, *, sample: bool = True) -> dict[str, Tensor]:
-        lower_evidence, q2_mu, q2_logvar = self.bottom_up(x)
+    def infer(self, images: Tensor, *, sample: bool = True) -> dict[str, Tensor]:
+        lower_evidence, q2_mu, q2_logvar = self.bottom_up(images)
         z2 = reparameterize_logvar(q2_mu, q2_logvar) if sample else q2_mu
         return self.infer_from_top(
             lower_evidence,
@@ -140,11 +140,8 @@ class HierarchicalVAE32(nn.Module):
         images = self.decoder(self.decoder_input(flat_z1))
         return images.reshape(*leading_shape, 1, 32, 32)
 
-    def reconstruct(self, x: Tensor, *, sample: bool = False) -> Tensor:
-        return self.decode(self.infer(x, sample=sample)["z1"])
-
-    def forward(self, x: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        latents = self.infer(x, sample=True)
+    def forward(self, images: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+        latents = self.infer(images, sample=True)
         return self.decode(latents["z1"]), latents
 
     def sample(self, count: int, *, device: torch.device) -> Tensor:

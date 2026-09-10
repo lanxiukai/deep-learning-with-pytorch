@@ -157,42 +157,42 @@ def sample_score_model(
         .tolist()
     )
 
-    def score(x, t):
-        return model(x, t * time_embedding_scale)
+    def score(sample, time):
+        return model(sample, time * time_embedding_scale)
 
-    def field(x, t, factor):
-        drift, diffusion_squared = sde.drift_diffusion(x, t)
-        return drift - factor * diffusion_squared * score(x, t)
+    def field(sample, time, factor):
+        drift, diffusion_squared = sde.drift_diffusion(sample, time)
+        return drift - factor * diffusion_squared * score(sample, time)
 
     was_training = model.training
     model.eval()
     try:
         for index in range(num_steps):
-            t = times[index].expand(shape[0])
-            next_t = times[min(index + 1, len(times) - 1)].expand(shape[0])
-            dt = next_t[0] - t[0]
+            time = times[index].expand(shape[0])
+            next_time = times[min(index + 1, len(times) - 1)].expand(shape[0])
+            step_size = next_time[0] - time[0]
             if sampler == "probability_flow":
-                velocity = field(state, t, 0.5)
-                proposal = state + dt * velocity
+                velocity = field(state, time, 0.5)
+                proposal = state + step_size * velocity
                 state = (
                     proposal
                     if ode_solver == "euler"
-                    else state + 0.5 * dt * (velocity + field(proposal, next_t, 0.5))
+                    else state + 0.5 * step_size * (velocity + field(proposal, next_time, 0.5))
                 )
             elif sampler != "annealed_langevin":
-                _, g2 = sde.drift_diffusion(state, t)
+                _, diffusion_squared = sde.drift_diffusion(state, time)
                 noise = torch.randn(state.shape, device=device, generator=generator)
-                state = state + dt * field(state, t, 1.0) + (-dt * g2).sqrt() * noise
+                state = state + step_size * field(state, time, 1.0) + (-step_size * diffusion_squared).sqrt() * noise
             if sampler in ("pc", "annealed_langevin"):
-                correction_time = next_t if sampler == "pc" else t
+                correction_time = next_time if sampler == "pc" else time
                 _, sigma = sde.marginal_coefficients(correction_time, state)
-                eta = langevin_step_size * sigma.square()
+                correction_step_size = langevin_step_size * sigma.square()
                 for _ in range(corrector_steps):
                     noise = torch.randn(state.shape, device=device, generator=generator)
                     state = (
                         state
-                        + eta * score(state, correction_time)
-                        + (2 * eta).sqrt() * noise
+                        + correction_step_size * score(state, correction_time)
+                        + (2 * correction_step_size).sqrt() * noise
                     )
             if return_trajectory and index in capture:
                 path.append(state.cpu())

@@ -118,13 +118,13 @@ def evaluate_tokenizer(
     quantization_mse = 0.0
     examples = 0
     usage = TokenUsageAccumulator(vocabulary_size)
-    for x, _ in loader:
-        x = x.to(device, non_blocking=True)
-        reconstruction, indices, diagnostics = model(x)
-        distortion += float(F.mse_loss(reconstruction, x)) * x.shape[0]
-        quantization_mse += float(diagnostics["quantization_mse"]) * x.shape[0]
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        reconstruction, indices, diagnostics = model(images)
+        distortion += float(F.mse_loss(reconstruction, images)) * images.shape[0]
+        quantization_mse += float(diagnostics["quantization_mse"]) * images.shape[0]
         usage.update(indices)
-        examples += x.shape[0]
+        examples += images.shape[0]
     statistics = usage.statistics()
     entropy_bits = float(statistics["token_entropy_nats"]) / math.log(2)
     return {
@@ -166,10 +166,10 @@ def train_tokenizer(
         examples = 0
         usage = TokenUsageAccumulator(vocabulary_size)
         preview = None
-        for x, _ in train_loader:
-            x = x.to(device, non_blocking=True)
-            reconstruction, indices, diagnostics = model(x)
-            loss = F.mse_loss(reconstruction, x)
+        for images, _ in train_loader:
+            images = images.to(device, non_blocking=True)
+            reconstruction, indices, diagnostics = model(images)
+            loss = F.mse_loss(reconstruction, images)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -177,10 +177,10 @@ def train_tokenizer(
                 loss.detach(),
                 diagnostics["quantization_mse"],
             ]
-            sums += torch.stack(values) * x.shape[0]
+            sums += torch.stack(values) * images.shape[0]
             usage.update(indices)
-            examples += x.shape[0]
-            preview = (x[:8].detach(), reconstruction[:8].detach())
+            examples += images.shape[0]
+            preview = (images[:8].detach(), reconstruction[:8].detach())
         if preview is None:
             raise ValueError("training loader produced no batches; reduce batch size")
         means = (sums / examples).tolist()

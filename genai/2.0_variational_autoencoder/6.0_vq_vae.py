@@ -112,10 +112,10 @@ SEED = 42
 
 def tokenizer_loss(
     reconstruction: torch.Tensor,
-    x: torch.Tensor,
+    images: torch.Tensor,
     quantizer_loss: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    distortion = F.mse_loss(reconstruction, x)
+    distortion = F.mse_loss(reconstruction, images)
     return distortion + quantizer_loss, distortion.detach()
 
 
@@ -132,13 +132,13 @@ def evaluate_tokenizer(
     quantization_mse = 0.0
     examples = 0
     usage = TokenUsageAccumulator(vocabulary_size)
-    for x, _ in loader:
-        x = x.to(device, non_blocking=True)
-        reconstruction, indices, _, diagnostics = model(x)
-        distortion += float(F.mse_loss(reconstruction, x)) * x.shape[0]
-        quantization_mse += float(diagnostics["quantization_mse"]) * x.shape[0]
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        reconstruction, indices, _, diagnostics = model(images)
+        distortion += float(F.mse_loss(reconstruction, images)) * images.shape[0]
+        quantization_mse += float(diagnostics["quantization_mse"]) * images.shape[0]
         usage.update(indices)
-        examples += x.shape[0]
+        examples += images.shape[0]
     statistics = usage.statistics()
     entropy_bits = float(statistics["token_entropy_nats"]) / math.log(2)
     return {
@@ -178,10 +178,10 @@ def train_tokenizer(
         examples = 0
         usage = TokenUsageAccumulator(CODEBOOK_SIZE)
         preview = None
-        for x, _ in train_loader:
-            x = x.to(device, non_blocking=True)
-            reconstruction, indices, quantizer_loss, diagnostics = model(x)
-            loss, distortion = tokenizer_loss(reconstruction, x, quantizer_loss)
+        for images, _ in train_loader:
+            images = images.to(device, non_blocking=True)
+            reconstruction, indices, quantizer_loss, diagnostics = model(images)
+            loss, distortion = tokenizer_loss(reconstruction, images, quantizer_loss)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -191,10 +191,10 @@ def train_tokenizer(
                 diagnostics["codebook_loss"],
                 diagnostics["commitment_loss"],
             ]
-            sums += torch.stack(values) * x.shape[0]
+            sums += torch.stack(values) * images.shape[0]
             usage.update(indices)
-            examples += x.shape[0]
-            preview = (x[:8].detach(), reconstruction[:8].detach())
+            examples += images.shape[0]
+            preview = (images[:8].detach(), reconstruction[:8].detach())
         if preview is None:
             raise ValueError("training loader produced no batches; reduce batch size")
         means = (sums / examples).tolist()

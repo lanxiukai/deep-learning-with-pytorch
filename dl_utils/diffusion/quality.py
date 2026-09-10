@@ -138,7 +138,7 @@ class DiffusionQualityMonitor:
                     num_workers=0,
                 )
                 self.real = torch.cat(
-                    [self.features(x.to(device)).cpu() for x, _ in loader]
+                    [self.features(images.to(device)).cpu() for images, _ in loader]
                 )
 
             rng = torch.Generator(device=device).manual_seed(args.eval_seed)

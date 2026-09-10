@@ -149,10 +149,10 @@ def grad_clipping(net, theta):
         theta: the threshold of the gradient
     """
     if isinstance(net, nn.Module):
-        params = [p for p in net.parameters() if p.requires_grad]
+        params = [parameter for parameter in net.parameters() if parameter.requires_grad]
     else:
         params = net.params
-    grads = [p.grad for p in params if p.grad is not None]
+    grads = [parameter.grad for parameter in params if parameter.grad is not None]
     norm = torch.sqrt(sum(
         (torch.sum(grad ** 2) for grad in grads),
         torch.zeros_like(grads[0].sum()),

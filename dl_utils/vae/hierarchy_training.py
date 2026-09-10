@@ -60,11 +60,11 @@ def evaluate_hierarchy(
     kl_z2 = 0.0
     examples = 0
     active = ActiveUnitAccumulator()
-    for x, _ in loader:
-        x = x.to(device, non_blocking=True)
-        latents = model.infer(x, sample=False)
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        latents = model.infer(images, sample=False)
         reconstruction = model.decode(latents["z1"])
-        distortion += float(F.binary_cross_entropy(reconstruction, x, reduction="sum"))
+        distortion += float(F.binary_cross_entropy(reconstruction, images, reduction="sum"))
         kl_z1 += float(
             diagonal_gaussian_kl_from_logvar(
                 latents["q1_mu"],
@@ -79,7 +79,7 @@ def evaluate_hierarchy(
             ).sum()
         )
         active.update(latents)
-        examples += x.shape[0]
+        examples += images.shape[0]
     active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     return {
         "distortion": distortion / examples,
@@ -114,14 +114,14 @@ def train_hierarchy(
         totals = torch.zeros(4, device=device)
         examples = 0
         active = ActiveUnitAccumulator()
-        for x, _ in train_loader:
+        for images, _ in train_loader:
             update += 1
-            x = x.to(device, non_blocking=True)
-            reconstruction, latents = model(x)
+            images = images.to(device, non_blocking=True)
+            reconstruction, latents = model(images)
             kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
             loss, terms = hierarchical_vae_loss(
                 reconstruction,
-                x,
+                images,
                 latents,
                 kl_weight=kl_weight,
                 free_bits=free_bits,
@@ -138,9 +138,9 @@ def train_hierarchy(
                         terms["kl_z2"],
                     ]
                 )
-                * x.shape[0]
+                * images.shape[0]
             )
-            examples += x.shape[0]
+            examples += images.shape[0]
             active.update(latents)
         values = (totals / examples).tolist()
         active_z1, active_z2 = active.counts(

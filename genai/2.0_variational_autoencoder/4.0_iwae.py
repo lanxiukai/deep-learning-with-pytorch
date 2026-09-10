@@ -115,21 +115,21 @@ def evaluate_bound(
     model.eval()
     totals: dict[str, float] = {}
     examples = 0
-    for x, _ in loader:
+    for images, _ in loader:
         remaining = max_examples - examples
         if remaining <= 0:
             break
-        x = x[:remaining].to(device, non_blocking=True)
+        images = images[:remaining].to(device, non_blocking=True)
         log_weights, terms = importance_log_weights(
             model,
-            x,
+            images,
             particles=particles,
             particle_chunk_size=particle_chunk_size,
         )
         diagnostics = importance_diagnostics(log_weights, terms)
         for name, value in diagnostics.items():
-            totals[name] = totals.get(name, 0.0) + float(value) * x.shape[0]
-        examples += x.shape[0]
+            totals[name] = totals.get(name, 0.0) + float(value) * images.shape[0]
+        examples += images.shape[0]
     return {name: value / examples for name, value in totals.items()}
 
 
@@ -154,17 +154,17 @@ def train_one(
         loss_sum = 0.0
         ess_sum = 0.0
         examples = 0
-        for x, _ in train_loader:
-            x = x.to(device, non_blocking=True)
-            log_weights, terms = importance_log_weights(model, x, particles=particles)
+        for images, _ in train_loader:
+            images = images.to(device, non_blocking=True)
+            log_weights, terms = importance_log_weights(model, images, particles=particles)
             loss = -log_mean_exp(log_weights).mean()
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             diagnostics = importance_diagnostics(log_weights, terms)
-            loss_sum += loss.item() * x.shape[0]
-            ess_sum += float(diagnostics["ess_fraction"]) * x.shape[0]
-            examples += x.shape[0]
+            loss_sum += loss.item() * images.shape[0]
+            ess_sum += float(diagnostics["ess_fraction"]) * images.shape[0]
+            examples += images.shape[0]
         print(
             f"K={particles} epoch {epoch:03d}: "
             f"loss={loss_sum / examples:.3f}, ESS/K={ess_sum / examples:.3f}"
