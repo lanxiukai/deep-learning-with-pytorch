@@ -1,8 +1,10 @@
-r"""DDPM: q(x_t|x_0), epsilon regression, EMA, and free-generation monitoring.
+r"""Improved DDPM: learn reverse variance with a separate hybrid objective.
 
-Default: full CelebA train split, 128x128 RGB, fixed posterior variance,
-linear beta schedule. Optional x0/v/score targets expose VP conversions.
-Improved DDPM has its own lesson and a different output/loss contract.
+Compare with 1.0 using the same data/backbone. Cosine is the default here;
+--beta-schedule linear isolates learned variance from the schedule change.
+L = epsilon_MSE + lambda * T * VLB_t uses uniform time sampling, a detached
+mean in VLB, and an 8-bit endpoint likelihood. Importance sampling of the pure
+VLB is an independent extension, deliberately omitted from this hybrid lesson.
 """
 
 from __future__ import annotations
@@ -13,8 +15,8 @@ import copy
 import torch
 from tqdm import tqdm
 
-from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
+from dl_utils.diffusion.improved_ddpm import ImprovedDDPM
 from dl_utils.diffusion.lesson_utils import (
     NoiseLossBins,
     add_training_arguments,
@@ -32,29 +34,15 @@ from dl_utils.training.optimization import update_ema
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    add_training_arguments(parser, "ddpm")
+    add_training_arguments(parser, "improved_ddpm")
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument(
-        "--beta-schedule", choices=("linear", "cosine"), default="linear"
+        "--beta-schedule", choices=("linear", "cosine"), default="cosine"
     )
-    parser.add_argument(
-        "--prediction-type", choices=("epsilon", "x0", "v", "score"), default="epsilon"
-    )
+    parser.add_argument("--vlb-weight", type=float, default=0.001)
     parser.add_argument("--eval-sampler", choices=("ddpm", "ddim"), default="ddpm")
     parser.add_argument("--ddim-steps", type=int, default=50)
     return parser.parse_args()
-
-
-def denoising_loss(model, diffusion, clean, prediction_type):
-    time = torch.randint(diffusion.num_steps, (len(clean),), device=clean.device)
-    noise = torch.randn_like(clean)
-    noisy = diffusion.q_sample(clean, time, noise)
-    target = diffusion.training_target(clean, noise, time, prediction_type)
-    residual = model(noisy, time) - target
-    if prediction_type == "score":
-        residual = diffusion.noise_scale(time, clean) * residual
-    per_image = residual.square().flatten(1).mean(1)
-    return per_image, time
 
 
 def train(args):
@@ -62,17 +50,22 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     loader = make_image_loader(args, device)
     model = DiffusionUNet(
-        image_size=args.image_size, hidden_dims=args.hidden_dims, dropout=args.dropout
+        image_size=args.image_size,
+        hidden_dims=args.hidden_dims,
+        dropout=args.dropout,
+        out_channels=6,
     ).to(device)
     averaged = copy.deepcopy(model).eval().requires_grad_(False)
-    diffusion = GaussianDiffusion(
+    diffusion = ImprovedDDPM(
         num_steps=args.num_steps, beta_schedule=args.beta_schedule
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
     metadata = {
-        "algorithm": "vp_ddpm",
-        "prediction_type": args.prediction_type,
-        "variance_type": "fixed_posterior",
+        "algorithm": "improved_ddpm",
+        "prediction_type": "epsilon",
+        "variance_type": "learned_range_unclamped",
+        "vlb_weight": args.vlb_weight,
+        "endpoint_likelihood": "8bit_discretized_gaussian",
         "diffusion_config": diffusion.config(),
         "training": training_metadata(args),
     }
@@ -84,12 +77,10 @@ def train(args):
     )
 
     def sample_batch(count, generator):
-        shape = (count, 3, args.image_size, args.image_size)
         return diffusion.sample(
             averaged,
-            shape,
+            (count, 3, args.image_size, args.image_size),
             sampler=args.eval_sampler,
-            prediction_type=args.prediction_type,
             num_inference_steps=args.ddim_steps
             if args.eval_sampler == "ddim"
             else None,
@@ -99,20 +90,37 @@ def train(args):
     for epoch in range(start, args.epochs + 1):
         model.train()
         meter = NoiseLossBins()
-        for clean, _ in tqdm(loader, desc=f"DDPM {epoch}/{args.epochs}"):
+        sums = torch.zeros(3, device=device)
+        examples = 0
+        for clean, _ in tqdm(loader, desc=f"Improved DDPM {epoch}/{args.epochs}"):
             clean = clean.to(device, non_blocking=True)
-            per_image, time = denoising_loss(
-                model, diffusion, clean, args.prediction_type
+            # The endpoint models 8-bit bins. Quantize AFTER crop/resize.
+            clean = ((clean + 1) * 127.5).round() / 127.5 - 1
+            time = torch.randint(diffusion.num_steps, (len(clean),), device=device)
+            noise = torch.randn_like(clean)
+            hybrid, simple, vb_sum = diffusion.training_losses(
+                model, clean, time, noise, vlb_weight=args.vlb_weight
             )
-            loss = per_image.mean()  # L_simple, mean over images and pixels.
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            hybrid.mean().backward()
             optimizer.step()
             update_ema(averaged, model, args.ema_decay)
-            meter.update(per_image, time / (diffusion.num_steps - 1))
+            meter.update(simple, time / (diffusion.num_steps - 1))
+            sums += torch.stack(
+                (hybrid.detach().sum(), simple.detach().sum(), vb_sum.detach().sum())
+            )
+            examples += len(clean)
         append_record(
             args.output_dir / "training.jsonl",
-            {"epoch": epoch, "noise_coordinate": "t/(T-1)", **meter.result()},
+            {
+                "epoch": epoch,
+                "hybrid": float(sums[0] / examples),
+                "epsilon_mse": float(sums[1] / examples),
+                "trainable_vlb_sum_bpd_mc": float(sums[2] / examples),
+                "vlb_scope": "uniform-time estimate; detached mean; prior KL omitted, not full likelihood",
+                "noise_coordinate": "t/(T-1)",
+                **meter.result(),
+            },
         )
         save_checkpoint(
             args.output_dir / "latest.pth",
@@ -134,8 +142,9 @@ def train(args):
                 if args.eval_sampler == "ddim"
                 else args.num_steps,
                 eta=0.0,
-                prediction_type=args.prediction_type,
-                variance_type="fixed_posterior",
+                variance_type="learned_range"
+                if args.eval_sampler == "ddpm"
+                else "ddim_eta",
             )
 
 

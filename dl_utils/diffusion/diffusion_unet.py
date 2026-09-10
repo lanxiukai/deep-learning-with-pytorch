@@ -2,19 +2,18 @@
 
 The architecture descends from the DGAI chapter helper originally bundled with
 this repository.  It keeps residual time conditioning and spatial attention,
-but places attention only at declared low-resolution levels so the default
-32x32 model remains suitable for a 12 GB teaching GPU.
+and places attention at declared low-resolution levels. The default 128x128
+model uses attention at the 16x16 bottleneck.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
-from torch import Tensor, nn
 import torch.nn.functional as F
-
+from torch import Tensor, nn
 
 __all__ = ["DiffusionUNet", "UNet"]
 
@@ -189,13 +188,14 @@ class DiffusionUNet(nn.Module):
 
     def __init__(
         self,
-        image_size: int = 32,
+        image_size: int = 128,
         in_channels: int = 3,
-        hidden_dims: Sequence[int] = (64, 128, 256),
+        hidden_dims: Sequence[int] = (64, 128, 256, 384),
         attention_levels: Sequence[int] | None = None,
         num_heads: int = 4,
         dropout: float = 0.0,
         num_classes: int | None = None,
+        out_channels: int | None = None,
     ) -> None:
         super().__init__()
         hidden_dims = tuple(hidden_dims)
@@ -219,12 +219,13 @@ class DiffusionUNet(nn.Module):
 
         self.sample_size = image_size
         self.in_channels = in_channels
+        self.out_channels = in_channels if out_channels is None else out_channels
         self.hidden_dims = hidden_dims
         self.attention_levels = tuple(attention_levels)
         self.num_heads = num_heads
         self.dropout = dropout
         self.num_classes = num_classes
-        self.null_class = num_classes
+        self.null_class = num_classes if num_classes is not None else 0
 
         base_channels = hidden_dims[0]
         time_dim = base_channels * 4
@@ -235,9 +236,7 @@ class DiffusionUNet(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
         self.class_embedding = (
-            nn.Embedding(num_classes + 1, time_dim)
-            if num_classes is not None
-            else None
+            nn.Embedding(num_classes + 1, time_dim) if num_classes is not None else None
         )
         self.input_projection = nn.Conv2d(in_channels, base_channels, 3, padding=1)
 
@@ -292,15 +291,16 @@ class DiffusionUNet(nn.Module):
             current_channels = next_channels
         self.up_stages = nn.ModuleList(up_stages)
 
-        self.output_norm = nn.GroupNorm(
-            _group_count(base_channels), base_channels
+        self.output_norm = nn.GroupNorm(_group_count(base_channels), base_channels)
+        self.output_projection = nn.Conv2d(
+            base_channels, self.out_channels, 3, padding=1
         )
-        self.output_projection = nn.Conv2d(base_channels, in_channels, 3, padding=1)
 
     def config(self) -> dict[str, object]:
         return {
             "image_size": self.sample_size,
             "in_channels": self.in_channels,
+            "out_channels": self.out_channels,
             "hidden_dims": list(self.hidden_dims),
             "attention_levels": list(self.attention_levels),
             "num_heads": self.num_heads,

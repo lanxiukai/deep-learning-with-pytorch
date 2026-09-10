@@ -79,12 +79,17 @@ class TorchvisionInceptionFeatures(nn.Module):
 
     This is not the TensorFlow FID implementation.  Results are comparable
     only when every model uses this exact preprocessing and feature extractor.
+    Set projection_dim=None to retain all 2048 pool features.
     """
+
+    mean: Tensor
+    std: Tensor
+    projection: Tensor | None
 
     def __init__(
         self,
         *,
-        projection_dim: int = 256,
+        projection_dim: int | None = 256,
         projection_seed: int = 2026,
     ) -> None:
         super().__init__()
@@ -92,7 +97,7 @@ class TorchvisionInceptionFeatures(nn.Module):
             weights=Inception_V3_Weights.DEFAULT,
             transform_input=False,
         )
-        model.fc = nn.Identity()
+        model.add_module("fc", nn.Identity())
         self.model = model.eval().requires_grad_(False)
         self.register_buffer(
             "mean", torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
@@ -102,9 +107,14 @@ class TorchvisionInceptionFeatures(nn.Module):
         )
         generator = torch.Generator().manual_seed(projection_seed)
         projection = (
-            torch.randn(2048, projection_dim, generator=generator) / projection_dim**0.5
+            None
+            if projection_dim is None
+            else (
+                torch.randn(2048, projection_dim, generator=generator)
+                / projection_dim**0.5
+            )
         )
-        self.feature_dim = projection_dim
+        self.feature_dim = 2048 if projection_dim is None else projection_dim
         self.register_buffer("projection", projection)
 
     def forward(self, images: Tensor) -> Tensor:
@@ -119,7 +129,7 @@ class TorchvisionInceptionFeatures(nn.Module):
             antialias=True,
         )
         features = self.model((images - self.mean) / self.std)
-        return features @ self.projection
+        return features if self.projection is None else features @ self.projection
 
 
 class FeatureMoments:

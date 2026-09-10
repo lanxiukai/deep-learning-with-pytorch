@@ -24,8 +24,13 @@ environment or dependency workflow.
 ## Design boundaries
 
 - [diffusion/ddpm.py](diffusion/ddpm.py) is a compatibility facade. New
-  lessons import the focused discrete diffusion, score-SDE, and U-Net modules
-  directly.
+  lessons import the discrete DDPM, learned-variance Improved DDPM, score-SDE,
+  EDM, solver, and U-Net modules directly. The
+  [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) follows the
+  128px CelebA main line. `diffusion/lesson_utils.py` shares data and checkpoint
+  handling while objectives and optimization remain in scripts;
+  `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
+  using the existing Inception/MMD/Fréchet primitives.
 - [gan/training.py](gan/training.py) owns shared BF16 runtime selection, data
   access, output paths, EMA setup, checkpoints, and sample artifacts for the
   ProGAN-to-StyleGAN2 sequence. Those lesson scripts retain model schedules,
@@ -44,6 +49,10 @@ environment or dependency workflow.
   comparable standard/beta-VAE training path. Focused modules cover compact
   32x32 hierarchical VAEs plus reusable discrete-tokenizer, token-prior, and
   perceptual-autoencoder blocks for the 128x128 CelebA lessons.
+  The KL perceptual autoencoder also supports an f=8, 128px continuous first
+  stage for latent diffusion; its 16x16 latent resolution is distinct from the
+  decoded RGB image size. The Inception extractor supports both its existing
+  projected features and unprojected 2048D features.
 - [training/checkpoints.py](training/checkpoints.py) owns serialization and
   state restoration; [training/session.py](training/session.py) manages output
   lifecycles without owning optimization loops.

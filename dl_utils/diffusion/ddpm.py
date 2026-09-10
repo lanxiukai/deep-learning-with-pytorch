@@ -22,14 +22,14 @@ from dl_utils.diffusion.diffusion_ddpm import (
     linear_beta_schedule,
 )
 from dl_utils.diffusion.diffusion_score_sde import (
-    ScoreSampler,
     VPSDE,
+    ScoreSampler,
     sample_vp_sde,
 )
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet, UNet
 
-
 __all__ = [
+    "VPSDE",
     "DiffusionPrediction",
     "DiffusionUNet",
     "DiscreteSampler",
@@ -37,7 +37,6 @@ __all__ = [
     "PredictionType",
     "ScoreSampler",
     "UNet",
-    "VPSDE",
     "cosine_beta_schedule",
     "linear_beta_schedule",
     "sample_vp_sde",

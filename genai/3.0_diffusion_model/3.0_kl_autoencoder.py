@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import math
+import uuid
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -23,25 +25,21 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.cifar10 import (
-    make_cifar10_loader,
-    normalized_cifar10_transform,
+from dl_utils.diffusion.lesson_utils import (
+    OUTPUT_ROOT,
+    add_data_arguments,
+    make_image_loader,
 )
 from dl_utils.filesystem.directories import reset_dir
-from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,
     generator_hinge_loss,
 )
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.training.checkpoints import (
-    model_state_fingerprint,
-    reproducibility_metadata,
-)
 from dl_utils.vae.image_quality import structural_similarity_index
 from dl_utils.vae.perceptual_autoencoder import (
-    KLPerceptualAutoencoder32,
-    PatchDiscriminator32,
+    KLPerceptualAutoencoder,
+    PatchDiscriminator,
     VGGPerceptualLoss,
     adaptive_adversarial_weight,
 )
@@ -50,12 +48,10 @@ from dl_utils.vae.vae_common import (
     reparameterize_logvar,
 )
 
-PROJECT_ROOT = infer_project_root()
-
 
 def kl_autoencoder_step(
-    model: KLPerceptualAutoencoder32,
-    discriminator: PatchDiscriminator32,
+    model: KLPerceptualAutoencoder,
+    discriminator: PatchDiscriminator,
     perceptual: nn.Module,
     reconstruction_logvar: Tensor,
     x: Tensor,
@@ -72,13 +68,16 @@ def kl_autoencoder_step(
     pixel_map = (reconstruction - x).abs()
     perceptual_per_sample = perceptual(reconstruction, x, reduction="none")
     feature_loss = perceptual_per_sample.mean()
-    reconstruction_map = pixel_map + float(perceptual_weight) * (
-        perceptual_per_sample[:, None, None, None]
+    reconstruction_map = (
+        pixel_map
+        + float(perceptual_weight) * (perceptual_per_sample[:, None, None, None])
     )
     nll = (
-        reconstruction_map * torch.exp(-reconstruction_logvar)
-        + reconstruction_logvar
-    ).flatten(1).sum(dim=1).mean()
+        (reconstruction_map * torch.exp(-reconstruction_logvar) + reconstruction_logvar)
+        .flatten(1)
+        .sum(dim=1)
+        .mean()
+    )
     kl = diagonal_gaussian_kl_from_logvar(mu, logvar).flatten(1).sum(dim=1).mean()
 
     discriminator.requires_grad_(False)
@@ -99,19 +98,24 @@ def kl_autoencoder_step(
         optimizer.step()
     finally:
         discriminator.requires_grad_(True)
-    return reconstruction.detach(), mu.detach(), logvar.detach(), {
-        "autoencoder": loss.detach(),
-        "nll": nll.detach(),
-        "pixel_l1": pixel_map.mean().detach(),
-        "frozen_feature": feature_loss.detach(),
-        "kl": kl.detach(),
-        "generator_adversarial": adversarial.detach(),
-        "adaptive_weight": adaptive.detach(),
-    }
+    return (
+        reconstruction.detach(),
+        mu.detach(),
+        logvar.detach(),
+        {
+            "autoencoder": loss.detach(),
+            "nll": nll.detach(),
+            "pixel_l1": pixel_map.mean().detach(),
+            "frozen_feature": feature_loss.detach(),
+            "kl": kl.detach(),
+            "generator_adversarial": adversarial.detach(),
+            "adaptive_weight": adaptive.detach(),
+        },
+    )
 
 
 def discriminator_step(
-    discriminator: PatchDiscriminator32,
+    discriminator: PatchDiscriminator,
     x: Tensor,
     reconstruction: Tensor,
     optimizer: torch.optim.Optimizer,
@@ -138,7 +142,7 @@ def discriminator_step(
 
 @torch.inference_mode()
 def estimate_latent_interface(
-    model: KLPerceptualAutoencoder32,
+    model: KLPerceptualAutoencoder,
     loader: DataLoader,
     device: torch.device,
     *,
@@ -208,8 +212,8 @@ def estimate_latent_interface(
 
 @torch.inference_mode()
 def evaluate(
-    model: KLPerceptualAutoencoder32,
-    discriminator: PatchDiscriminator32,
+    model: KLPerceptualAutoencoder,
+    discriminator: PatchDiscriminator,
     perceptual: nn.Module,
     loader: DataLoader,
     *,
@@ -266,28 +270,31 @@ def evaluate(
         return {
             "pixel_l1": values[offset],
             "pixel_mse": mse,
-            "psnr_for_minus_one_to_one_range": 10.0
-            * math.log10(4.0 / max(mse, 1e-12)),
+            "psnr_for_minus_one_to_one_range": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
             "ssim_uniform_window": values[offset + 2],
             "frozen_feature_l1": values[offset + 3],
         }
 
-    return {
-        "examples": examples,
-        "posterior_mean_reconstruction": reconstruction_metrics(0),
-        "posterior_sample_reconstruction": reconstruction_metrics(4),
-        "sample_mean_reconstruction_mse": values[8],
-        "kl_nats_per_image": values[9],
-        "patch_discriminator_logits": {
-            "real": values[10],
-            "posterior_mean_reconstruction": values[11],
-            "posterior_sample_reconstruction": values[12],
+    return (
+        {
+            "examples": examples,
+            "posterior_mean_reconstruction": reconstruction_metrics(0),
+            "posterior_sample_reconstruction": reconstruction_metrics(4),
+            "sample_mean_reconstruction_mse": values[8],
+            "kl_nats_per_image": values[9],
+            "patch_discriminator_logits": {
+                "real": values[10],
+                "posterior_mean_reconstruction": values[11],
+                "posterior_sample_reconstruction": values[12],
+            },
+            "unconditional_generation": None,
+            "generation_boundary": (
+                "A downstream continuous latent model is not trained in this lesson."
+            ),
         },
-        "unconditional_generation": None,
-        "generation_boundary": (
-            "A downstream continuous latent model is not trained in this lesson."
-        ),
-    }, comparison, normal_decode
+        comparison,
+        normal_decode,
+    )
 
 
 class RandomFeaturePerceptualLoss(nn.Module):
@@ -328,104 +335,27 @@ class RandomFeaturePerceptualLoss(nn.Module):
         raise ValueError("reduction must be 'none' or 'mean'")
 
 
-def smoke_test() -> None:
-    torch.manual_seed(7)
-    model = KLPerceptualAutoencoder32(latent_channels=4, hidden_channels=32)
-    discriminator = PatchDiscriminator32(base_channels=16)
-    perceptual = RandomFeaturePerceptualLoss(channels=8)
-    reconstruction_logvar = nn.Parameter(torch.zeros(()))
-    optimizer = torch.optim.Adam(
-        [*model.parameters(), reconstruction_logvar], lr=1e-4
+def make_loaders(args, device):
+    return (
+        make_image_loader(args, device),
+        make_image_loader(args, device, augment=False, shuffle=False),
+        make_image_loader(args, device, split="validation"),
     )
-    d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=1e-4)
-    x = torch.randn(2, 3, 32, 32).clamp(-1, 1)
-    before = reconstruction_logvar.detach().clone()
-    model_id_before = model_state_fingerprint(model)
-    reconstruction, mu, _, metrics = kl_autoencoder_step(
-        model,
-        discriminator,
-        perceptual,
-        reconstruction_logvar,
-        x,
-        optimizer,
-        step=1,
-        discriminator_start=0,
-        perceptual_weight=0.1,
-        kl_weight=1e-6,
-        discriminator_weight=1.0,
-    )
-    d_metrics = discriminator_step(
-        discriminator,
-        x,
-        reconstruction,
-        d_optimizer,
-        step=1,
-        discriminator_start=0,
-    )
-    scaled = model.encode_latent(x, sample=False, latent_scale=0.5)
-    assert reconstruction.shape == x.shape
-    assert mu.shape == (2, 4, 8, 8)
-    assert model.decode_latent(scaled, latent_scale=0.5).shape == x.shape
-    assert not torch.equal(before, reconstruction_logvar.detach())
-    assert model.decoder.last_layer.grad is not None
-    assert torch.isfinite(structural_similarity_index(reconstruction, x))
-    assert model_state_fingerprint(model) != model_id_before
-    print(
-        f"smoke test passed: AE={metrics['autoencoder'].item():.3f}, "
-        f"D={d_metrics['discriminator'].item():.3f}, "
-        f"KL={metrics['kl'].item():.3f}, "
-        f"adaptive={metrics['adaptive_weight'].item():.3f}, "
-        f"s={reconstruction_logvar.item():.5f}"
-    )
-
-
-def make_loaders(
-    args: argparse.Namespace, device: torch.device
-) -> tuple[DataLoader, DataLoader, DataLoader]:
-    root = PROJECT_ROOT / "data" / "cifar10"
-    transform = normalized_cifar10_transform(horizontal_flip=False)
-    train_loader = make_cifar10_loader(
-        root,
-        args.batch_size,
-        device,
-        train=True,
-        transform=transform,
-        num_workers=args.workers,
-    )
-    statistics_loader = make_cifar10_loader(
-        root,
-        args.batch_size,
-        device,
-        train=True,
-        transform=transform,
-        num_workers=args.workers,
-        shuffle=False,
-        drop_last=False,
-    )
-    validation_loader = make_cifar10_loader(
-        root,
-        args.batch_size,
-        device,
-        train=False,
-        transform=transform,
-        num_workers=args.workers,
-        shuffle=False,
-        drop_last=False,
-    )
-    return train_loader, statistics_loader, validation_loader
 
 
 def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    out_dir = PROJECT_ROOT / "output" / "diffusion" / "kl_autoencoder"
+    out_dir = args.output_dir
     reset_dir(str(out_dir))
     train_loader, statistics_loader, validation_loader = make_loaders(args, device)
     config = {
         "latent_channels": args.latent_channels,
         "hidden_channels": args.hidden_channels,
+        "downsample_steps": 3,
+        "image_size": args.image_size,
     }
-    model = KLPerceptualAutoencoder32(**config).to(device)
-    discriminator = PatchDiscriminator32(args.discriminator_channels).to(device)
+    model = KLPerceptualAutoencoder(**config).to(device)
+    discriminator = PatchDiscriminator(args.discriminator_channels).to(device)
     perceptual = (
         VGGPerceptualLoss()
         if args.perceptual == "vgg"
@@ -516,16 +446,14 @@ def train(args: argparse.Namespace) -> None:
         out_dir / "standard_normal_decode_not_generation.png",
         nrow=8,
     )
-    interface_id = model_state_fingerprint(model)
+    interface_id = str(uuid.uuid4())
     torch.save(
         {
-            "format_version": 2,
+            "format_version": 3,
             "model_name": "kl_perceptual_autoencoder",
             "roadmap_role": "latent_diffusion_first_stage",
             "direct_baseline": "perceptual autoencoder with Gaussian latent",
-            "visible_increment": (
-                "frozen scaled continuous-latent interface for LDM"
-            ),
+            "visible_increment": ("frozen scaled continuous-latent interface for LDM"),
             "interface_id": interface_id,
             "state_dict": model.state_dict(),
             "discriminator_state_dict": discriminator.state_dict(),
@@ -549,35 +477,28 @@ def train(args: argparse.Namespace) -> None:
             },
             "discriminator_start": args.discriminator_start,
             "global_step": global_step,
-            "latent_shape": [args.latent_channels, 8, 8],
+            "latent_shape": [
+                args.latent_channels,
+                model.latent_size,
+                model.latent_size,
+            ],
             "latent_interface": {
                 **latent_interface,
-                "statistics_split": "CIFAR-10 train, deterministic order",
+                "statistics_split": "CelebA train, deterministic order",
                 "encode_modes": ["posterior_mean", "posterior_sample"],
                 "decode_rule": "decoder(scaled_latent / latent_scale)",
             },
-            "dataset": "CIFAR-10",
-            "image_size": 32,
+            "dataset": "CelebA",
+            "image_size": args.image_size,
             "value_range": [-1.0, 1.0],
             "validation_metrics": validation,
-            **reproducibility_metadata(
-                models={
-                    "autoencoder": model,
-                    "discriminator": discriminator,
-                },
-                seed=args.seed,
-                training_budget={
-                    "epochs": args.epochs,
-                    "batch_size": args.batch_size,
-                    "optimizer_updates_per_network": global_step,
-                    "latent_scale_batches": args.scale_batches,
-                },
-                data_preprocessing={
-                    "spatial": "native 32x32",
-                    "value_range": [-1.0, 1.0],
-                    "augmentation": "none",
-                },
-            ),
+            "seed": args.seed,
+            "training_budget": {
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "optimizer_updates": global_step,
+            },
+            "preprocessing": "178px center crop, bilinear resize, random horizontal flip",
             "generation_model": None,
         },
         out_dir / "kl_autoencoder.pth",
@@ -597,10 +518,12 @@ def train(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--smoke-test", action="store_true")
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--hidden-channels", type=int, default=128)
+    add_data_arguments(parser)
+    parser.add_argument(
+        "--output-dir", type=Path, default=OUTPUT_ROOT / "kl_autoencoder"
+    )
+    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--hidden-channels", type=int, default=192)
     parser.add_argument("--latent-channels", type=int, default=4)
     parser.add_argument("--discriminator-channels", type=int, default=64)
     parser.add_argument("--perceptual", choices=("vgg", "random"), default="vgg")
@@ -614,18 +537,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-every", type=int, default=5)
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--discriminator-lr", type=float, default=2e-4)
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     set_seed(args.seed)
-    if args.smoke_test:
-        smoke_test()
-    else:
-        train(args)
+    train(args)
 
 
 if __name__ == "__main__":

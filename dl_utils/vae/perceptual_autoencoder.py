@@ -6,6 +6,8 @@ its optimizer phases and algorithm-specific reduction visible in the script.
 
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from torch import Tensor, nn
 
@@ -117,7 +119,7 @@ class PerceptualDecoder(nn.Module):
 
     @property
     def last_layer(self) -> nn.Parameter:
-        return self.net[-2].weight
+        return cast(nn.Parameter, cast(nn.ConvTranspose2d, self.net[-2]).weight)
 
     def forward(self, z: Tensor) -> Tensor:
         return self.net(z)
@@ -164,16 +166,37 @@ class VQPerceptualAutoencoder(nn.Module):
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
 
-class KLPerceptualAutoencoder32(nn.Module):
+class KLPerceptualAutoencoder(nn.Module):
     """Continuous KL-regularized autoencoder used before latent diffusion."""
 
-    def __init__(self, *, latent_channels: int = 4, hidden_channels: int = 128) -> None:
+    def __init__(
+        self,
+        *,
+        latent_channels: int = 4,
+        hidden_channels: int = 192,
+        downsample_steps: int = 3,
+        image_size: int = 128,
+    ) -> None:
         super().__init__()
+        if image_size % (2**downsample_steps):
+            raise ValueError(
+                "Image size must be divisible by the encoder scale factor."
+            )
         self.latent_channels = latent_channels
-        self.encoder = PerceptualEncoder(2 * latent_channels, hidden_channels)
-        self.decoder = PerceptualDecoder(latent_channels, hidden_channels)
+        self.image_size = image_size
+        self.latent_size = image_size // (2**downsample_steps)
+        self.encoder = PerceptualEncoder(
+            2 * latent_channels, hidden_channels, downsample_steps
+        )
+        self.decoder = PerceptualDecoder(
+            latent_channels, hidden_channels, downsample_steps
+        )
 
     def encode(self, x: Tensor) -> tuple[Tensor, Tensor]:
+        if x.shape[-2:] != (self.image_size, self.image_size):
+            raise ValueError(
+                "Image shape does not match the first-stage configuration."
+            )
         mu, logvar = self.encoder(x).chunk(2, dim=1)
         return mu, logvar.clamp(-12.0, 12.0)
 
@@ -203,6 +226,18 @@ class KLPerceptualAutoencoder32(nn.Module):
         mu, logvar = self.encode(x)
         z = reparameterize_logvar(mu, logvar)
         return self.decoder(z), mu, logvar, z
+
+
+class KLPerceptualAutoencoder32(KLPerceptualAutoencoder):
+    """Compatibility for notebooks using the original 32px, factor-four model."""
+
+    def __init__(self, *, latent_channels: int = 4, hidden_channels: int = 128):
+        super().__init__(
+            latent_channels=latent_channels,
+            hidden_channels=hidden_channels,
+            downsample_steps=2,
+            image_size=32,
+        )
 
 
 class PatchDiscriminator(nn.Module):
@@ -239,11 +274,16 @@ class PatchDiscriminator(nn.Module):
 class VGGPerceptualLoss(nn.Module):
     """Frozen ImageNet-VGG16 multi-layer feature L1 distance."""
 
+    mean: Tensor
+    std: Tensor
+
     def __init__(self) -> None:
         super().__init__()
         from torchvision import models
 
-        features = models.vgg16(weights=models.VGG16_Weights.DEFAULT).features
+        features = cast(
+            nn.Sequential, models.vgg16(weights=models.VGG16_Weights.DEFAULT).features
+        )
         self.blocks = nn.ModuleList([features[:4], features[4:9], features[9:16]])
         self.eval().requires_grad_(False)
         self.register_buffer(
@@ -319,6 +359,7 @@ PatchDiscriminator32 = PatchDiscriminator
 
 
 __all__ = [
+    "KLPerceptualAutoencoder",
     "KLPerceptualAutoencoder32",
     "LPIPSPerceptualLoss",
     "PatchDiscriminator",

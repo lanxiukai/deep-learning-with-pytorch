@@ -13,13 +13,13 @@ previous cumulative signal at the clean endpoint is exactly one.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Literal
 
 import torch
-from torch import Tensor, nn
 import torch.nn.functional as F
-
+from torch import Tensor, nn
 
 PredictionType = Literal["epsilon", "x0", "v", "score"]
 DiscreteSampler = Literal["ddpm", "ddim"]
@@ -101,6 +101,17 @@ class GaussianDiffusion(nn.Module):
     ``(epsilon, x0, score)`` triple.
     """
 
+    betas: Tensor
+    alphas: Tensor
+    alpha_bars: Tensor
+    alpha_bars_prev: Tensor
+    sqrt_alpha_bars: Tensor
+    sqrt_one_minus_alpha_bars: Tensor
+    posterior_variance: Tensor
+    posterior_log_variance: Tensor
+    posterior_mean_coef_x0: Tensor
+    posterior_mean_coef_xt: Tensor
+
     def __init__(
         self,
         num_steps: int = 1000,
@@ -121,12 +132,8 @@ class GaussianDiffusion(nn.Module):
         alpha_bars = torch.cumprod(alphas, dim=0)
         alpha_bars_prev = F.pad(alpha_bars[:-1], (1, 0), value=1.0)
 
-        posterior_variance = (
-            betas * (1.0 - alpha_bars_prev) / (1.0 - alpha_bars)
-        )
-        posterior_mean_coef_x0 = (
-            betas * alpha_bars_prev.sqrt() / (1.0 - alpha_bars)
-        )
+        posterior_variance = betas * (1.0 - alpha_bars_prev) / (1.0 - alpha_bars)
+        posterior_mean_coef_x0 = betas * alpha_bars_prev.sqrt() / (1.0 - alpha_bars)
         posterior_mean_coef_xt = (
             alphas.sqrt() * (1.0 - alpha_bars_prev) / (1.0 - alpha_bars)
         )
@@ -142,9 +149,7 @@ class GaussianDiffusion(nn.Module):
         self.register_buffer("alpha_bars", alpha_bars)
         self.register_buffer("alpha_bars_prev", alpha_bars_prev)
         self.register_buffer("sqrt_alpha_bars", alpha_bars.sqrt())
-        self.register_buffer(
-            "sqrt_one_minus_alpha_bars", (1.0 - alpha_bars).sqrt()
-        )
+        self.register_buffer("sqrt_one_minus_alpha_bars", (1.0 - alpha_bars).sqrt())
         self.register_buffer("posterior_variance", posterior_variance)
         self.register_buffer(
             "posterior_log_variance",
@@ -267,9 +272,7 @@ class GaussianDiffusion(nn.Module):
         guidance_scale: float = 1.0,
         clip_x0: tuple[float, float] | None = (-1.0, 1.0),
     ) -> DiffusionPrediction:
-        output = self._guided_output(
-            model, x_t, timesteps, labels, guidance_scale
-        )
+        output = self._guided_output(model, x_t, timesteps, labels, guidance_scale)
         return self.convert_model_output(
             x_t, timesteps, output, prediction_type, clip_x0
         )
@@ -313,9 +316,7 @@ class GaussianDiffusion(nn.Module):
         )
         mean, variance, _ = self.q_posterior(prediction.x0, x_t, timesteps)
         noise = _randn_like(x_t, generator)
-        has_previous = (timesteps > 0).reshape(
-            x_t.shape[0], *((1,) * (x_t.ndim - 1))
-        )
+        has_previous = (timesteps > 0).reshape(x_t.shape[0], *((1,) * (x_t.ndim - 1)))
         x_previous = mean + has_previous * variance.sqrt() * noise
         return x_previous, prediction
 
@@ -363,30 +364,30 @@ class GaussianDiffusion(nn.Module):
         )
         stochastic_std = eta * posterior_ratio.clamp(min=0.0).sqrt()
         direction_scale = (
-            1.0 - alpha_bar_previous - stochastic_std.square()
-        ).clamp(min=0.0).sqrt()
+            (1.0 - alpha_bar_previous - stochastic_std.square()).clamp(min=0.0).sqrt()
+        )
         x_previous = (
             alpha_bar_previous.sqrt() * prediction.x0
             + direction_scale * prediction.epsilon
         )
         if eta > 0.0:
-            x_previous = x_previous + stochastic_std * _randn_like(
-                x_t, generator
-            )
+            x_previous = x_previous + stochastic_std * _randn_like(x_t, generator)
         return x_previous, prediction
 
     def inference_timesteps(self, num_inference_steps: int) -> Tensor:
         """Return a descending subsequence containing both noisy endpoints."""
         if not 2 <= num_inference_steps <= self.num_steps:
-            raise ValueError(
-                "num_inference_steps must be in [2, num_train_steps]"
+            raise ValueError("num_inference_steps must be in [2, num_train_steps]")
+        timesteps = (
+            torch.linspace(
+                self.num_steps - 1,
+                0,
+                num_inference_steps,
+                device=self.betas.device,
             )
-        timesteps = torch.linspace(
-            self.num_steps - 1,
-            0,
-            num_inference_steps,
-            device=self.betas.device,
-        ).round().long()
+            .round()
+            .long()
+        )
         if torch.unique_consecutive(timesteps).numel() != num_inference_steps:
             raise RuntimeError("rounded inference schedule contains duplicates")
         return timesteps
@@ -459,10 +460,7 @@ class GaussianDiffusion(nn.Module):
             trajectory.append(x_t.detach().cpu())
             capture_count = min(trajectory_frames - 1, len(steps))
             capture_positions = set(
-                torch.linspace(0, len(steps) - 1, capture_count)
-                .round()
-                .long()
-                .tolist()
+                torch.linspace(0, len(steps) - 1, capture_count).round().long().tolist()
             )
 
         was_training = model.training
