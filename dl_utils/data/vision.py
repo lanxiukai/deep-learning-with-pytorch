@@ -28,7 +28,6 @@ def vision_loaders(
     Supported datasets:
       - "mnist"
       - "fashion_mnist" (also accepts "fashionmnist", "fmnist")
-      - "cifar10"
 
     Notes:
       - We normalize to [0,1] via ToTensor(), then binarize (if needed) in the training loop.
@@ -47,11 +46,10 @@ def vision_loaders(
         ds_cls = torchvision.datasets.MNIST
     elif key in {"fashionmnist", "fmnist"}:
         ds_cls = torchvision.datasets.FashionMNIST
-    elif key == "cifar10":
-        ds_cls = torchvision.datasets.CIFAR10
     else:
         raise ValueError(
-            f"Unknown dataset={dataset!r}. Supported: 'mnist', 'fashion_mnist' (or 'fmnist'), 'cifar10'."
+            f"Unknown dataset={dataset!r}. Supported: 'mnist', "
+            "'fashion_mnist' (or 'fmnist')."
         )
 
     train_ds = ds_cls(root=data_dir, train=True, transform=transform, download=True)

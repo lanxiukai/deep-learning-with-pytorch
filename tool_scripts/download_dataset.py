@@ -41,15 +41,6 @@ def _download_fashion_mnist() -> None:
     print("The Fashion-MNIST Dataset has been downloaded.")
 
 
-def _download_cifar10() -> None:
-    vision_loaders(
-        dataset="cifar10",
-        data_dir=DATA_DIR / "cifar10",
-        batch_size=256,
-    )
-    print("The CIFAR-10 Dataset has been downloaded.")
-
-
 def _download_house_prices() -> None:
     import pandas as pd
 
@@ -145,7 +136,6 @@ def _download_pokemon() -> None:
 DOWNLOADERS: dict[str, Callable[[], None]] = {
     "mnist": _download_mnist,
     "fashion-mnist": _download_fashion_mnist,
-    "cifar10": _download_cifar10,
     "house-prices": _download_house_prices,
     "time-machine": _download_time_machine,
     "celeba": _download_celeba,

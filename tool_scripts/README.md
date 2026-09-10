@@ -149,9 +149,8 @@ uv sync --extra examples --locked
 uv run --locked --no-sync python tool_scripts/download_dataset.py
 ```
 
-The default sequence is `mnist`, `fashion-mnist`, `cifar10`, `house-prices`,
-`time-machine`, `celeba`, `anime-face`, `glasses`, `airfoil`, `fra-eng`,
-`pokemon`.
+The default sequence is `mnist`, `fashion-mnist`, `house-prices`, `time-machine`,
+`celeba`, `anime-face`, `glasses`, `airfoil`, `fra-eng`, `pokemon`.
 
 Select one or several datasets by listing them after `--dataset`. Selections
 run in the order given, and duplicates are ignored after their first
@@ -160,7 +159,7 @@ appearance:
 ```bash
 uv sync --no-dev --extra celeba --locked
 uv run --locked --no-sync python tool_scripts/download_dataset.py \
-  --dataset mnist cifar10 celeba glasses
+  --dataset mnist celeba glasses
 ```
 
 SN-GAN, SAGAN, BigGAN, VQ-VAE, FSQ, and VQGAN default to aligned CelebA under

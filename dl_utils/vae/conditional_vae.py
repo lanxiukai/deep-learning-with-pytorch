@@ -24,7 +24,7 @@ class ConditionalDecoder(nn.Module):
         self.input = nn.Sequential(
             nn.Linear(latent_dim + condition_dim, hidden_channels * 4 * 4),
             nn.SiLU(),
-        )  # (B, latent_dim + condition_dim) -> (B, hidden_channels * 4 * 4)
+        )  # (S*B, latent_dim + condition_dim) -> (S*B, hidden_channels * 4 * 4)
         self.net = nn.Sequential(
             nn.Unflatten(1, (hidden_channels, 4, 4)),
             nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
@@ -35,7 +35,7 @@ class ConditionalDecoder(nn.Module):
             nn.SiLU(),
             nn.ConvTranspose2d(hidden_channels // 4, 1, 4, 2, 1),
             nn.Sigmoid(),
-        )  # (B, hidden_channels, 4, 4) -> (B, 1, 32, 32)
+        )  # (S*B, hidden_channels, 4, 4) -> (S*B, 1, 32, 32)
 
     def forward(self, z: Tensor, condition: Tensor) -> Tensor:
         # Typical shapes: z: (B, latent_dim), condition: (B, condition_dim).
@@ -45,8 +45,9 @@ class ConditionalDecoder(nn.Module):
         leading_shape = z.shape[:-1]
         features = torch.cat((z, condition), dim=-1).reshape(
             -1, z.shape[-1] + condition.shape[-1]
-        )
+        )  # (S*B, latent_dim + condition_dim)
         images = self.net(self.input(features))
+        # images: (B, 1, 32, 32) or (S, B, 1, 32, 32)
         return images.reshape(*leading_shape, 1, 32, 32)
 
 
@@ -79,16 +80,13 @@ class ConditionalVAE(nn.Module):
             nn.GroupNorm(8, hidden_channels),
             nn.SiLU(),
             nn.Flatten(),
-        )  # (B, 1, 32, 32) -> (B, hidden_channels, 4, 4)
+        )  # (B, 1, 32, 32) -> (B, hidden_channels * 4 * 4)
         self.posterior = nn.Sequential(
             nn.Linear(hidden_channels * 4 * 4 + condition_dim, 256),
             nn.SiLU(),
             nn.Linear(256, 2 * latent_dim),
-        )
+        )  # (B, hidden_channels * 4 * 4 + condition_dim) -> (B, 2 * latent_dim)
         self.decoder = ConditionalDecoder(latent_dim, condition_dim, hidden_channels)
-
-    def condition(self, labels: Tensor) -> Tensor:
-        return self.condition_embedding(labels)
 
     def prior(self, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return the standard normal prior, independent of the class label."""
@@ -112,11 +110,6 @@ class ConditionalVAE(nn.Module):
             *labels.shape, self.condition_dim
         )
         return self.decoder(z, condition)
-
-    def reconstruct(self, x: Tensor, labels: Tensor, *, sample: bool = False) -> Tensor:
-        q_mu, q_logvar = self.encode(x, labels)
-        z = reparameterize_logvar(q_mu, q_logvar) if sample else q_mu
-        return self.decode(z, labels)
 
     def generate(self, labels: Tensor) -> Tensor:
         """Sample z ~ N(0, I), then decode it with the requested class."""
