@@ -95,7 +95,7 @@ class ConditionalVAE(nn.Module):
         features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(
             self.posterior(torch.cat((features, condition), dim=1))
-        )  # mu, logvar
+        )  # mu, logvar (B, latent_dim)
 
     def decode(self, z: Tensor, labels: Tensor) -> Tensor:
         """Return the Bernoulli mean p(x | z, c)."""
