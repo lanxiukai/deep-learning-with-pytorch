@@ -39,17 +39,15 @@ class GaussianVAE(nn.Module):
             nn.GroupNorm(8, hidden_channels),
             nn.SiLU(),
             nn.Flatten(),
-        )
+        )  # (B, 1, 32, 32) -> (B, hidden_channels * 4 * 4)
         self.context = nn.Sequential(
             nn.Linear(hidden_channels * 4 * 4, context_dim),
             nn.SiLU(),
-        )
-        self.base_posterior = nn.Linear(context_dim, 2 * latent_dim)
-        self.decoder_input = nn.Sequential(
+        )  # (B, hidden_channels * 4 * 4) -> (B, context_dim)
+        self.base_posterior = nn.Linear(context_dim, 2 * latent_dim)  # -> (B, 2 * latent_dim)
+        self.decoder = nn.Sequential(
             nn.Linear(latent_dim, hidden_channels * 4 * 4),
             nn.SiLU(),
-        )
-        self.decoder = nn.Sequential(
             nn.Unflatten(1, (hidden_channels, 4, 4)),
             nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
             nn.GroupNorm(8, hidden_channels // 2),
@@ -59,7 +57,7 @@ class GaussianVAE(nn.Module):
             nn.SiLU(),
             nn.ConvTranspose2d(hidden_channels // 4, 1, 4, 2, 1),
             nn.Sigmoid(),
-        )
+        )  # (B, latent_dim) -> (B, 1, 32, 32)
 
     def encode(self, images: Tensor) -> tuple[Tensor, Tensor]:
         context = self.context(self.encoder(images))
@@ -67,9 +65,11 @@ class GaussianVAE(nn.Module):
         return mu, logvar
 
     def decode(self, z: Tensor) -> Tensor:
+        # z: (B, latent_dim) for VAE or (B, K, latent_dim) for IWAE
         leading_shape = z.shape[:-1]
         flat_z = z.reshape(-1, self.latent_dim)
-        images = self.decoder(self.decoder_input(flat_z))
+        images = self.decoder(flat_z)
+        # output: (B, 1, 32, 32) for VAE or (B, K, 1, 32, 32) for IWAE
         return images.reshape(*leading_shape, 1, 32, 32)
 
     def sample_from_statistics(
@@ -79,6 +79,7 @@ class GaussianVAE(nn.Module):
         *,
         particles: int,
     ) -> tuple[Tensor, Tensor]:
+        # epsilon ~ N(0, I): (B, K, latent_dim), with K independent samples per input.
         epsilon = torch.randn(
             mu.shape[0],
             particles,
@@ -86,10 +87,11 @@ class GaussianVAE(nn.Module):
             device=mu.device,
             dtype=mu.dtype,
         )
+        # z: (B, K, latent_dim)
         z = mu[:, None, :] + torch.exp(0.5 * logvar[:, None, :]) * epsilon
         log_q = diagonal_gaussian_log_density(
             z, mu[:, None, :], logvar[:, None, :]
-        ).sum(dim=-1)
+        ).sum(dim=-1)  # (B, K)
         return z, log_q
 
     def reconstruct(self, images: Tensor) -> Tensor:
@@ -107,12 +109,12 @@ def standard_normal_log_density(z: Tensor) -> Tensor:
 
 def bernoulli_log_density(mean: Tensor, target: Tensor) -> Tensor:
     """Return log p(target | mean) for particle-shaped Bernoulli means."""
-    expanded_target = target[:, None, ...].expand_as(mean)
+    expanded_target = target[:, None, ...].expand_as(mean)  # (B, K, C, H, W)
     return (
         -F.binary_cross_entropy(mean, expanded_target, reduction="none")
         .flatten(2)
         .sum(dim=-1)
-    )
+    )  # (B, K)
 
 
 def importance_log_weights(
