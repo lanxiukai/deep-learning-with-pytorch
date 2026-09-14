@@ -46,21 +46,20 @@ Run this script without arguments; edit the constants below to experiment.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
+    save_conditional_samples,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
@@ -156,7 +155,7 @@ def _accumulate(
     total_metrics: dict[str, float], metrics: dict[str, Tensor], batch_size: int
 ) -> None:
     for name, value in metrics.items():
-        total_metrics[name] = total_metrics.get(name, 0.0) + float(value) * batch_size
+        total_metrics[name] = total_metrics.get(name, 0.0) + value.item() * batch_size
 
 
 @torch.inference_mode()
@@ -177,22 +176,6 @@ def evaluate_cvae(
         _accumulate(total_metrics, {"loss": loss.detach(), **terms}, images.shape[0])
         total_examples += images.shape[0]
     return {name: value / total_examples for name, value in total_metrics.items()}
-
-
-def _save_conditional_samples(
-    model: ConditionalVAE,
-    path: Path,
-    *,
-    device: torch.device,
-    samples_per_class: int = SAMPLES_PER_CLASS,
-) -> None:
-    labels = torch.arange(NUM_CLASSES, device=device).repeat_interleave(
-        samples_per_class
-    )
-    model.eval()
-    with torch.inference_mode():
-        images = model.generate(labels)
-    save_image(images, path, nrow=samples_per_class)
 
 
 def train_cvae(
@@ -258,7 +241,7 @@ def train_cvae(
                 }
             )
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
-                _save_conditional_samples(
+                save_conditional_samples(
                     model, training_dir / f"epoch_{epoch:03d}.png", device=device
                 )
 
@@ -276,12 +259,12 @@ def train_cvae(
         },
         out_dir / CHECKPOINT_NAME,
     )
-    _save_conditional_samples(model, out_dir / "conditional_samples.png", device=device)
+    save_conditional_samples(model, out_dir / "conditional_samples.png", device=device)
 
 
 def main() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     train_loader, validation_loader = make_loaders(device)
     train_cvae(
         train_loader=train_loader,

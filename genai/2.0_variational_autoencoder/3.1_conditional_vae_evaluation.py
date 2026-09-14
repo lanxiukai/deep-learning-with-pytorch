@@ -38,8 +38,9 @@ from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.conditional_vae import ConditionalVAE
+from dl_utils.vae.conditional_vae import ConditionalVAE, save_conditional_samples
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
@@ -95,12 +96,12 @@ def evaluate_reconstruction(
             q_mu, q_logvar = model.encode(images, labels)
             p_mu, p_logvar = model.prior(labels)
             reconstruction = model.decode(q_mu, labels)
-            reconstruction_total += float(
-                F.binary_cross_entropy(reconstruction, images, reduction="sum")
-            )
-            kl_total += float(
-                diagonal_gaussian_kl_from_logvar(q_mu, q_logvar, p_mu, p_logvar).sum()
-            )
+            reconstruction_total += F.binary_cross_entropy(
+                reconstruction, images, reduction="sum"
+            ).item()
+            kl_total += diagonal_gaussian_kl_from_logvar(
+                q_mu, q_logvar, p_mu, p_logvar
+            ).sum().item()
             examples += images.shape[0]
             if comparison is None:
                 count = min(NUM_COMPARISON_IMAGES, images.shape[0])
@@ -119,7 +120,7 @@ def evaluate_reconstruction(
 @torch.inference_mode()
 def evaluate() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     if not CHECKPOINT.is_file():
         raise FileNotFoundError(
             f"checkpoint not found: {CHECKPOINT}; run 3.0_conditional_vae.py first"
@@ -132,13 +133,13 @@ def evaluate() -> None:
     metrics, comparison = evaluate_reconstruction(
         model, make_test_loader(device), device
     )
-    labels = torch.arange(model.num_classes, device=device).repeat_interleave(
-        SAMPLES_PER_CLASS
-    )
-    samples = model.generate(labels)
-
     reset_dir(str(OUTPUT_DIR))
-    save_image(samples, OUTPUT_DIR / "conditional_samples.png", nrow=SAMPLES_PER_CLASS)
+    save_conditional_samples(
+        model,
+        OUTPUT_DIR / "conditional_samples.png",
+        device=device,
+        samples_per_class=SAMPLES_PER_CLASS,
+    )
     save_image(
         comparison, OUTPUT_DIR / "reconstructions.png", nrow=comparison.shape[0] // 2
     )

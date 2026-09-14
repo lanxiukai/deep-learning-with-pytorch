@@ -47,10 +47,10 @@ OUT_DIR = PROJECT_ROOT / "output" / "vae" / "vae"
 MODEL_CONFIG = {"z_dim": 100}
 
 
-def vae_loss(images, reconstructions, mu, std):
+def vae_loss(images, reconstructions, mu, logvar):
     """Return the standard VAE objective: reconstruction + KL."""
     reconstruction_loss, kl_loss = reconstruction_and_kl(
-        images, reconstructions, mu, std
+        images, reconstructions, mu, logvar
     )
     return reconstruction_loss + kl_loss, reconstruction_loss, kl_loss
 

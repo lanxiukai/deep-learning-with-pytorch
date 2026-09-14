@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 from torch import Tensor, nn
+from torchvision.utils import save_image
 
 from dl_utils.vae.vae_common import (
     reparameterize_logvar,
@@ -131,6 +134,23 @@ class ConditionalVAE(nn.Module):
         }  # reconstruction, statistics
 
 
+@torch.inference_mode()
+def save_conditional_samples(
+    model: ConditionalVAE,
+    path: Path,
+    *,
+    device: torch.device,
+    samples_per_class: int = 8,
+) -> None:
+    """Generate and save an equal-size sample row for every class."""
+    labels = torch.arange(model.num_classes, device=device).repeat_interleave(
+        samples_per_class
+    )
+    model.eval()
+    save_image(model.generate(labels), path, nrow=samples_per_class)
+
+
 __all__ = [
     "ConditionalVAE",
+    "save_conditional_samples",
 ]

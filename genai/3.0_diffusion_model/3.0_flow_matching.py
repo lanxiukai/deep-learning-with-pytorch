@@ -28,6 +28,7 @@ from dl_utils.diffusion.lesson_utils import (
     training_metadata,
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 
@@ -83,13 +84,17 @@ def endpoint_diagnostics(model, averaged, path, data, seed):
             ema = averaged(state, time * TIME_EMBEDDING_SCALE)
             result[name] = {
                 "time": value,
-                "state_rms": float(state.square().mean().sqrt()),
-                "target_rms": float(target.square().mean().sqrt()),
-                "velocity_rms": float(current.square().mean().sqrt()),
-                "ema_velocity_rms": float(ema.square().mean().sqrt()),
-                "current_mse": float((current - target).square().mean()),
-                "ema_mse": float((ema - target).square().mean()),
-                "current_ema_rms_gap": float((current - ema).square().mean().sqrt()),
+                "state_rms": state.square().mean().sqrt().item(),
+                "target_rms": target.square().mean().sqrt().item(),
+                "velocity_rms": current.square().mean().sqrt().item(),
+                "ema_velocity_rms": ema.square().mean().sqrt().item(),
+                "current_mse": (current - target).square().mean().item(),
+                "ema_mse": (ema - target).square().mean().item(),
+                "current_ema_rms_gap": (current - ema)
+                .square()
+                .mean()
+                .sqrt()
+                .item(),
             }
     finally:
         model.train(was_training)
@@ -100,7 +105,7 @@ def train(args):
     if args.max_grad_norm <= 0 or args.sampling_steps < 1:
         raise ValueError("Gradient norm limit and sampling steps must be positive.")
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_image_loader(args, device)
     path = GaussianConditionalPath(args.path)
     model = DiffusionUNet(
@@ -167,8 +172,8 @@ def train(args):
             optimizer.step()
             update_ema(averaged, model, args.ema_decay)
             meter.update(per_image, time)
-            gradient_sum += float(gradient_norm)
-            velocity_squared_sum += float(velocity.square().flatten(1).mean(1).sum())
+            gradient_sum += gradient_norm.item()
+            velocity_squared_sum += velocity.square().flatten(1).mean(1).sum().item()
             examples += len(data)
         append_record(
             args.output_dir / "training.jsonl",

@@ -49,10 +49,10 @@ MODEL_CONFIG = {"z_dim": 100}
 BETA = 4.0
 
 
-def beta_vae_loss(images, reconstructions, mu, std):
+def beta_vae_loss(images, reconstructions, mu, logvar):
     """Return the beta-VAE objective: reconstruction + beta * KL."""
     reconstruction_loss, kl_loss = reconstruction_and_kl(
-        images, reconstructions, mu, std
+        images, reconstructions, mu, logvar
     )
     return (
         reconstruction_loss + BETA * kl_loss,

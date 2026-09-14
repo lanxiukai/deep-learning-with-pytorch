@@ -39,6 +39,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.image_quality import (
     FeatureMoments,
@@ -195,7 +196,7 @@ def evaluate_reconstruction(
             ).cpu()
         positions = indices.shape[1] * indices.shape[2]
         reconstruction_moments.update(feature_extractor(reconstruction))
-        squared_error += float((reconstruction - images).square().sum())
+        squared_error += (reconstruction - images).square().sum().item()
         element_count += images.numel()
         paired_totals += (
             torch.stack(
@@ -210,7 +211,7 @@ def evaluate_reconstruction(
         )
         usage.update(indices)
         loss = system.prior_loss(indices, labels)
-        prior_nll += float(loss) * images.shape[0]
+        prior_nll += loss.item() * images.shape[0]
         prior_examples += images.shape[0]
         discriminator_totals += (
             torch.stack(
@@ -228,7 +229,7 @@ def evaluate_reconstruction(
     paired = (paired_totals / examples).tolist()
     mse = squared_error / element_count
     token_statistics = usage.statistics()
-    entropy_bits = float(token_statistics["token_entropy_nats"]) / math.log(2)
+    entropy_bits = token_statistics["token_entropy_nats"].item() / math.log(2)
     nll = prior_nll / prior_examples
     prior_metrics = {
         "nll_nats_per_token": nll,
@@ -263,8 +264,8 @@ def evaluate_reconstruction(
             "vocabulary_size": system.vocabulary_size,
             "positions": positions,
             "active_codes": int(token_statistics["active_codes"]),
-            "usage_fraction": float(token_statistics["usage_fraction"]),
-            "perplexity": float(token_statistics["perplexity"]),
+            "usage_fraction": token_statistics["usage_fraction"].item(),
+            "perplexity": token_statistics["perplexity"].item(),
             "marginal_entropy_bits_per_token": entropy_bits,
             "marginal_entropy_bits_per_image": positions * entropy_bits,
             "fixed_length_bits_per_image": positions
@@ -277,7 +278,7 @@ def evaluate_reconstruction(
 
 def evaluate() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     system = load_vqgan_system(VQGAN_TOKENIZER, device)
     loader = make_validation_loader(device)
     feature_extractor = TorchvisionInceptionFeatures(

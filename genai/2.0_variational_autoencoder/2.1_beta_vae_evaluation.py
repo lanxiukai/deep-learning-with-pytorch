@@ -57,7 +57,8 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.vae import VAE, diagonal_gaussian_kl
+from dl_utils.vae.vae import VAE
+from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
@@ -146,7 +147,7 @@ def summarize_kl(
         raise ValueError("examples must be positive")
     kl_per_dimension = kl_total / examples
     return (
-        float(kl_per_dimension.sum()),
+        kl_per_dimension.sum().item(),
         kl_per_dimension.tolist(),
         int((kl_per_dimension > active_kl_threshold).sum()),
     )
@@ -171,13 +172,11 @@ def evaluate_model(
     comparison = None
     for images, _ in islice(loader, maximum_batches):
         images = images.to(device, non_blocking=True)
-        mu, std = model.encoder.statistics(images)
+        mu, logvar = model.encode(images)
         reconstructions = model.decoder(mu)
-        squared_error_total += float(
-            (reconstructions - images).square().sum()
-        )
+        squared_error_total += (reconstructions - images).square().sum().item()
         kl_total += (
-            diagonal_gaussian_kl(mu, std)
+            diagonal_gaussian_kl_from_logvar(mu, logvar)
             .detach()
             .double()
             .sum(dim=0)

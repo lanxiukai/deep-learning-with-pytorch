@@ -1,10 +1,9 @@
 """Compare IWAE particle counts under one held-out protocol.
 
-Both default K=1 and K=5 checkpoints is re-evaluated with the same large K,
+Both default K=1 and K=5 checkpoints are re-evaluated with the same large K,
 particle chunk size, test examples, and repeated random estimates. This keeps
-the training objective separate from the evaluation estimator. Posterior-mean
-reconstruction, Monte Carlo rate, active units, ESS/K, and prior samples are
-reported alongside the bound; none substitutes for the others.
+the training objective separate from the evaluation estimator. Loss,
+reconstruction loss, KL loss, and ESS/K are reported for each model.
 
 Data:
     data/mnist, downloaded automatically by torchvision when absent. Digit
@@ -45,18 +44,17 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.iwae import (
     GaussianVAE,
-    importance_log_weights,
-    log_mean_exp,
+    evaluate_iwae,
 )
 
 PROJECT_ROOT = infer_project_root()
@@ -73,7 +71,6 @@ PARTICLE_CHUNK_SIZE = 8
 REPEATS = 3
 MAX_EXAMPLES = 2_048
 BATCH_SIZE = 64
-ACTIVE_VARIANCE_THRESHOLD = 1e-2
 WORKERS = 4
 SEED = 123
 IWAE_K1_CHECKPOINT = OUTPUT_ROOT / "iwae" / "k1" / "iwae.pth"
@@ -117,75 +114,25 @@ def evaluate_model(
     particle_chunk_size: int,
     repeats: int,
     max_examples: int,
-    active_variance_threshold: float,
     seed: int,
     device: torch.device,
-) -> dict[str, object]:
-    repeat_bounds = []
-    all_ess_fractions = []
-    all_weight_ranges = []
-    all_rates = []
-    posterior_codes = []
-    distortion_total = 0.0
-    distortion_examples = 0
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
 
     for repeat in range(repeats):
         set_seed(seed + repeat)
-        bound_total = 0.0
-        examples = 0
-        for images, _ in loader:
-            remaining = max_examples - examples
-            if remaining <= 0:
-                break
-            images = images[:remaining].to(device, non_blocking=True)
-            log_weights, terms = importance_log_weights(
-                model,
-                images,
-                particles=particles,
-                particle_chunk_size=particle_chunk_size,
-            )
-            per_example_bound = log_mean_exp(log_weights)
-            normalized = torch.softmax(log_weights, dim=1)
-            ess_fraction = normalized.square().sum(dim=1).reciprocal() / particles
-            weight_range = log_weights.max(dim=1).values - log_weights.min(dim=1).values
-            rate_samples = terms["log_q"] - terms["log_pz"]
-            bound_total += float(per_example_bound.sum())
-            all_ess_fractions.append(ess_fraction.cpu())
-            all_weight_ranges.append(weight_range.cpu())
-            all_rates.append(rate_samples.mean(dim=1).cpu())
-            if repeat == 0:
-                posterior_mean, _ = model.encode(images)
-                reconstruction = model.decode(posterior_mean)
-                distortion_total += float(
-                    F.binary_cross_entropy(reconstruction, images, reduction="sum")
-                )
-                distortion_examples += images.shape[0]
-                posterior_codes.append(posterior_mean.cpu())
-            examples += images.shape[0]
-        repeat_bounds.append(bound_total / examples)
+        metrics = evaluate_iwae(
+            model,
+            loader,
+            particles=particles,
+            particle_chunk_size=particle_chunk_size,
+            max_examples=max_examples,
+            device=device,
+        )
+        for name, value in metrics.items():
+            totals[name] = totals.get(name, 0.0) + value
 
-    ess = torch.cat(all_ess_fractions)
-    ranges = torch.cat(all_weight_ranges)
-    rates = torch.cat(all_rates)
-    codes = torch.cat(posterior_codes)
-    code_variance = codes.var(dim=0, unbiased=False)
-    bounds = torch.tensor(repeat_bounds, dtype=torch.float64)
-    return {
-        "evaluation_particles": particles,
-        "repeats": repeats,
-        "examples_per_repeat": min(max_examples, len(loader.dataset)),
-        "bound_mean": float(bounds.mean()),
-        "bound_repeat_standard_deviation": float(bounds.std(unbiased=False)),
-        "repeat_bounds": repeat_bounds,
-        "posterior_mean_distortion": (distortion_total / distortion_examples),
-        "monte_carlo_rate": float(rates.mean()),
-        "active_units": int((code_variance > active_variance_threshold).sum()),
-        "ess_fraction_mean": float(ess.mean()),
-        "ess_fraction_quantiles": [
-            float(value) for value in torch.quantile(ess, torch.tensor([0.1, 0.5, 0.9]))
-        ],
-        "log_weight_range_mean": float(ranges.mean()),
-    }
+    return {name: value / repeats for name, value in totals.items()}
 
 
 @torch.inference_mode()
@@ -215,7 +162,7 @@ def checkpoint_paths() -> dict[str, Path]:
 
 
 def evaluate() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_test_loader(device)
     paths = checkpoint_paths()
     out_dir = OUTPUT_DIR
@@ -241,7 +188,6 @@ def evaluate() -> None:
             particle_chunk_size=PARTICLE_CHUNK_SIZE,
             repeats=REPEATS,
             max_examples=MAX_EXAMPLES,
-            active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
             seed=SEED,
             device=device,
         )
@@ -253,10 +199,10 @@ def evaluate() -> None:
             device=device,
         )
         print(
-            f"{name}: bound={metrics['bound_mean']:.3f} +/- "
-            f"{metrics['bound_repeat_standard_deviation']:.3f}, "
-            f"ESS/K={metrics['ess_fraction_mean']:.3f}, "
-            f"rate={metrics['monte_carlo_rate']:.3f}"
+            f"{name}: loss={metrics['loss']:.3f}, "
+            f"reconstruction={metrics['reconstruction_loss']:.3f}, "
+            f"KL={metrics['kl_loss']:.3f}, "
+            f"ESS/K={metrics['ess_fraction']:.3f}"
         )
 
     (out_dir / "metrics.json").write_text(

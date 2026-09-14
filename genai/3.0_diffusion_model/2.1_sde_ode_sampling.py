@@ -23,6 +23,7 @@ from dl_utils.diffusion.lesson_utils import (
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
 from dl_utils.filesystem.directories import reset_dir
+from dl_utils.runtime.devices import try_gpu
 
 
 def parse_args():
@@ -50,7 +51,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     model, sde, checkpoint, args.image_size = load_pixel_checkpoint(
         args.checkpoint, device
     )

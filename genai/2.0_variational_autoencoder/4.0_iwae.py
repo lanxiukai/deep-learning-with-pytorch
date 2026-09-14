@@ -50,12 +50,12 @@ from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.iwae import (
     GaussianVAE,
-    importance_diagnostics,
-    importance_log_weights,
-    log_mean_exp,
+    evaluate_iwae,
+    importance_statistics,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
 
@@ -72,12 +72,11 @@ MAX_METRIC_PANELS = 4
 
 
 # Edit these defaults to explore the lesson.
-PARTICLES = (1, 5)
+PARTICLES = (1, 4, 8)
 EPOCHS = 10
 BATCH_SIZE = 128
 LATENT_DIM = 16
 HIDDEN_CHANNELS = 128
-CONTEXT_DIM = 128
 LR = 2e-4
 VALIDATION_PARTICLES = 64
 PARTICLE_CHUNK_SIZE = 8
@@ -114,38 +113,7 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
     )
 
 
-@torch.inference_mode()
-def evaluate_bound(
-    model: GaussianVAE,
-    loader: DataLoader,
-    *,
-    particles: int,
-    particle_chunk_size: int,
-    max_examples: int,
-    device: torch.device,
-) -> dict[str, float]:
-    model.eval()
-    totals: dict[str, float] = {}
-    examples = 0
-    for images, _ in loader:
-        remaining = max_examples - examples
-        if remaining <= 0:
-            break
-        images = images[:remaining].to(device, non_blocking=True)
-        log_weights, terms = importance_log_weights(
-            model,
-            images,
-            particles=particles,
-            particle_chunk_size=particle_chunk_size,
-        )
-        diagnostics = importance_diagnostics(log_weights, terms)
-        for name, value in diagnostics.items():
-            totals[name] = totals.get(name, 0.0) + float(value) * images.shape[0]
-        examples += images.shape[0]
-    return {name: value / examples for name, value in totals.items()}
-
-
-def train_one(
+def train_iwae_for_particles(
     *,
     particles: int,
     train_loader: DataLoader,
@@ -156,7 +124,6 @@ def train_one(
     model_config = {
         "latent_dim": LATENT_DIM,
         "hidden_channels": HIDDEN_CHANNELS,
-        "context_dim": CONTEXT_DIM,
     }
     model = GaussianVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
@@ -180,16 +147,15 @@ def train_one(
             examples = 0
             for images, _ in train_loader:
                 images = images.to(device, non_blocking=True)
-                log_weights, terms = importance_log_weights(
+                metrics = importance_statistics(
                     model, images, particles=particles
                 )
-                loss = -log_mean_exp(log_weights).mean()
+                loss = metrics["loss"]
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                diagnostics = importance_diagnostics(log_weights, terms)
                 loss_sum += loss.item() * images.shape[0]
-                ess_sum += float(diagnostics["ess_fraction"]) * images.shape[0]
+                ess_sum += metrics["ess_fraction"].item() * images.shape[0]
                 examples += images.shape[0]
                 progress.set_postfix(
                     loss=f"{loss_sum / examples:.3f}",
@@ -210,7 +176,7 @@ def train_one(
                     nrow=SAMPLE_GRID_COLUMNS,
                 )
 
-    validation = evaluate_bound(
+    validation = evaluate_iwae(
         model,
         validation_loader,
         particles=VALIDATION_PARTICLES,
@@ -218,7 +184,9 @@ def train_one(
         max_examples=VALIDATION_EXAMPLES,
         device=device,
     )
-    save_training_metrics(history, out_dir, prefix="iwae", max_panels=MAX_METRIC_PANELS)
+    save_training_metrics(
+        history, out_dir, prefix="iwae", max_panels=MAX_METRIC_PANELS
+    )
     torch.save(
         {
             "state_dict": model.state_dict(),
@@ -235,10 +203,10 @@ def train_one(
 
 
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     train_loader, validation_loader = make_loaders(device)
     for particles in PARTICLES:
-        train_one(
+        train_iwae_for_particles(
             particles=particles,
             train_loader=train_loader,
             validation_loader=validation_loader,

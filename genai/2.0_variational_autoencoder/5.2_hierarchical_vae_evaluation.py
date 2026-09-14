@@ -59,6 +59,7 @@ from torchvision.utils import save_image
 from dl_utils.data.factor_shapes import FactorShapes32
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
@@ -211,28 +212,32 @@ def evaluate_model(
         images = images.to(device, non_blocking=True)
         latents = model.infer(images, sample=False)
         reconstruction = model.decode(latents["z1"])
-        deterministic_distortion += float(
-            F.binary_cross_entropy(reconstruction, images, reduction="sum")
-        )
-        kl_z1 += float(
+        deterministic_distortion += F.binary_cross_entropy(
+            reconstruction, images, reduction="sum"
+        ).item()
+        kl_z1 += (
             diagonal_gaussian_kl_from_logvar(
                 latents["q1_mu"],
                 latents["q1_logvar"],
                 latents["p1_mu"],
                 latents["p1_logvar"],
-            ).sum()
+            )
+            .sum()
+            .item()
         )
-        kl_z2 += float(
+        kl_z2 += (
             diagonal_gaussian_kl_from_logvar(
                 latents["q2_mu"], latents["q2_logvar"]
-            ).sum()
+            )
+            .sum()
+            .item()
         )
         active.update(latents)
         counterfactuals = sampled_counterfactual_distortions(
             model, images, samples=intervention_samples
         )
         for name, values in counterfactuals.items():
-            totals[name] += float(values.sum()) / intervention_samples
+            totals[name] += values.sum().item() / intervention_samples
         examples += images.shape[0]
     active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     sampled_posterior = totals["posterior"] / examples
@@ -329,12 +334,12 @@ def save_counterfactual_grids(
         nrow=variants,
     )
     return {
-        "fixed_top_lower_pixel_standard_deviation": float(
-            lower_images.std(dim=1).mean()
-        ),
-        "fixed_evidence_top_pixel_standard_deviation": float(
-            upper_images.std(dim=1).mean()
-        ),
+        "fixed_top_lower_pixel_standard_deviation": lower_images.std(dim=1)
+        .mean()
+        .item(),
+        "fixed_evidence_top_pixel_standard_deviation": upper_images.std(dim=1)
+        .mean()
+        .item(),
     }
 
 
@@ -347,7 +352,7 @@ def checkpoint_paths() -> dict[str, Path]:
 
 def evaluate() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     paths = checkpoint_paths()
     loader = make_test_loader(split_seed=SPLIT_SEED, device=device)
     out_root = OUTPUT_DIR

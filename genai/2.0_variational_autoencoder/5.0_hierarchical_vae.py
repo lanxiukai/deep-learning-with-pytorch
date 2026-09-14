@@ -49,6 +49,7 @@ from __future__ import annotations
 import torch
 
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.hierarchy_training import (
     make_factor_shape_loaders,
@@ -86,7 +87,7 @@ SEED = 42
 
 def main() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     train_loader, test_loader = make_factor_shape_loaders(
         batch_size=BATCH_SIZE,
         workers=WORKERS,

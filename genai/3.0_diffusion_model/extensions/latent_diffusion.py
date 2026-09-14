@@ -33,6 +33,7 @@ from dl_utils.diffusion.lesson_utils import (
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
 from dl_utils.filesystem.directories import reset_dir
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 from dl_utils.vae.perceptual_autoencoder import KLPerceptualAutoencoder
@@ -108,7 +109,7 @@ def main():
     if not 0 <= args.condition_dropout < 1:
         raise ValueError("condition_dropout must lie in [0,1).")
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     first_stage, interface = load_autoencoder(args.autoencoder_checkpoint, device)
     args.image_size = first_stage.image_size
     scale = interface["latent_scale"]
@@ -201,11 +202,10 @@ def main():
         label_probability = checkpoint["label_probability"]
     else:
         label_probability = (
-            float(
-                torch.tensor(cast(CelebAAlignedDataset, loader.dataset).targets)
-                .float()
-                .mean()
-            )
+            torch.tensor(cast(CelebAAlignedDataset, loader.dataset).targets)
+            .float()
+            .mean()
+            .item()
             if args.conditional
             else None
         )

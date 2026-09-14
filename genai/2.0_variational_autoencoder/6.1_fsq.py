@@ -69,6 +69,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.quantization import FSQAutoencoder, TokenUsageAccumulator
 from dl_utils.vae.token_prior import (
@@ -129,18 +130,18 @@ def evaluate_tokenizer(
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
         reconstruction, indices, diagnostics = model(images)
-        distortion += float(F.mse_loss(reconstruction, images)) * images.shape[0]
-        quantization_mse += float(diagnostics["quantization_mse"]) * images.shape[0]
+        distortion += F.mse_loss(reconstruction, images).item() * images.shape[0]
+        quantization_mse += diagnostics["quantization_mse"].item() * images.shape[0]
         usage.update(indices)
         examples += images.shape[0]
     statistics = usage.statistics()
-    entropy_bits = float(statistics["token_entropy_nats"]) / math.log(2)
+    entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
         "mse": distortion / examples,
         "quantization_mse": quantization_mse / examples,
-        "perplexity": float(statistics["perplexity"]),
-        "active_codes": float(statistics["active_codes"]),
-        "usage_fraction": float(statistics["usage_fraction"]),
+        "perplexity": statistics["perplexity"].item(),
+        "active_codes": statistics["active_codes"].item(),
+        "usage_fraction": statistics["usage_fraction"].item(),
         "marginal_entropy_bits_per_token": entropy_bits,
         "marginal_entropy_bits_per_image": TOKENS_PER_IMAGE * entropy_bits,
         "fixed_length_bits_per_image": (
@@ -195,8 +196,8 @@ def train_tokenizer(
                 usage.update(indices)
                 examples += images.shape[0]
                 progress.set_postfix(
-                    loss=f"{float(sums[0]) / examples:.4f}",
-                    quant=f"{float(sums[1]) / examples:.4f}",
+                    loss=f"{sums[0].item() / examples:.4f}",
+                    quant=f"{sums[1].item() / examples:.4f}",
                     refresh=False,
                 )
                 progress.update(1)
@@ -211,9 +212,10 @@ def train_tokenizer(
             history.append(
                 dict(zip(("mse", "quantization_mse"), means))
                 | {
-                    "perplexity": float(epoch_usage["perplexity"]),
-                    "active_codes": float(epoch_usage["active_codes"]),
-                    "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
+                    "perplexity": epoch_usage["perplexity"].item(),
+                    "active_codes": epoch_usage["active_codes"].item(),
+                    "entropy_bits": epoch_usage["token_entropy_nats"].item()
+                    / math.log(2),
                 }
             )
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
@@ -332,7 +334,7 @@ def train_prior(
 
 
 def train() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     out_dir = OUTPUT_DIR
     train_loader, validation_loader = make_aligned_celeba_train_validation_loaders(
         DATA_DIR,

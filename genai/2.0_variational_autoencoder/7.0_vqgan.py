@@ -80,6 +80,7 @@ from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,
     generator_hinge_loss,
 )
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
@@ -250,7 +251,7 @@ def validate_tokenizer(
         raise ValueError("tokenizer validation observed no examples")
     values = (totals / examples).tolist()
     statistics = usage.statistics()
-    entropy_bits = float(statistics["token_entropy_nats"]) / math.log(2)
+    entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
         "examples": float(examples),
         "pixel_l1": values[0],
@@ -258,9 +259,9 @@ def validate_tokenizer(
         "quantization_mse": values[2],
         "real_logit": values[3],
         "reconstruction_logit": values[4],
-        "perplexity": float(statistics["perplexity"]),
-        "active_codes": float(statistics["active_codes"]),
-        "usage_fraction": float(statistics["usage_fraction"]),
+        "perplexity": statistics["perplexity"].item(),
+        "active_codes": statistics["active_codes"].item(),
+        "usage_fraction": statistics["usage_fraction"].item(),
         "marginal_entropy_bits_per_token": entropy_bits,
         "marginal_entropy_bits_per_image": TOKENS_PER_IMAGE * entropy_bits,
         "fixed_length_bits_per_image": (
@@ -291,7 +292,7 @@ def validate_prior(
         indices = tokenizer.encode_indices(images)
         logits, targets = prior.teacher_forcing(indices, labels)
         loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-        nll += float(loss) * images.shape[0]
+        nll += loss.item() * images.shape[0]
         examples += images.shape[0]
     if examples == 0:
         raise ValueError("prior validation observed no examples")
@@ -381,8 +382,8 @@ def train_tokenizer(
                 examples += images.shape[0]
                 global_step += 1
                 progress.set_postfix(
-                    ae=f"{float(sums[0]) / examples:.4f}",
-                    d=f"{float(sums[6]) / examples:.4f}",
+                    ae=f"{sums[0].item() / examples:.4f}",
+                    d=f"{sums[6].item() / examples:.4f}",
                     refresh=False,
                 )
                 progress.update(1)
@@ -412,9 +413,10 @@ def train_tokenizer(
                     )
                 )
                 | {
-                    "perplexity": float(epoch_usage["perplexity"]),
-                    "active_codes": float(epoch_usage["active_codes"]),
-                    "entropy_bits": float(epoch_usage["token_entropy_nats"]) / math.log(2),
+                    "perplexity": epoch_usage["perplexity"].item(),
+                    "active_codes": epoch_usage["active_codes"].item(),
+                    "entropy_bits": epoch_usage["token_entropy_nats"].item()
+                    / math.log(2),
                 }
             )
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
@@ -559,7 +561,7 @@ def train_prior(
 
 
 def train() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     out_dir = OUTPUT_DIR
     train_loader, validation_loader = make_aligned_celeba_train_validation_loaders(
         DATA_DIR,

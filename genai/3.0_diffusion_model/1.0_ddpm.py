@@ -26,6 +26,7 @@ from dl_utils.diffusion.lesson_utils import (
     training_metadata,
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 
@@ -61,7 +62,7 @@ def denoising_loss(model, diffusion, clean, prediction_type):
 
 def train(args):
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_image_loader(args, device)
     model = DiffusionUNet(
         image_size=args.image_size, hidden_dims=args.hidden_dims, dropout=args.dropout
@@ -110,16 +111,14 @@ def train(args):
             loss = per_image.mean()  # L_simple, mean over images and pixels.
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            gradient_sum += float(
-                torch.nn.utils.get_total_norm(
-                    [
-                        parameter.grad
-                        for parameter in model.parameters()
-                        if parameter.grad is not None
-                    ],
-                    error_if_nonfinite=True,
-                )
-            )
+            gradient_sum += torch.nn.utils.get_total_norm(
+                [
+                    parameter.grad
+                    for parameter in model.parameters()
+                    if parameter.grad is not None
+                ],
+                error_if_nonfinite=True,
+            ).item()
             optimizer.step()
             update_ema(averaged, model, args.ema_decay)
             meter.update(per_image, time / (diffusion.num_steps - 1))

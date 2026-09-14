@@ -24,6 +24,7 @@ from dl_utils.diffusion.lesson_utils import (
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
 from dl_utils.filesystem.directories import reset_dir
+from dl_utils.runtime.devices import try_gpu
 
 
 def parse_args():
@@ -46,7 +47,7 @@ def main():
     args = parse_args()
     if not 0 <= args.eta <= 1:
         raise ValueError("eta must lie in [0, 1].")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     model, diffusion, checkpoint, args.image_size = load_pixel_checkpoint(
         args.checkpoint, device
     )

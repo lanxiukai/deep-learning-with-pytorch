@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 
-from dl_utils.runtime.devices import get_device
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.ebm._ebm_types import Config as EBMConfig
 from dl_utils.ebm.dbn import sampling_dbn, train_dbn
@@ -123,7 +123,7 @@ class Config(EBMConfig):
 # Entry point
 # -----------------------------
 def main() -> None:
-    device = get_device()
+    device = try_gpu()
     cfg = Config()
     for cd_k1, cd_k2 in zip(cfg.cd_k1s, cfg.cd_k2s):
         cfg.out_dir = os.path.join(cfg.out_root, f"cd_k1={cd_k1}-cd_k2={cd_k2}")

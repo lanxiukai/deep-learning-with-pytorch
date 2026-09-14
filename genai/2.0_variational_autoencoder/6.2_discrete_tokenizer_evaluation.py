@@ -70,6 +70,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.image_quality import (
     FeatureMoments,
@@ -244,16 +245,14 @@ def evaluate_tokenizer(
                 )
             ).cpu()
         reconstruction_moments.update(feature_extractor(reconstruction))
-        squared_error += float((reconstruction - images).square().sum())
+        squared_error += (reconstruction - images).square().sum().item()
         elements += images.numel()
-        quantization_sum += float(diagnostics["quantization_mse"]) * images.shape[0]
+        quantization_sum += diagnostics["quantization_mse"].item() * images.shape[0]
         prior_nll_sum += (
-            float(
-                F.cross_entropy(
-                    system.prior(indices, labels=labels),
-                    indices,
-                )
-            )
+            F.cross_entropy(
+                system.prior(indices, labels=labels),
+                indices,
+            ).item()
             * images.shape[0]
         )
         usage.update(indices)
@@ -261,7 +260,7 @@ def evaluate_tokenizer(
 
     mse = squared_error / elements
     statistics = usage.statistics()
-    entropy_bits = float(statistics["token_entropy_nats"]) / math.log(2)
+    entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     prior_bits = prior_nll_sum / examples / math.log(2)
     return {
         "examples": examples,
@@ -274,7 +273,7 @@ def evaluate_tokenizer(
         "quantization_mse": quantization_sum / examples,
         "vocabulary_size": vocabulary_size,
         "active_codes": int(statistics["active_codes"]),
-        "perplexity": float(statistics["perplexity"]),
+        "perplexity": statistics["perplexity"].item(),
         "marginal_entropy_bits_per_token": entropy_bits,
         "marginal_entropy_bits_per_image": positions * entropy_bits,
         "fixed_length_bits_per_image": positions
@@ -286,7 +285,7 @@ def evaluate_tokenizer(
 
 def evaluate() -> None:
     set_seed(SEED)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_validation_loader(device)
     systems = load_systems(device)
     projection_dim = INCEPTION_PROJECTION_DIM

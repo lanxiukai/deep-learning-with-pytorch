@@ -26,6 +26,7 @@ from dl_utils.diffusion.lesson_utils import (
     training_metadata,
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 
@@ -71,7 +72,7 @@ def train(args):
     if not 0 < args.time_epsilon < 1:
         raise ValueError("Continuous score training needs 0 < time_epsilon < 1.")
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_image_loader(args, device)
     config = (
         {"sigma_min": args.sigma_min, "sigma_max": args.sigma_max}
@@ -131,16 +132,14 @@ def train(args):
             per_image, time = score_matching_loss(model, sde, clean, args.time_epsilon)
             optimizer.zero_grad(set_to_none=True)
             per_image.mean().backward()
-            gradient_sum += float(
-                torch.nn.utils.get_total_norm(
-                    [
-                        parameter.grad
-                        for parameter in model.parameters()
-                        if parameter.grad is not None
-                    ],
-                    error_if_nonfinite=True,
-                )
-            )
+            gradient_sum += torch.nn.utils.get_total_norm(
+                [
+                    parameter.grad
+                    for parameter in model.parameters()
+                    if parameter.grad is not None
+                ],
+                error_if_nonfinite=True,
+            ).item()
             optimizer.step()
             update_ema(averaged, model, args.ema_decay)
             meter.update(per_image, time)

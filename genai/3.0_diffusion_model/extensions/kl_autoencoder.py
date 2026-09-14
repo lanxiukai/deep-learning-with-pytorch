@@ -35,6 +35,7 @@ from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,
     generator_hinge_loss,
 )
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.image_quality import structural_similarity_index
 from dl_utils.vae.perceptual_autoencoder import (
@@ -186,7 +187,7 @@ def estimate_latent_interface(
     mean_square = mu_square_total / values_per_channel
     variance_of_mu = (mean_square - mean.square()).clamp_min(0.0)
     expected_second_moment = mean_square + mean_variance
-    latent_scale = float(expected_second_moment.mean().rsqrt())
+    latent_scale = expected_second_moment.mean().rsqrt().item()
     return {
         "examples": examples,
         "batches": batches,
@@ -203,9 +204,9 @@ def estimate_latent_interface(
             (variance_of_mu > active_variance_threshold).sum().item()
         ),
         "latent_scale": latent_scale,
-        "scaled_expected_second_moment": float(
+        "scaled_expected_second_moment": (
             expected_second_moment.mean() * latent_scale**2
-        ),
+        ).item(),
         "estimator": "inverse_rms_from_exact_E_q[z_squared]",
     }
 
@@ -344,7 +345,7 @@ def make_loaders(args, device):
 
 
 def train(args: argparse.Namespace) -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     out_dir = args.output_dir
     reset_dir(str(out_dir))
     train_loader, statistics_loader, validation_loader = make_loaders(args, device)

@@ -23,7 +23,7 @@ import os
 
 import torch
 
-from dl_utils.runtime.devices import get_device
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.ebm._ebm_types import Config as EBMConfig
 from dl_utils.ebm.dbm_sampling import sampling_dbm
@@ -225,7 +225,7 @@ def run_sweep(base_cfg: Config, device: torch.device) -> None:
 # Entry point
 # ============================
 def main() -> None:
-    device = get_device()
+    device = try_gpu()
     cfg = Config()
 
     if cfg.sweep_mode:

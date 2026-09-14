@@ -28,6 +28,7 @@ from dl_utils.diffusion.lesson_utils import (
     training_metadata,
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 
@@ -47,7 +48,7 @@ def parse_args():
 
 def train(args):
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_image_loader(args, device)
     model = DiffusionUNet(
         image_size=args.image_size,
@@ -114,9 +115,9 @@ def train(args):
             args.output_dir / "training.jsonl",
             {
                 "epoch": epoch,
-                "hybrid": float(sums[0] / examples),
-                "epsilon_mse": float(sums[1] / examples),
-                "trainable_vlb_sum_bpd_mc": float(sums[2] / examples),
+                "hybrid": (sums[0] / examples).item(),
+                "epsilon_mse": (sums[1] / examples).item(),
+                "trainable_vlb_sum_bpd_mc": (sums[2] / examples).item(),
                 "vlb_scope": "uniform-time estimate; detached mean; prior KL omitted, not full likelihood",
                 "noise_coordinate": "t/(T-1)",
                 **meter.result(),

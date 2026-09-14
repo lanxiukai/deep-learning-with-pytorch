@@ -1,9 +1,4 @@
-"""Gaussian-distribution primitives shared by the post-beta-VAE lessons.
-
-The older :mod:`dl_utils.vae.vae` module intentionally keeps the 256x256
-face model used by the first VAE lessons. This module contains the shared
-distribution algebra used by the later algorithm-comparison scripts.
-"""
+"""Gaussian-distribution primitives shared by the VAE lessons."""
 
 from __future__ import annotations
 
@@ -43,8 +38,11 @@ def diagonal_gaussian_kl_from_logvar(
     dimensions are reduced so each lesson can make its own per-sample and
     per-layer reduction explicit.
     """
+    if (p_mu is None) != (p_logvar is None):
+        raise ValueError("p_mu and p_logvar must both be provided or omitted")
     if p_mu is None:
         return 0.5 * (q_mu.square() + q_logvar.exp() - 1.0 - q_logvar)
+    assert p_logvar is not None
     return 0.5 * (
         p_logvar - q_logvar
         + torch.exp(q_logvar - p_logvar)

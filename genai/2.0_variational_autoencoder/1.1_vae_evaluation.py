@@ -54,7 +54,11 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
-from dl_utils.vae.vae import VAE, diagonal_gaussian_kl, reparameterize
+from dl_utils.vae.vae import VAE
+from dl_utils.vae.vae_common import (
+    diagonal_gaussian_kl_from_logvar,
+    reparameterize_logvar,
+)
 
 PROJECT_ROOT = infer_project_root()
 CHECKPOINT = PROJECT_ROOT / "output" / "vae" / "vae" / "vae.pth"
@@ -107,14 +111,16 @@ def evaluate(
     )
     for images, _ in progress:
         images = images.to(device, non_blocking=True)
-        mu, std = model.encoder.statistics(images)
+        mu, logvar = model.encode(images)
         mean_reconstructions = model.decoder(mu)
-        sample_reconstructions = model.decoder(reparameterize(mu, std))
-        squared_error_total += float((mean_reconstructions - images).square().sum())
+        sample_reconstructions = model.decoder(
+            reparameterize_logvar(mu, logvar)
+        )
+        squared_error_total += (mean_reconstructions - images).square().sum().item()
         evaluated_elements += images.numel()
         mu_total += mu.detach().double().sum(dim=0).cpu()
         mu_square_total += mu.detach().double().square().sum(dim=0).cpu()
-        kl_total += float(diagonal_gaussian_kl(mu, std).sum())
+        kl_total += diagonal_gaussian_kl_from_logvar(mu, logvar).sum().item()
         examples += images.shape[0]
 
         if comparison is None:

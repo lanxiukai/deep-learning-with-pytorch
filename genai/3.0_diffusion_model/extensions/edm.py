@@ -25,6 +25,7 @@ from dl_utils.diffusion.lesson_utils import (
     training_metadata,
 )
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
+from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.optimization import update_ema
 
@@ -59,7 +60,7 @@ def edm_loss(model, clean, log_sigma_mean, log_sigma_std):
 
 def train(args):
     set_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = try_gpu()
     loader = make_image_loader(args, device)
     network = DiffusionUNet(
         image_size=args.image_size, hidden_dims=args.hidden_dims, dropout=args.dropout
