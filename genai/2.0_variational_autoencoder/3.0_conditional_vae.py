@@ -47,8 +47,6 @@ Run this script without arguments; edit the constants below to experiment.
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
-from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm.auto import tqdm
@@ -59,10 +57,12 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
+    conditional_vae_loss,
+    evaluate_cvae,
     save_conditional_samples,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
-from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
+from dl_utils.vae.vae_common import accumulate_metrics
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "mnist"
@@ -86,38 +86,6 @@ HIDDEN_CHANNELS = 128
 LR = 2e-4
 WORKERS = 4
 SEED = 42
-
-
-def conditional_vae_loss(
-    reconstruction: Tensor,
-    real_images: Tensor,
-    statistics: dict[str, Tensor],
-) -> tuple[Tensor, dict[str, Tensor]]:
-    """Return negative conditional ELBO with explicit per-sample reductions."""
-    # reconstruction: (B, 1, 32, 32)
-    # real_images:    (B, 1, 32, 32)
-    distortion = (
-        F.binary_cross_entropy(reconstruction, real_images, reduction="none")
-        .flatten(1)
-        .sum(dim=1)
-        .mean()
-    )  # mean distortion per sample: scalar ()
-    rate_per_dimension = diagonal_gaussian_kl_from_logvar(
-        statistics["q_mu"],
-        statistics["q_logvar"],
-        statistics["p_mu"],
-        statistics["p_logvar"],
-    )  # (B, latent_dim)
-    rate = rate_per_dimension.sum(dim=1).mean()  # mean rate per sample: scalar ()
-    return distortion + rate, {
-        "distortion": distortion.detach(),
-        "rate": rate.detach(),
-        "num_active_latent_dimensions": (
-            rate_per_dimension.mean(dim=0) > ACTIVE_RATE_THRESHOLD
-        )
-        .sum()
-        .detach(),
-    }  # loss, terms
 
 
 def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
@@ -149,33 +117,6 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
         DataLoader(train_set, shuffle=True, drop_last=True, **common),
         DataLoader(validation_set, shuffle=False, drop_last=False, **common),
     )
-
-
-def _accumulate(
-    total_metrics: dict[str, float], metrics: dict[str, Tensor], batch_size: int
-) -> None:
-    for name, value in metrics.items():
-        total_metrics[name] = total_metrics.get(name, 0.0) + value.item() * batch_size
-
-
-@torch.inference_mode()
-def evaluate_cvae(
-    model: ConditionalVAE,
-    loader: DataLoader,
-    device: torch.device,
-) -> dict[str, float]:
-    model.eval()
-    # Accumulated metric totals across all batches.
-    total_metrics: dict[str, float] = {}
-    total_examples = 0  # Total number of examples processed.
-    for images, labels in loader:
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        reconstruction, statistics = model(images, labels)
-        loss, terms = conditional_vae_loss(reconstruction, images, statistics)
-        _accumulate(total_metrics, {"loss": loss.detach(), **terms}, images.shape[0])
-        total_examples += images.shape[0]
-    return {name: value / total_examples for name, value in total_metrics.items()}
 
 
 def train_cvae(
@@ -214,11 +155,16 @@ def train_cvae(
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
                 reconstruction, statistics = model(images, labels)
-                loss, terms = conditional_vae_loss(reconstruction, images, statistics)
+                loss, terms = conditional_vae_loss(
+                    reconstruction,
+                    images,
+                    statistics,
+                    active_rate_threshold=ACTIVE_RATE_THRESHOLD,
+                )
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                _accumulate(
+                accumulate_metrics(
                     total_metrics,
                     {"loss": loss.detach(), **terms},
                     images.shape[0],
@@ -233,7 +179,12 @@ def train_cvae(
             train_metrics = {
                 name: value / total_examples for name, value in total_metrics.items()
             }
-            validation_metrics = evaluate_cvae(model, validation_loader, device)
+            validation_metrics = evaluate_cvae(
+                model,
+                validation_loader,
+                device=device,
+                active_rate_threshold=ACTIVE_RATE_THRESHOLD,
+            )
             history.append(
                 {
                     **{f"train_{name}": value for name, value in train_metrics.items()},

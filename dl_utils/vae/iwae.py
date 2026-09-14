@@ -11,6 +11,7 @@ from torch import Tensor, nn
 
 from dl_utils.vae.vae_common import (
     LOG_2PI,
+    accumulate_metrics,
     diagonal_gaussian_log_density,
     split_gaussian_parameters,
 )
@@ -180,8 +181,7 @@ def evaluate_iwae(
             particles=particles,
             particle_chunk_size=particle_chunk_size,
         )
-        for name, value in metrics.items():
-            totals[name] = totals.get(name, 0.0) + value.item() * images.shape[0]
+        accumulate_metrics(totals, metrics, images.shape[0])
         examples += images.shape[0]
     return {name: value / examples for name, value in totals.items()}
 

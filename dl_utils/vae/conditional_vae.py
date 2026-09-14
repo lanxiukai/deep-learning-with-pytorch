@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torchvision.utils import save_image
 
 from dl_utils.vae.vae_common import (
+    accumulate_metrics,
+    diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
     split_gaussian_parameters,
 )
@@ -134,6 +138,67 @@ class ConditionalVAE(nn.Module):
         }  # reconstruction, statistics
 
 
+def conditional_vae_loss(
+    reconstruction: Tensor,
+    real_images: Tensor,
+    statistics: dict[str, Tensor],
+    *,
+    active_rate_threshold: float,
+) -> tuple[Tensor, dict[str, Tensor]]:
+    """Return the negative conditional ELBO and detached batch diagnostics."""
+    distortion = (
+        F.binary_cross_entropy(reconstruction, real_images, reduction="none")
+        .flatten(1)
+        .sum(dim=1)
+        .mean()
+    )
+    rate_per_dimension = diagonal_gaussian_kl_from_logvar(
+        statistics["q_mu"],
+        statistics["q_logvar"],
+        statistics["p_mu"],
+        statistics["p_logvar"],
+    )
+    rate = rate_per_dimension.sum(dim=1).mean()
+    return distortion + rate, {
+        "distortion": distortion.detach(),
+        "rate": rate.detach(),
+        "num_active_latent_dimensions": (
+            rate_per_dimension.mean(dim=0) > active_rate_threshold
+        )
+        .sum()
+        .detach(),
+    }
+
+
+@torch.inference_mode()
+def evaluate_cvae(
+    model: ConditionalVAE,
+    loader: Iterable[tuple[Tensor, Tensor]],
+    *,
+    device: torch.device,
+    active_rate_threshold: float,
+) -> dict[str, float]:
+    """Evaluate conditional-ELBO metrics with sample-count-weighted means."""
+    model.eval()
+    totals: dict[str, float] = {}
+    examples = 0
+    for images, labels in loader:
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+        reconstruction, statistics = model(images, labels)
+        loss, terms = conditional_vae_loss(
+            reconstruction,
+            images,
+            statistics,
+            active_rate_threshold=active_rate_threshold,
+        )
+        accumulate_metrics(
+            totals, {"loss": loss.detach(), **terms}, images.shape[0]
+        )
+        examples += images.shape[0]
+    return {name: value / examples for name, value in totals.items()}
+
+
 @torch.inference_mode()
 def save_conditional_samples(
     model: ConditionalVAE,
@@ -152,5 +217,7 @@ def save_conditional_samples(
 
 __all__ = [
     "ConditionalVAE",
+    "conditional_vae_loss",
+    "evaluate_cvae",
     "save_conditional_samples",
 ]

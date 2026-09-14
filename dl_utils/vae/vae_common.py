@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
 
 import torch
 from torch import Tensor
 
 LOG_2PI = math.log(2.0 * math.pi)
+
+
+def accumulate_metrics(
+    totals: dict[str, float], metrics: Mapping[str, Tensor], batch_size: int
+) -> None:
+    """Add scalar batch means to sample-count-weighted metric totals."""
+    for name, value in metrics.items():
+        totals[name] = totals.get(name, 0.0) + value.item() * batch_size
 
 
 def split_gaussian_parameters(
@@ -89,6 +98,7 @@ def fuse_diagonal_gaussians(
 
 __all__ = [
     "LOG_2PI",
+    "accumulate_metrics",
     "diagonal_gaussian_kl_from_logvar",
     "diagonal_gaussian_log_density",
     "fuse_diagonal_gaussians",
