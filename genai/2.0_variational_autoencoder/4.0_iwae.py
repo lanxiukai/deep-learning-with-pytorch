@@ -28,7 +28,6 @@ Outputs:
 
 Training data -- MNIST:
 Training images:          60,000
-Validation images:        10,000
 Batch size:                  128
 Samples per full pass:    59,904 (468 full batches; drop_last=True)
 Training epochs:              10 per K
@@ -62,7 +61,6 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.iwae import (
     GaussianVAE,
-    evaluate_iwae,
     importance_statistics,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
@@ -86,14 +84,11 @@ BATCH_SIZE = 128
 LATENT_DIM = 16
 HIDDEN_CHANNELS = 128
 LR = 2e-4
-VALIDATION_PARTICLES = 64
-PARTICLE_CHUNK_SIZE = 8
-VALIDATION_EXAMPLES = 2_048
 WORKERS = 4
 SEED = 42
 
 
-def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
+def make_train_loader(device: torch.device) -> DataLoader:
     transform = transforms.Compose(
         [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)), transforms.ToTensor()]
     )
@@ -103,29 +98,19 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
         download=True,
         transform=transform,
     )
-    validation_set = datasets.MNIST(
-        DATA_DIR,
-        train=False,
-        download=True,
-        transform=transform,
-    )
     common = {
         "batch_size": BATCH_SIZE,
         "num_workers": WORKERS,
         "pin_memory": device.type == "cuda",
         "persistent_workers": WORKERS > 0,
     }
-    return (
-        DataLoader(train_set, shuffle=True, drop_last=True, **common),
-        DataLoader(validation_set, shuffle=False, drop_last=False, **common),
-    )
+    return DataLoader(train_set, shuffle=True, drop_last=True, **common)
 
 
 def train_iwae_for_particles(
     *,
     particles: int,
     train_loader: DataLoader,
-    validation_loader: DataLoader,
     device: torch.device,
 ) -> None:
     set_seed(SEED)
@@ -190,14 +175,6 @@ def train_iwae_for_particles(
                     nrow=SAMPLE_GRID_COLUMNS,
                 )
 
-    validation = evaluate_iwae(
-        model,
-        validation_loader,
-        particles=VALIDATION_PARTICLES,
-        particle_chunk_size=PARTICLE_CHUNK_SIZE,
-        max_examples=VALIDATION_EXAMPLES,
-        device=device,
-    )
     save_training_metrics(
         history, out_dir, prefix="iwae", max_panels=MAX_METRIC_PANELS
     )
@@ -206,7 +183,6 @@ def train_iwae_for_particles(
             "state_dict": model.state_dict(),
             "model_name": "iwae",
             "model_config": model_config,
-            "validation": validation,
         },
         out_dir / CHECKPOINT_NAME,
     )
@@ -218,12 +194,11 @@ def train_iwae_for_particles(
 
 def main() -> None:
     device = try_gpu()
-    train_loader, validation_loader = make_loaders(device)
+    train_loader = make_train_loader(device)
     for particles in PARTICLES:
         train_iwae_for_particles(
             particles=particles,
             train_loader=train_loader,
-            validation_loader=validation_loader,
             device=device,
         )
 

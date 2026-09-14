@@ -18,13 +18,12 @@ Data:
 Outputs:
     output/vae/conditional_vae/conditional_vae.pth: final checkpoint
     output/vae/conditional_vae/conditional_samples.png: final class grid
-    output/vae/conditional_vae/training/epoch_*.png: saved after each selected epoch's validation
+    output/vae/conditional_vae/training/epoch_*.png: saved after each selected epoch
     output/vae/conditional_vae/cvae_metrics.csv: saved after all training epochs
     output/vae/conditional_vae/cvae_metrics_*.png: final metric curves
 
 Training data -- MNIST:
 Training images:          60,000
-Validation images:        10,000
 Batch size:                  128
 Samples per epoch:        59,904 (468 full batches; drop_last=True)
 Training epochs:              15
@@ -59,7 +58,6 @@ from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
     conditional_vae_loss,
-    evaluate_cvae,
     save_conditional_samples,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
@@ -88,7 +86,7 @@ WORKERS = 4
 SEED = 42
 
 
-def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
+def make_train_loader(device: torch.device) -> DataLoader:
     transform = transforms.Compose(
         [
             transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
@@ -101,28 +99,18 @@ def make_loaders(device: torch.device) -> tuple[DataLoader, DataLoader]:
         download=True,
         transform=transform,
     )
-    validation_set = datasets.MNIST(
-        DATA_DIR,
-        train=False,
-        download=True,
-        transform=transform,
-    )
     common = {
         "batch_size": BATCH_SIZE,
         "num_workers": WORKERS,
         "pin_memory": device.type == "cuda",
         "persistent_workers": WORKERS > 0,
     }
-    return (
-        DataLoader(train_set, shuffle=True, drop_last=True, **common),
-        DataLoader(validation_set, shuffle=False, drop_last=False, **common),
-    )
+    return DataLoader(train_set, shuffle=True, drop_last=True, **common)
 
 
 def train_cvae(
     *,
     train_loader: DataLoader,
-    validation_loader: DataLoader,
     device: torch.device,
 ) -> None:
     out_dir = OUTPUT_DIR
@@ -182,18 +170,7 @@ def train_cvae(
                 progress.update(1)
 
             train_metrics = metrics.compute()
-            validation_metrics = evaluate_cvae(
-                model,
-                validation_loader,
-                device=device,
-                active_rate_threshold=ACTIVE_RATE_THRESHOLD,
-            )
-            history.append(
-                {
-                    **{f"train_{name}": value for name, value in train_metrics.items()},
-                    **{f"val_{name}": value for name, value in validation_metrics.items()},
-                }
-            )
+            history.append(train_metrics)
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
                 save_conditional_samples(
                     model, training_dir / f"epoch_{epoch:03d}.png", device=device
@@ -219,10 +196,9 @@ def train_cvae(
 def main() -> None:
     set_seed(SEED)
     device = try_gpu()
-    train_loader, validation_loader = make_loaders(device)
+    train_loader = make_train_loader(device)
     train_cvae(
         train_loader=train_loader,
-        validation_loader=validation_loader,
         device=device,
     )
 

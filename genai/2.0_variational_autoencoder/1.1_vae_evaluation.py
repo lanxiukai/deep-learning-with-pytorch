@@ -47,7 +47,6 @@ from itertools import islice
 
 import torch
 from torchvision.utils import save_image
-from tqdm import tqdm
 
 from dl_utils.data.vision import image_folder_loader
 from dl_utils.filesystem.directories import reset_dir
@@ -103,15 +102,7 @@ def evaluate(
     comparison = None
     interpolation = None
     limited_loader = islice(loader, maximum_batches)
-    progress = tqdm(
-        limited_loader,
-        total=min(len(loader), maximum_batches),
-        desc="Analyze VAE",
-        unit="batch",
-        dynamic_ncols=True,
-        mininterval=1.0,
-    )
-    for images, _ in progress:
+    for images, _ in limited_loader:
         images = images.to(device, non_blocking=True)
         mu, logvar = model.encode(images)
         mean_reconstructions = model.decoder(mu)

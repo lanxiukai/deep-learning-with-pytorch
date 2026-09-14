@@ -185,7 +185,7 @@ def _train_epoch(
     return metrics.compute_finite()
 
 
-def train_glasses_vae(
+def train_vae(
     *,
     loss_function: _VAELossFunction,
     data_dir: str | PathLike[str],
@@ -318,6 +318,6 @@ __all__ = [
     "VAEDecoder",
     "VAEEncoder",
     "reconstruction_and_kl",
-    "train_glasses_vae",
+    "train_vae",
     "weighted_vae_loss",
 ]
