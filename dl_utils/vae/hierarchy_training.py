@@ -12,6 +12,7 @@ from tqdm.auto import tqdm
 
 from dl_utils.data.factor_shapes import FactorShapes32
 from dl_utils.filesystem.directories import reset_dir
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.training_artifacts import save_training_metrics
 from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 from dl_utils.vae.vae_hierarchy import (
@@ -133,8 +134,9 @@ def train_hierarchy(
         for epoch in range(1, epochs + 1):
             progress.set_description(f"{model_name} {epoch}/{epochs}", refresh=False)
             model.train()
-            totals = torch.zeros(4, device=device)
-            examples = 0
+            metrics = MetricAccumulator(
+                ("loss", "distortion", "kl_z1", "kl_z2"), device=device
+            )
             active = ActiveUnitAccumulator()
             for images, _ in train_loader:
                 update += 1
@@ -151,30 +153,27 @@ def train_hierarchy(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                totals += (
-                    torch.stack(
-                        [
-                            loss.detach(),
-                            terms["distortion"],
-                            terms["kl_z1"],
-                            terms["kl_z2"],
-                        ]
-                    )
-                    * images.shape[0]
+                metrics.update(
+                    (
+                        loss,
+                        terms["distortion"],
+                        terms["kl_z1"],
+                        terms["kl_z2"],
+                    ),
+                    num_examples=images.shape[0],
                 )
-                examples += images.shape[0]
                 active.update(latents)
                 progress.set_postfix(
-                    loss=f"{float(totals[0]) / examples:.3f}",
+                    loss=f"{metrics.compute()['loss']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            values = (totals / examples).tolist()
+            values = metrics.compute()
             active_z1, active_z2 = active.counts(
                 variance_threshold=active_variance_threshold
             )
             history.append(
-                dict(zip(("loss", "distortion", "kl_z1", "kl_z2"), values))
+                values
                 | {
                     "active_z1": float(active_z1),
                     "active_z2": float(active_z2),

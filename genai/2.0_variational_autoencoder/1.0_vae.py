@@ -35,10 +35,12 @@ Decoder:                  31.63 M parameters
 Total:                    63.33 M parameters
 """
 
+from functools import partial
+
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.vae.vae import (
-    reconstruction_and_kl,
     train_glasses_vae,
+    weighted_vae_loss,
 )
 
 PROJECT_ROOT = infer_project_root()
@@ -47,22 +49,15 @@ OUT_DIR = PROJECT_ROOT / "output" / "vae" / "vae"
 MODEL_CONFIG = {"z_dim": 100}
 
 
-def vae_loss(images, reconstructions, mu, logvar):
-    """Return the standard VAE objective: reconstruction + KL."""
-    reconstruction_loss, kl_loss = reconstruction_and_kl(
-        images, reconstructions, mu, logvar
-    )
-    return reconstruction_loss + kl_loss, reconstruction_loss, kl_loss
-
-
 def main():
     train_glasses_vae(
-        loss_function=vae_loss,
+        loss_function=partial(weighted_vae_loss, beta=1.0),
         data_dir=DATA_DIR,
         out_dir=OUT_DIR,
         checkpoint_name="vae.pth",
         model_name="vae",
         model_config=MODEL_CONFIG,
+        metadata={"beta": 1.0},
     )
 
 

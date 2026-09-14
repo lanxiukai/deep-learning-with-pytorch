@@ -82,6 +82,7 @@ from dl_utils.gan.sn_gan import (
 )
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,
@@ -224,7 +225,16 @@ def validate_tokenizer(
     discriminator.eval()
     perceptual.eval()
     vocabulary_size = model.quantizer.codebook_size
-    totals = torch.zeros(5, device=device)
+    metrics = MetricAccumulator(
+        (
+            "pixel_l1",
+            "perceptual_distance",
+            "quantization_mse",
+            "real_logit",
+            "reconstruction_logit",
+        ),
+        device=device,
+    )
     examples = 0
     usage = TokenUsageAccumulator(vocabulary_size)
     for images, _ in loader:
@@ -233,32 +243,26 @@ def validate_tokenizer(
             break
         images = images[:remaining].to(device, non_blocking=True)
         reconstruction, indices, _, diagnostics = model(images)
-        totals += (
-            torch.stack(
-                [
-                    F.l1_loss(reconstruction, images),
-                    perceptual(reconstruction, images),
-                    diagnostics["quantization_mse"],
-                    discriminator(images).mean(),
-                    discriminator(reconstruction).mean(),
-                ]
-            )
-            * images.shape[0]
+        metrics.update(
+            (
+                F.l1_loss(reconstruction, images),
+                perceptual(reconstruction, images),
+                diagnostics["quantization_mse"],
+                discriminator(images).mean(),
+                discriminator(reconstruction).mean(),
+            ),
+            num_examples=images.shape[0],
         )
         usage.update(indices)
         examples += images.shape[0]
     if examples == 0:
         raise ValueError("tokenizer validation observed no examples")
-    values = (totals / examples).tolist()
+    values = metrics.compute()
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
         "examples": float(examples),
-        "pixel_l1": values[0],
-        "perceptual_distance": values[1],
-        "quantization_mse": values[2],
-        "real_logit": values[3],
-        "reconstruction_logit": values[4],
+        **values,
         "perplexity": statistics["perplexity"].item(),
         "active_codes": statistics["active_codes"].item(),
         "usage_fraction": statistics["usage_fraction"].item(),
@@ -281,7 +285,7 @@ def validate_prior(
 ) -> dict[str, float]:
     tokenizer.eval()
     prior.eval()
-    nll = 0.0
+    metrics = MetricAccumulator(("nll",), device=device)
     examples = 0
     for images, labels in loader:
         remaining = max_examples - examples
@@ -292,11 +296,11 @@ def validate_prior(
         indices = tokenizer.encode_indices(images)
         logits, targets = prior.teacher_forcing(indices, labels)
         loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-        nll += loss.item() * images.shape[0]
+        metrics.update((loss,), num_examples=images.shape[0])
         examples += images.shape[0]
     if examples == 0:
         raise ValueError("prior validation observed no examples")
-    nll /= examples
+    nll = metrics.compute()["nll"]
     return {
         "examples": float(examples),
         "nll_nats_per_token": nll,
@@ -340,8 +344,20 @@ def train_tokenizer(
             progress.set_description(f"vqgan {epoch}/{TOKENIZER_EPOCHS}", refresh=False)
             model.train()
             discriminator.train()
-            sums = torch.zeros(9, device=device)
-            examples = 0
+            metrics_accumulator = MetricAccumulator(
+                (
+                    "autoencoder",
+                    "pixel_l1",
+                    "perceptual",
+                    "vq",
+                    "generator_adversarial",
+                    "adversarial_scale",
+                    "discriminator",
+                    "real_logit",
+                    "fake_logit",
+                ),
+                device=device,
+            )
             usage = TokenUsageAccumulator(CODEBOOK_SIZE)
             preview = None
             for images, _ in train_loader:
@@ -366,24 +382,26 @@ def train_tokenizer(
                     step=global_step,
                     discriminator_start=DISCRIMINATOR_START,
                 )
-                values = [
-                    metrics["autoencoder"],
-                    metrics["pixel_l1"],
-                    metrics["perceptual"],
-                    metrics["vq"],
-                    metrics["generator_adversarial"],
-                    metrics["adversarial_scale"],
-                    d_metrics["discriminator"],
-                    d_metrics["real_logit"],
-                    d_metrics["fake_logit"],
-                ]
-                sums += torch.stack(values) * images.shape[0]
+                metrics_accumulator.update(
+                    (
+                        metrics["autoencoder"],
+                        metrics["pixel_l1"],
+                        metrics["perceptual"],
+                        metrics["vq"],
+                        metrics["generator_adversarial"],
+                        metrics["adversarial_scale"],
+                        d_metrics["discriminator"],
+                        d_metrics["real_logit"],
+                        d_metrics["fake_logit"],
+                    ),
+                    num_examples=images.shape[0],
+                )
                 usage.update(indices)
-                examples += images.shape[0]
                 global_step += 1
+                running_metrics = metrics_accumulator.compute()
                 progress.set_postfix(
-                    ae=f"{sums[0].item() / examples:.4f}",
-                    d=f"{sums[6].item() / examples:.4f}",
+                    ae=f"{running_metrics['autoencoder']:.4f}",
+                    d=f"{running_metrics['discriminator']:.4f}",
                     refresh=False,
                 )
                 progress.update(1)
@@ -393,25 +411,10 @@ def train_tokenizer(
                 )
             if preview is None:
                 raise ValueError("training loader produced no batches; reduce batch size")
-            means = (sums / examples).tolist()
+            means = metrics_accumulator.compute()
             epoch_usage = usage.statistics()
             history.append(
-                dict(
-                    zip(
-                        (
-                            "autoencoder",
-                            "pixel_l1",
-                            "perceptual",
-                            "vq",
-                            "generator_adversarial",
-                            "adversarial_scale",
-                            "discriminator",
-                            "real_logit",
-                            "fake_logit",
-                        ),
-                        means,
-                    )
-                )
+                means
                 | {
                     "perplexity": epoch_usage["perplexity"].item(),
                     "active_codes": epoch_usage["active_codes"].item(),
@@ -485,8 +488,7 @@ def train_prior(
         for epoch in range(1, PRIOR_EPOCHS + 1):
             progress.set_description(f"Transformer {epoch}/{PRIOR_EPOCHS}", refresh=False)
             prior.train()
-            nll_sum = 0.0
-            examples = 0
+            metrics = MetricAccumulator(("nll",), device=device)
             for images, labels in train_loader:
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
@@ -498,15 +500,15 @@ def train_prior(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                nll_sum += loss.item() * images.shape[0]
-                examples += images.shape[0]
+                metrics.update((loss,), num_examples=images.shape[0])
+                nll = metrics.compute()["nll"]
                 progress.set_postfix(
-                    nll=f"{nll_sum / examples:.4f}",
-                    bpt=f"{nll_sum / examples / math.log(2):.3f}",
+                    nll=f"{nll:.4f}",
+                    bpt=f"{nll / math.log(2):.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            nll = nll_sum / examples
+            nll = metrics.compute()["nll"]
             history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
                 with torch.inference_mode():

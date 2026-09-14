@@ -55,6 +55,7 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
     conditional_vae_loss,
@@ -62,7 +63,6 @@ from dl_utils.vae.conditional_vae import (
     save_conditional_samples,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
-from dl_utils.vae.vae_common import accumulate_metrics
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "mnist"
@@ -149,8 +149,10 @@ def train_cvae(
         for epoch in range(1, EPOCHS + 1):
             progress.set_description(f"CVAE {epoch}/{EPOCHS}", refresh=False)
             model.train()
-            total_metrics: dict[str, float] = {}
-            total_examples = 0
+            metrics = MetricAccumulator(
+                ("loss", "distortion", "rate", "num_active_latent_dimensions"),
+                device=device,
+            )
             for images, labels in train_loader:
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
@@ -164,21 +166,22 @@ def train_cvae(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                accumulate_metrics(
-                    total_metrics,
-                    {"loss": loss.detach(), **terms},
-                    images.shape[0],
+                metrics.update(
+                    (
+                        loss,
+                        terms["distortion"],
+                        terms["rate"],
+                        terms["num_active_latent_dimensions"],
+                    ),
+                    num_examples=images.shape[0],
                 )
-                total_examples += images.shape[0]
                 progress.set_postfix(
-                    loss=f"{total_metrics['loss'] / total_examples:.3f}",
+                    loss=f"{metrics.compute()['loss']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
 
-            train_metrics = {
-                name: value / total_examples for name, value in total_metrics.items()
-            }
+            train_metrics = metrics.compute()
             validation_metrics = evaluate_cvae(
                 model,
                 validation_loader,

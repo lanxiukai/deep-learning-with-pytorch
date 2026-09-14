@@ -126,6 +126,21 @@ def reconstruction_and_kl(
     return reconstruction_loss, kl_loss
 
 
+def weighted_vae_loss(
+    images: Tensor,
+    reconstructions: Tensor,
+    mu: Tensor,
+    logvar: Tensor,
+    *,
+    beta: float = 1.0,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Return reconstruction loss plus a beta-weighted KL term."""
+    reconstruction_loss, kl_loss = reconstruction_and_kl(
+        images, reconstructions, mu, logvar
+    )
+    return reconstruction_loss + beta * kl_loss, reconstruction_loss, kl_loss
+
+
 @torch.inference_mode()
 def _save_epoch_samples(
     model: VAE,
@@ -304,4 +319,5 @@ __all__ = [
     "VAEEncoder",
     "reconstruction_and_kl",
     "train_glasses_vae",
+    "weighted_vae_loss",
 ]

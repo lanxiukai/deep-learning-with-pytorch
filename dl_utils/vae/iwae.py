@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 import math
+from collections.abc import Iterable
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.vae_common import (
     LOG_2PI,
-    accumulate_metrics,
     diagonal_gaussian_log_density,
     split_gaussian_parameters,
 )
@@ -168,7 +168,10 @@ def evaluate_iwae(
 ) -> dict[str, float]:
     """Evaluate batch IWAE metrics with a bounded number of examples."""
     model.eval()
-    totals: dict[str, float] = {}
+    accumulator = MetricAccumulator(
+        ("loss", "reconstruction_loss", "kl_loss", "ess_fraction"),
+        device=device,
+    )
     examples = 0
     for images, _ in loader:
         remaining = max_examples - examples
@@ -181,9 +184,17 @@ def evaluate_iwae(
             particles=particles,
             particle_chunk_size=particle_chunk_size,
         )
-        accumulate_metrics(totals, metrics, images.shape[0])
+        accumulator.update(
+            (
+                metrics["loss"],
+                metrics["reconstruction_loss"],
+                metrics["kl_loss"],
+                metrics["ess_fraction"],
+            ),
+            num_examples=images.shape[0],
+        )
         examples += images.shape[0]
-    return {name: value / examples for name, value in totals.items()}
+    return accumulator.compute()
 
 
 def log_mean_exp(log_weights: Tensor) -> Tensor:

@@ -14,6 +14,7 @@ Checkpoint:
 Outputs:
     output/vae/conditional_vae/evaluation/metrics.json
     output/vae/conditional_vae/evaluation/conditional_samples.png: one row per digit
+    output/vae/conditional_vae/evaluation/metric_summary.png
 
 Evaluation defaults:
     Test images: 5,000 of 10,000; batch size: 256.
@@ -32,6 +33,7 @@ from torchvision import datasets, transforms
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.conditional_vae import (
@@ -75,6 +77,29 @@ def make_test_loader(device: torch.device) -> DataLoader:
     )
 
 
+def save_metric_summary(metrics: dict[str, float], output_path) -> None:
+    """Save the conditional-ELBO terms that would otherwise be console-only."""
+    with plt.ioff():
+        figure, axes = plt.subplots(1, 2, figsize=(9, 4))
+        axes[0].bar(
+            ("Negative ELBO", "Distortion", "Rate"),
+            (metrics["loss"], metrics["distortion"], metrics["rate"]),
+            color=("#4c78a8", "#f58518", "#54a24b"),
+        )
+        axes[0].set_title("Held-out conditional ELBO")
+        axes[1].bar(
+            ("Active latent dimensions",),
+            (metrics["num_active_latent_dimensions"],),
+            color="#e45756",
+        )
+        axes[1].set_title("Latent capacity")
+        for axis in axes:
+            axis.grid(axis="y", alpha=0.25)
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=200)
+        plt.close(figure)
+
+
 @torch.inference_mode()
 def evaluate() -> None:
     set_seed(SEED)
@@ -101,11 +126,10 @@ def evaluate() -> None:
         device=device,
         samples_per_class=SAMPLES_PER_CLASS,
     )
+    save_metric_summary(metrics, OUTPUT_DIR / "metric_summary.png")
     (OUTPUT_DIR / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n", encoding="utf-8"
     )
-    print(json.dumps(metrics, indent=2))
-    print(f"saved evaluation to {OUTPUT_DIR}")
 
 
 def main() -> None:

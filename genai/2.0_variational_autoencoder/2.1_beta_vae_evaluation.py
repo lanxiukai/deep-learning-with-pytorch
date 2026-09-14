@@ -121,7 +121,7 @@ def load_checkpoint(
     z_dim = model_config.get("z_dim")
     if isinstance(z_dim, bool) or not isinstance(z_dim, int) or z_dim < 1:
         raise ValueError(f"checkpoint has an invalid z_dim: {path}")
-    beta = 1.0 if model_name == "vae" else checkpoint.get("beta")
+    beta = checkpoint.get("beta")
     if isinstance(beta, bool) or not isinstance(beta, int | float) or beta < 0:
         raise ValueError(f"checkpoint has an invalid beta: {path}")
 
@@ -293,12 +293,6 @@ def analyze() -> None:
         )
         results.append(result)
         artifacts.append((run_name, comparison, prior_samples))
-        print(
-            f"{run_name}, beta={result.beta:g}: "
-            f"D={result.distortion:.3f}, R={result.rate:.3f}, "
-            f"beta*R={result.weighted_rate:.3f}, "
-            f"active_KL={result.active_kl_dimensions}/{info.z_dim}"
-        )
 
     reset_dir(str(OUTPUT_DIR))
     for run_name, comparison, prior_samples in artifacts:
@@ -330,7 +324,6 @@ def analyze() -> None:
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
     save_summary_plot(results, OUTPUT_DIR / "beta_comparison.png")
-    print(f"saved evaluation to {OUTPUT_DIR}")
 
 
 def main() -> None:

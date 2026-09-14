@@ -8,7 +8,8 @@ The particle reduction happens per image and entirely in log space.  K=1 is
 exactly the Monte Carlo ELBO.  Larger K changes the objective and compute
 budget, not the VAE model family.
 
-Both K=1 and K=5 use the same architecture and number of training epochs.
+All default particle counts use the same architecture and number of training
+epochs.
 Final weights feed the companion evaluation script. Evaluation decodes
 particles in small chunks to keep memory use bounded.
 
@@ -17,7 +18,13 @@ Data:
 
 Outputs:
     output/vae/iwae/k1/: default K=1 checkpoint and prior samples
-    output/vae/iwae/k5/: default K=5 checkpoint and prior samples
+    output/vae/iwae/k4/: default K=4 checkpoint and prior samples
+    output/vae/iwae/k8/: default K=8 checkpoint and prior samples
+    output/vae/iwae/k16/: default K=16 checkpoint and prior samples
+    output/vae/iwae/k32/: default K=32 checkpoint and prior samples
+    output/vae/iwae/k*/iwae_metrics.csv: epoch loss, reconstruction loss,
+        KL loss, and ESS/K
+    output/vae/iwae/k*/iwae_metrics_01.png: curves for the same metrics
 
 Training data -- MNIST:
 Training images:          60,000
@@ -25,8 +32,8 @@ Validation images:        10,000
 Batch size:                  128
 Samples per full pass:    59,904 (468 full batches; drop_last=True)
 Training epochs:              10 per K
-Default runs:             K=1 and K=5
-Optimizer updates:         4,680 per run / 9,360 total
+Default runs:             K=1, K=4, K=8, K=16, and K=32
+Optimizer updates:         4,680 per run / 23,400 total
 Note: Digit labels are ignored.
 
 Default dimensions:
@@ -52,6 +59,7 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.iwae import (
     GaussianVAE,
     evaluate_iwae,
@@ -72,7 +80,7 @@ MAX_METRIC_PANELS = 4
 
 
 # Edit these defaults to explore the lesson.
-PARTICLES = (1, 4, 8)
+PARTICLES = (1, 4, 8, 16, 32)
 EPOCHS = 10
 BATCH_SIZE = 128
 LATENT_DIM = 16
@@ -142,9 +150,10 @@ def train_iwae_for_particles(
         for epoch in range(1, EPOCHS + 1):
             progress.set_description(f"IWAE K={particles} {epoch}/{EPOCHS}", refresh=False)
             model.train()
-            loss_sum = 0.0
-            ess_sum = 0.0
-            examples = 0
+            metrics_accumulator = MetricAccumulator(
+                ("loss", "reconstruction_loss", "kl_loss", "ess_fraction"),
+                device=device,
+            )
             for images, _ in train_loader:
                 images = images.to(device, non_blocking=True)
                 metrics = importance_statistics(
@@ -154,18 +163,23 @@ def train_iwae_for_particles(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                loss_sum += loss.item() * images.shape[0]
-                ess_sum += metrics["ess_fraction"].item() * images.shape[0]
-                examples += images.shape[0]
+                metrics_accumulator.update(
+                    (
+                        loss,
+                        metrics["reconstruction_loss"],
+                        metrics["kl_loss"],
+                        metrics["ess_fraction"],
+                    ),
+                    num_examples=images.shape[0],
+                )
+                running_metrics = metrics_accumulator.compute()
                 progress.set_postfix(
-                    loss=f"{loss_sum / examples:.3f}",
-                    ess=f"{ess_sum / examples:.3f}",
+                    loss=f"{running_metrics['loss']:.3f}",
+                    ess=f"{running_metrics['ess_fraction']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            history.append(
-                {"loss": loss_sum / examples, "ess_fraction": ess_sum / examples}
-            )
+            history.append(metrics_accumulator.compute())
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
                 model.eval()
                 with torch.inference_mode():

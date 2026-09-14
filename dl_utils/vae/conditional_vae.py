@@ -10,8 +10,8 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torchvision.utils import save_image
 
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.vae_common import (
-    accumulate_metrics,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
     split_gaussian_parameters,
@@ -180,8 +180,10 @@ def evaluate_cvae(
 ) -> dict[str, float]:
     """Evaluate conditional-ELBO metrics with sample-count-weighted means."""
     model.eval()
-    totals: dict[str, float] = {}
-    examples = 0
+    metrics = MetricAccumulator(
+        ("loss", "distortion", "rate", "num_active_latent_dimensions"),
+        device=device,
+    )
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
@@ -192,11 +194,16 @@ def evaluate_cvae(
             statistics,
             active_rate_threshold=active_rate_threshold,
         )
-        accumulate_metrics(
-            totals, {"loss": loss.detach(), **terms}, images.shape[0]
+        metrics.update(
+            (
+                loss,
+                terms["distortion"],
+                terms["rate"],
+                terms["num_active_latent_dimensions"],
+            ),
+            num_examples=images.shape[0],
         )
-        examples += images.shape[0]
-    return {name: value / examples for name, value in totals.items()}
+    return metrics.compute()
 
 
 @torch.inference_mode()

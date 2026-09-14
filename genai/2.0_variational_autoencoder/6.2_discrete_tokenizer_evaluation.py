@@ -27,6 +27,7 @@ Outputs:
     output/vae/evaluation/discrete_tokenizer/metrics.json: system comparison
     output/vae/evaluation/discrete_tokenizer/<system>_real_and_reconstruction.png
     output/vae/evaluation/discrete_tokenizer/<system>_prior_samples.png
+    output/vae/evaluation/discrete_tokenizer/metric_comparison.png
 
 Evaluation data -- CelebA validation:
 Available images:                      19,867
@@ -70,6 +71,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.image_quality import (
@@ -283,6 +285,34 @@ def evaluate_tokenizer(
     }, comparison
 
 
+def save_metric_comparison(
+    model_results: dict[str, object], output_path) -> None:
+    """Compare fidelity, token capacity, and prior coding efficiency."""
+    names = list(model_results)
+    metrics = (
+        ("Reconstruction MSE", "mse"),
+        (
+            "Reconstruction Fréchet proxy",
+            "projected_inception_reconstruction_frechet",
+        ),
+        ("Marginal bits / image", "marginal_entropy_bits_per_image"),
+        ("Prior bits / image", "prior_bits_per_image"),
+    )
+    with plt.ioff():
+        figure, axes = plt.subplots(2, 2, figsize=(10, 7), squeeze=False)
+        for axis, (title, key) in zip(axes.flat, metrics):
+            axis.bar(
+                names,
+                [model_results[name][key] for name in names],
+                color=("#4c78a8", "#f58518"),
+            )
+            axis.set_title(title)
+            axis.grid(axis="y", alpha=0.25)
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=200)
+        plt.close(figure)
+
+
 def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
@@ -359,17 +389,10 @@ def evaluate() -> None:
             nrow=SAMPLE_GRID_COLUMNS,
         )
         model_results[system.name] = metrics
-        print(
-            f"{system.name}: MSE={metrics['mse']:.4f}, "
-            f"rFID-proxy="
-            f"{metrics['projected_inception_reconstruction_frechet']:.2f}, "
-            f"entropy={metrics['marginal_entropy_bits_per_image']:.1f} "
-            "bits/image"
-        )
+    save_metric_comparison(model_results, out_dir / "metric_comparison.png")
     (out_dir / "metrics.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"saved evaluation to {out_dir}")
 
 
 def main() -> None:

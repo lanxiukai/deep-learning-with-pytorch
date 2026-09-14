@@ -14,6 +14,7 @@ Outputs:
     output/vae/vqgan/evaluation/metrics.json
     output/vae/vqgan/evaluation/vqgan_real_and_reconstruction.png
     output/vae/vqgan/evaluation/vqgan_prior_samples.png
+    output/vae/vqgan/evaluation/metric_summary.png
 
 Defaults: 1,024 reconstruction examples, 100 generated images, batch size 16,
 256 projected Inception features, and an 8x8 latent token grid.
@@ -39,6 +40,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.image_quality import (
@@ -276,6 +278,45 @@ def evaluate_reconstruction(
     }, comparison
 
 
+def save_metric_summary(metrics: dict[str, object], output_path) -> None:
+    """Visualize held-out fidelity, code use, and prior fit."""
+    fidelity = metrics["paired_fidelity"]
+    quantization = metrics["quantization"]
+    prior = metrics["prior"]
+    assert isinstance(fidelity, dict)
+    assert isinstance(quantization, dict)
+    assert isinstance(prior, dict)
+    with plt.ioff():
+        figure, axes = plt.subplots(1, 3, figsize=(13, 4))
+        axes[0].bar(
+            ("L1", "LPIPS", "1 - SSIM"),
+            (
+                fidelity["pixel_l1"],
+                fidelity["lpips_v0_1_vgg"],
+                1.0 - fidelity["ssim"],
+            ),
+            color=("#4c78a8", "#f58518", "#54a24b"),
+        )
+        axes[0].set_title("Paired reconstruction error")
+        axes[1].bar(
+            ("Active codes", "Perplexity"),
+            (quantization["active_codes"], quantization["perplexity"]),
+            color=("#e45756", "#72b7b2"),
+        )
+        axes[1].set_title("Token utilization")
+        axes[2].bar(
+            ("Prior bits / token", "Prior bits / image"),
+            (prior["bits_per_token"], prior["bits_per_image"]),
+            color=("#b279a2", "#ff9da6"),
+        )
+        axes[2].set_title("Prior coding cost")
+        for axis in axes:
+            axis.grid(axis="y", alpha=0.25)
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=200)
+        plt.close(figure)
+
+
 def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
@@ -335,14 +376,10 @@ def evaluate() -> None:
         OUTPUT_DIR / "vqgan_prior_samples.png",
         nrow=SAMPLE_GRID_COLUMNS,
     )
+    save_metric_summary(metrics, OUTPUT_DIR / "metric_summary.png")
     (OUTPUT_DIR / "metrics.json").write_text(
         json.dumps(metrics, indent=2) + "\n",
         encoding="utf-8",
-    )
-    paired = metrics["paired_fidelity"]
-    print(
-        f"VQGAN: L1={paired['pixel_l1']:.4f}, LPIPS={paired['lpips_v0_1_vgg']:.4f}; "
-        f"saved evaluation to {OUTPUT_DIR}"
     )
 
 

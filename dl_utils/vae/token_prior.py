@@ -12,6 +12,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 from tqdm.auto import tqdm
 
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
 
@@ -128,8 +129,7 @@ def train_pixelcnn_prior_epoch(
 ) -> float:
     """Train one causal-prior epoch over frozen tokenizer indices."""
     prior.train()
-    nll_sum = 0.0
-    examples = 0
+    metrics = MetricAccumulator(("nll",), device=device)
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
@@ -140,15 +140,15 @@ def train_pixelcnn_prior_epoch(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        nll_sum += loss.item() * images.shape[0]
-        examples += images.shape[0]
+        metrics.update((loss,), num_examples=images.shape[0])
+        nll = metrics.compute()["nll"]
         progress.set_postfix(
-            nll=f"{nll_sum / examples:.4f}",
-            bpt=f"{nll_sum / examples / math.log(2):.3f}",
+            nll=f"{nll:.4f}",
+            bpt=f"{nll / math.log(2):.3f}",
             refresh=False,
         )
         progress.update(1)
-    return nll_sum / examples
+    return metrics.compute()["nll"]
 
 
 @torch.inference_mode()
@@ -162,16 +162,14 @@ def evaluate_pixelcnn_prior(
 ) -> dict[str, float]:
     """Measure conditional PixelCNN NLL for one frozen tokenizer."""
     prior.eval()
-    nll_sum = 0.0
-    examples = 0
+    metrics = MetricAccumulator(("nll",), device=device)
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         indices = tokenizer.encode_indices(images)
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
-        nll_sum += float(loss) * images.shape[0]
-        examples += images.shape[0]
-    nll = nll_sum / examples
+        metrics.update((loss,), num_examples=images.shape[0])
+    nll = metrics.compute()["nll"]
     return {
         "nll_nats_per_token": nll,
         "bits_per_token": nll / math.log(2),

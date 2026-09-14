@@ -26,6 +26,7 @@ Outputs:
     output/vae/hierarchical_vae/evaluation/<model>/posterior_and_prior_replacements.png
     output/vae/hierarchical_vae/evaluation/<model>/fixed_top_resampled_lower_prior.png
     output/vae/hierarchical_vae/evaluation/<model>/fixed_evidence_changed_top.png
+    output/vae/hierarchical_vae/evaluation/metric_comparison.png
 
 Evaluation data -- FactorShapes32 test:
 Available and evaluated images:       706
@@ -59,6 +60,7 @@ from torchvision.utils import save_image
 from dl_utils.data.factor_shapes import FactorShapes32
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.vae_common import (
@@ -350,6 +352,44 @@ def checkpoint_paths() -> dict[str, Path]:
     }
 
 
+def save_metric_comparison(
+    model_metrics: dict[str, dict[str, float]], output_path: Path
+) -> None:
+    """Compare rate, intervention impact, and active units across models."""
+    names = list(model_metrics)
+    positions = list(range(len(names)))
+    panels = (
+        ("Layer KL", ("kl_z1", "kl_z2")),
+        (
+            "Replacement distortion increase",
+            (
+                "lower_replacement_delta",
+                "top_replacement_delta",
+                "both_replacement_delta",
+            ),
+        ),
+        ("Active latent units", ("active_z1_corrections", "active_z2_units")),
+    )
+    with plt.ioff():
+        figure, axes = plt.subplots(1, len(panels), figsize=(14, 4))
+        for axis, (title, metric_names) in zip(axes, panels):
+            width = 0.8 / len(metric_names)
+            for index, metric_name in enumerate(metric_names):
+                offset = (index - (len(metric_names) - 1) / 2) * width
+                axis.bar(
+                    [position + offset for position in positions],
+                    [model_metrics[name][metric_name] for name in names],
+                    width=width,
+                    label=metric_name.removesuffix("_delta").replace("_", " "),
+                )
+            axis.set(title=title, xticks=positions, xticklabels=names)
+            axis.grid(axis="y", alpha=0.25)
+            axis.legend(fontsize="small")
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=200)
+        plt.close(figure)
+
+
 def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
@@ -394,16 +434,10 @@ def evaluate() -> None:
         metrics["warmup_epochs"] = checkpoint["warmup_epochs"]
         metrics["free_bits_per_group"] = checkpoint["free_bits_per_group"]
         results["models"][name] = metrics
-        print(
-            f"{name}: KL1={metrics['kl_z1']:.3f}, "
-            f"KL2={metrics['kl_z2']:.3f}, "
-            f"lower delta={metrics['lower_replacement_delta']:.3f}, "
-            f"top delta={metrics['top_replacement_delta']:.3f}"
-        )
+    save_metric_comparison(results["models"], out_root / "metric_comparison.png")
     (out_root / "metrics.json").write_text(
         json.dumps(results, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"saved evaluation to {out_root}")
 
 
 def main() -> None:

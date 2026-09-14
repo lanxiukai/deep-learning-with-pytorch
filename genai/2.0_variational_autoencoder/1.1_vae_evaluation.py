@@ -21,6 +21,7 @@ Outputs:
     output/vae/vae/evaluation/real_mean_and_sample_reconstruction.png
     output/vae/vae/evaluation/standard_normal_prior_samples.png
     output/vae/vae/evaluation/posterior_mean_interpolation_not_generation.png
+    output/vae/vae/evaluation/metric_summary.png
 
 Evaluation data -- glasses-256:
 Available images:           4,500
@@ -51,6 +52,7 @@ from tqdm import tqdm
 from dl_utils.data.vision import image_folder_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
@@ -175,6 +177,34 @@ def evaluate(
     return metrics, comparison, prior_samples, interpolation
 
 
+def save_metric_summary(metrics, output_path):
+    """Visualize reconstruction fidelity and aggregate posterior use."""
+    reconstruction = metrics["posterior_mean_reconstruction"]
+    posterior = metrics["posterior"]
+    with plt.ioff():
+        figure, axes = plt.subplots(1, 2, figsize=(9, 4))
+        axes[0].bar(
+            ("Pixel MSE", "PSNR (dB)"),
+            (
+                reconstruction["pixel_mse"],
+                reconstruction["psnr_for_zero_to_one_range"],
+            ),
+            color=("#4c78a8", "#f58518"),
+        )
+        axes[0].set_title("Posterior-mean reconstruction")
+        axes[1].bar(
+            ("KL (nats / image)", "Active dimensions"),
+            (posterior["kl_nats_per_image"], posterior["active_dimensions"]),
+            color=("#54a24b", "#e45756"),
+        )
+        axes[1].set_title("Posterior capacity")
+        for axis in axes:
+            axis.grid(axis="y", alpha=0.25)
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=200)
+        plt.close(figure)
+
+
 def analyze(device):
     """Load the final checkpoint and write all standard-VAE diagnostics."""
     if not CHECKPOINT.is_file():
@@ -222,20 +252,9 @@ def analyze(device):
         OUTPUT_DIR / "posterior_mean_interpolation_not_generation.png",
         nrow=len(interpolation),
     )
+    save_metric_summary(metrics, OUTPUT_DIR / "metric_summary.png")
     with (OUTPUT_DIR / "metrics.json").open("w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, indent=2)
-    console_metrics = {
-        "posterior_mean_reconstruction": metrics["posterior_mean_reconstruction"],
-        "posterior": {
-            "examples": metrics["posterior"]["examples"],
-            "kl_nats_per_image": metrics["posterior"]["kl_nats_per_image"],
-            "active_variance_threshold": metrics["posterior"][
-                "active_variance_threshold"
-            ],
-            "active_dimensions": metrics["posterior"]["active_dimensions"],
-        },
-    }
-    print(json.dumps(console_metrics, indent=2))
 
 
 def main():

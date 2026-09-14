@@ -74,6 +74,7 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import VQVAE, TokenUsageAccumulator
 from dl_utils.vae.token_prior import (
     PixelCNNPrior,
@@ -137,22 +138,21 @@ def evaluate_tokenizer(
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
-    distortion = 0.0
-    quantization_mse = 0.0
-    examples = 0
+    metrics = MetricAccumulator(("mse", "quantization_mse"), device=device)
     usage = TokenUsageAccumulator(vocabulary_size)
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
         reconstruction, indices, _, diagnostics = model(images)
-        distortion += F.mse_loss(reconstruction, images).item() * images.shape[0]
-        quantization_mse += diagnostics["quantization_mse"].item() * images.shape[0]
+        metrics.update(
+            (F.mse_loss(reconstruction, images), diagnostics["quantization_mse"]),
+            num_examples=images.shape[0],
+        )
         usage.update(indices)
-        examples += images.shape[0]
+    means = metrics.compute()
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
-        "mse": distortion / examples,
-        "quantization_mse": quantization_mse / examples,
+        **means,
         "perplexity": statistics["perplexity"].item(),
         "active_codes": statistics["active_codes"].item(),
         "usage_fraction": statistics["usage_fraction"].item(),
@@ -192,8 +192,9 @@ def train_tokenizer(
         for epoch in range(1, TOKENIZER_EPOCHS + 1):
             progress.set_description(f"vq_vae {epoch}/{TOKENIZER_EPOCHS}", refresh=False)
             model.train()
-            sums = torch.zeros(4, device=device)
-            examples = 0
+            metrics = MetricAccumulator(
+                ("loss", "mse", "codebook_loss", "commitment_loss"), device=device
+            )
             usage = TokenUsageAccumulator(CODEBOOK_SIZE)
             preview = None
             for images, _ in train_loader:
@@ -203,17 +204,18 @@ def train_tokenizer(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                values = [
-                    loss.detach(),
-                    distortion,
-                    diagnostics["codebook_loss"],
-                    diagnostics["commitment_loss"],
-                ]
-                sums += torch.stack(values) * images.shape[0]
+                metrics.update(
+                    (
+                        loss,
+                        distortion,
+                        diagnostics["codebook_loss"],
+                        diagnostics["commitment_loss"],
+                    ),
+                    num_examples=images.shape[0],
+                )
                 usage.update(indices)
-                examples += images.shape[0]
                 progress.set_postfix(
-                    loss=f"{sums[0].item() / examples:.4f}",
+                    loss=f"{metrics.compute()['loss']:.4f}",
                     refresh=False,
                 )
                 progress.update(1)
@@ -223,10 +225,10 @@ def train_tokenizer(
                 )
             if preview is None:
                 raise ValueError("training loader produced no batches; reduce batch size")
-            means = (sums / examples).tolist()
+            means = metrics.compute()
             epoch_usage = usage.statistics()
             history.append(
-                dict(zip(("loss", "mse", "codebook_loss", "commitment_loss"), means))
+                means
                 | {
                     "perplexity": epoch_usage["perplexity"].item(),
                     "active_codes": epoch_usage["active_codes"].item(),
