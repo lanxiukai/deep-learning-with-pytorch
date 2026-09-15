@@ -58,6 +58,14 @@ environment or dependency workflow.
   stage for latent diffusion; its 16x16 latent resolution is distinct from the
   decoded RGB image size. The Inception extractor supports both its existing
   projected features and unprojected 2048D features.
+- [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
+  CVAE, conditional objective, cache metadata contract, and evaluation figures.
+  Its lesson entries reuse [data/loading.py](data/loading.py) and the shared
+  model-weight checkpoint helpers. Sampling reuses the fixed class-noise grid
+  and bounded inference in [gan/inference.py](gan/inference.py), Gaussian
+  reparameterization in [vae/vae_common.py](vae/vae_common.py), and labeled
+  grids in [plot/images.py](plot/images.py). The scripts retain optimization
+  order, hyperparameters, and artifact timing.
 - [training/checkpoints.py](training/checkpoints.py) owns serialization and
   state restoration; [training/session.py](training/session.py) manages output
   lifecycles without owning optimization loops.

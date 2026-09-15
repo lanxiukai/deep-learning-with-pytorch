@@ -19,11 +19,17 @@ def split_gaussian_parameters(
     return mu, logvar.clamp(minimum, maximum)  # (B, latent_dim)
 
 
-def reparameterize_logvar(mu: Tensor, logvar: Tensor) -> Tensor:
-    """Draw ``N(mu, exp(logvar))`` with the reparameterization trick."""
+def reparameterize_logvar(
+    mu: Tensor, logvar: Tensor, *, noise: Tensor | None = None
+) -> Tensor:
+    """Draw ``N(mu, exp(logvar))`` using fresh or caller-supplied base noise."""
     if mu.shape != logvar.shape:
         raise ValueError("mu and logvar must have matching shapes")
-    return mu + torch.exp(0.5 * logvar) * torch.randn_like(mu)  # (B, latent_dim)
+    if noise is None:
+        noise = torch.randn_like(mu)
+    elif noise.shape != mu.shape:
+        raise ValueError("noise must have the same shape as mu")
+    return mu + torch.exp(0.5 * logvar) * noise  # (B, latent_dim)
 
 
 def diagonal_gaussian_kl_from_logvar(

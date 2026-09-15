@@ -1,15 +1,21 @@
-"""Compact conditional latent-variable models shared by the cVAE lessons."""
+"""256x256 RGB conditional VAE and glasses-dataset lesson utilities."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from itertools import pairwise
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
-from torchvision.utils import save_image
+from torch.utils.data import Subset
+from torchvision.datasets import ImageFolder
 
+from dl_utils.data.loading import make_device_aware_loader
+from dl_utils.data.vision import image_folder_dataset
+from dl_utils.gan.inference import generate_in_batches, make_fixed_class_latent_grid
+from dl_utils.plot._backend import pyplot as plt
+from dl_utils.plot.images import save_image_row_grid
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
@@ -17,9 +23,38 @@ from dl_utils.vae.vae_common import (
     split_gaussian_parameters,
 )
 
+CLASS_NAMES = ("G", "NoG")
+IMAGE_SIZE = 256
+CVAE_OBJECTIVE = "summed_rgb_mse_plus_conditional_kl"
+
+
+def glasses_data_config() -> dict[str, object]:
+    """Describe the cache and label contract for checkpoint save/load validation."""
+    return {
+        "dataset": "glasses-256",
+        "class_names": list(CLASS_NAMES),
+        "image_size": IMAGE_SIZE,
+        "image_channels": 3,
+        "pixel_range": [0.0, 1.0],
+        "split": "all images (training set)",
+    }
+
+
+def glasses_dataset(root: Path) -> ImageFolder:
+    """Read the existing RGB cache with the same class indices as the cGAN."""
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"Dataset cache not found: {root}. Prepare it with "
+            "python tool_scripts/download_dataset.py --dataset glasses"
+        )
+    dataset = image_folder_dataset(root)
+    if dataset.classes != list(CLASS_NAMES):
+        raise ValueError(f"Expected classes {CLASS_NAMES}, got {dataset.classes}")
+    return dataset
+
 
 class ConditionalDecoder(nn.Module):
-    """Decode a latent and class representation into a Bernoulli mean."""
+    """Decode a latent and class representation into an RGB Gaussian mean."""
 
     def __init__(
         self,
@@ -32,22 +67,27 @@ class ConditionalDecoder(nn.Module):
             nn.Linear(latent_dim + condition_dim, hidden_channels * 4 * 4),
             nn.SiLU(),
         )  # (B, latent_dim + condition_dim) -> (B, hidden_channels * 4 * 4)
-        self.net = nn.Sequential(
-            nn.Unflatten(1, (hidden_channels, 4, 4)),
-            nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels // 2),
-            nn.SiLU(),
-            nn.ConvTranspose2d(hidden_channels // 2, hidden_channels // 4, 4, 2, 1),
-            nn.GroupNorm(4, hidden_channels // 4),
-            nn.SiLU(),
-            nn.ConvTranspose2d(hidden_channels // 4, 1, 4, 2, 1),
-            nn.Sigmoid(),
-        )  # (B, hidden_channels, 4, 4) -> (B, 1, 32, 32)
+        channels = (
+            hidden_channels,
+            hidden_channels,
+            hidden_channels,
+            hidden_channels // 2,
+            hidden_channels // 4,
+            hidden_channels // 8,
+            3,
+        )
+        layers: list[nn.Module] = [nn.Unflatten(1, (hidden_channels, 4, 4))]
+        for in_channels, out_channels in pairwise(channels):
+            layers.append(nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1))
+            if out_channels != 3:
+                layers.extend((nn.GroupNorm(8, out_channels), nn.SiLU()))
+        layers.append(nn.Sigmoid())
+        self.net = nn.Sequential(*layers)  # 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
 
     def forward(self, z: Tensor, condition: Tensor) -> Tensor:
         # z: (B, latent_dim), condition: (B, condition_dim)
         features = torch.cat((z, condition), dim=1)
-        return self.net(self.input(features))  # (B, 1, 32, 32)
+        return self.net(self.input(features))  # (B, 3, 256, 256)
 
 
 class ConditionalVAE(nn.Module):
@@ -56,43 +96,51 @@ class ConditionalVAE(nn.Module):
     def __init__(
         self,
         *,
-        num_classes: int = 10,
-        latent_dim: int = 16,
+        num_classes: int = 2,
+        latent_dim: int = 128,
         condition_dim: int = 32,
-        hidden_channels: int = 128,
+        hidden_channels: int = 256,
+        posterior_hidden_dim: int = 512,
     ) -> None:
         super().__init__()
+        if hidden_channels < 128 or hidden_channels % 128:
+            raise ValueError("hidden_channels must be a positive multiple of 128")
         self.num_classes = num_classes
         self.latent_dim = latent_dim
         self.condition_dim = condition_dim
         self.hidden_channels = hidden_channels
+        self.posterior_hidden_dim = posterior_hidden_dim
 
         # The posterior, conditional prior, and decoder share the class embedding.
         self.condition_embedding = nn.Embedding(num_classes, condition_dim)
-        self.image_encoder = nn.Sequential(
-            nn.Conv2d(1, hidden_channels // 4, 4, 2, 1),
-            nn.SiLU(),
-            nn.Conv2d(hidden_channels // 4, hidden_channels // 2, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels // 2),
-            nn.SiLU(),
-            nn.Conv2d(hidden_channels // 2, hidden_channels, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels),
-            nn.SiLU(),
-            nn.Flatten(),
-        )  # (B, 1, 32, 32) -> (B, hidden_channels * 4 * 4)
+        channels = (
+            3,
+            hidden_channels // 8,
+            hidden_channels // 4,
+            hidden_channels // 2,
+            hidden_channels,
+            hidden_channels,
+            hidden_channels,
+        )
+        layers: list[nn.Module] = []
+        for in_channels, out_channels in pairwise(channels):
+            layers.append(nn.Conv2d(in_channels, out_channels, 4, 2, 1))
+            if in_channels != 3:
+                layers.append(nn.GroupNorm(8, out_channels))
+            layers.append(nn.SiLU())
+        layers.append(nn.Flatten())
+        self.image_encoder = nn.Sequential(*layers)  # (B, 3, 256, 256) -> (B, H*4*4)
         self.posterior = nn.Sequential(
-            nn.Linear(hidden_channels * 4 * 4 + condition_dim, 256),
+            nn.Linear(hidden_channels * 4 * 4 + condition_dim, posterior_hidden_dim),
             nn.SiLU(),
-            nn.Linear(256, 2 * latent_dim),
+            nn.Linear(posterior_hidden_dim, 2 * latent_dim),
         )  # (B, hidden_channels * 4 * 4 + condition_dim) -> (B, 2 * latent_dim)
         self.prior_network = nn.Sequential(
             nn.Linear(condition_dim, 256),
             nn.SiLU(),
             nn.Linear(256, 2 * latent_dim),
         )  # (B, condition_dim) -> (B, 2 * latent_dim)
-        self.decoder = ConditionalDecoder(
-            latent_dim, condition_dim, hidden_channels
-        )
+        self.decoder = ConditionalDecoder(latent_dim, condition_dim, hidden_channels)
 
     def prior(self, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return p(z | c) parameters predicted from the class condition."""
@@ -103,7 +151,9 @@ class ConditionalVAE(nn.Module):
 
     def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""
-        # images: (B, 1, 32, 32), labels: (B,)
+        # images: (B, 3, 256, 256), labels: (B,)
+        if images.shape[1:] != (3, IMAGE_SIZE, IMAGE_SIZE):
+            raise ValueError("Expected RGB images from the 256x256 glasses cache")
         condition = self.condition_embedding(labels)  # (B, condition_dim)
         features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(
@@ -111,25 +161,27 @@ class ConditionalVAE(nn.Module):
         )  # q_mu, q_logvar (B, latent_dim)
 
     def decode(self, z: Tensor, labels: Tensor) -> Tensor:
-        """Return the Bernoulli mean p(x | z, c)."""
+        """Return the fixed-scale Gaussian mean for p(x | z, c), in [0, 1]."""
         # z: (B, latent_dim), labels: (B,)
         condition = self.condition_embedding(labels)  # (B, condition_dim)
-        return self.decoder(z, condition)  # (B, 1, 32, 32)
+        return self.decoder(z, condition)  # (B, 3, 256, 256)
 
-    def generate(self, labels: Tensor) -> Tensor:
+    def generate(self, labels: Tensor, *, noise: Tensor | None = None) -> Tensor:
         """Sample z from p(z | c), then decode it with the requested class."""
         # The prior p(z | c) is the latent reference for the KL term and generation.
         p_mu, p_logvar = self.prior(labels)
-        z = reparameterize_logvar(p_mu, p_logvar)  # (B, latent_dim)
-        return self.decode(z, labels)  # (B, 1, 32, 32)
+        z = reparameterize_logvar(p_mu, p_logvar, noise=noise)
+        return self.decode(z, labels)  # (B, 3, 256, 256)
 
-    def forward(self, images: Tensor, labels: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        # images: (B, 1, 32, 32), labels: (B,)
+    def forward(
+        self, images: Tensor, labels: Tensor
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        # images: (B, 3, 256, 256), labels: (B,)
         # mu, logvar: (B, latent_dim)
         q_mu, q_logvar = self.encode(images, labels)
         p_mu, p_logvar = self.prior(labels)
         z = reparameterize_logvar(q_mu, q_logvar)  # (B, latent_dim)
-        reconstruction = self.decode(z, labels)    # (B, 1, 32, 32)
+        reconstruction = self.decode(z, labels)  # (B, 3, 256, 256)
         return reconstruction, {
             "q_mu": q_mu,
             "q_logvar": q_logvar,
@@ -142,31 +194,26 @@ def conditional_vae_loss(
     reconstruction: Tensor,
     real_images: Tensor,
     statistics: dict[str, Tensor],
-    *,
-    active_rate_threshold: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
-    """Return the negative conditional ELBO and detached batch diagnostics."""
-    distortion = (
-        F.binary_cross_entropy(reconstruction, real_images, reduction="none")
-        .flatten(1)
+    """Return summed RGB MSE + KL(q || p), omitting the Gaussian constant.
+
+    The fixed observation variance is 1/2, giving a unit MSE coefficient,
+    as in the introductory face VAE. Both terms are averaged over images.
+    """
+    distortion = (reconstruction - real_images).square().flatten(1).sum(dim=1).mean()
+    rate = (
+        diagonal_gaussian_kl_from_logvar(
+            statistics["q_mu"],
+            statistics["q_logvar"],
+            statistics["p_mu"],
+            statistics["p_logvar"],
+        )
         .sum(dim=1)
         .mean()
     )
-    rate_per_dimension = diagonal_gaussian_kl_from_logvar(
-        statistics["q_mu"],
-        statistics["q_logvar"],
-        statistics["p_mu"],
-        statistics["p_logvar"],
-    )
-    rate = rate_per_dimension.sum(dim=1).mean()
     return distortion + rate, {
         "distortion": distortion.detach(),
         "rate": rate.detach(),
-        "num_active_latent_dimensions": (
-            rate_per_dimension.mean(dim=0) > active_rate_threshold
-        )
-        .sum()
-        .detach(),
     }
 
 
@@ -176,14 +223,10 @@ def evaluate_cvae(
     loader: Iterable[tuple[Tensor, Tensor]],
     *,
     device: torch.device,
-    active_rate_threshold: float,
 ) -> dict[str, float]:
     """Evaluate conditional-ELBO metrics with sample-count-weighted means."""
     model.eval()
-    metrics = MetricAccumulator(
-        ("loss", "distortion", "rate", "num_active_latent_dimensions"),
-        device=device,
-    )
+    metrics = MetricAccumulator(("loss", "distortion", "rate"), device=device)
     for images, labels in loader:
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
@@ -192,14 +235,12 @@ def evaluate_cvae(
             reconstruction,
             images,
             statistics,
-            active_rate_threshold=active_rate_threshold,
         )
         metrics.update(
             (
                 loss,
                 terms["distortion"],
                 terms["rate"],
-                terms["num_active_latent_dimensions"],
             ),
             num_examples=images.shape[0],
         )
@@ -213,18 +254,109 @@ def save_conditional_samples(
     *,
     device: torch.device,
     samples_per_class: int = 8,
+    noise: Tensor | None = None,
+    class_names: tuple[str, ...] = CLASS_NAMES,
 ) -> None:
-    """Generate and save an equal-size sample row for every class."""
-    labels = torch.arange(model.num_classes, device=device).repeat_interleave(
-        samples_per_class
+    """Save G then NoG rows, sharing base noise across corresponding columns.
+
+    The conditional prior transforms the noise separately for each class;
+    this comparison does not assume identity preservation.
+    """
+    noise, labels = make_fixed_class_latent_grid(
+        tuple(range(model.num_classes)),
+        samples_per_class,
+        model.latent_dim,
+        device,
+        base_noise=noise,
     )
-    model.eval()
-    save_image(model.generate(labels), path, nrow=samples_per_class)
+    samples = generate_in_batches(
+        (noise, labels),
+        samples_per_class,
+        lambda base_noise, conditions: model.generate(conditions, noise=base_noise),
+        module=model,
+    )
+    # The shared renderer accepts [-1, 1]; CVAE probabilities stay in [0, 1].
+    save_image_row_grid(
+        samples.mul(2).sub(1).split(samples_per_class),
+        class_names,
+        path,
+        title="Conditional prior samples",
+        column_labels=[
+            f"Shared noise {index + 1}" for index in range(samples_per_class)
+        ],
+        dpi=200,
+    )
+
+
+@torch.inference_mode()
+def save_conditional_reconstructions(
+    model: ConditionalVAE,
+    dataset: ImageFolder,
+    path: Path,
+    *,
+    device: torch.device,
+    samples_per_class: int,
+) -> None:
+    """Save balanced class rows of original images and posterior-mean decodes."""
+    for_class = [
+        [index for index, target in enumerate(dataset.targets) if target == label]
+        for label in range(model.num_classes)
+    ]
+    count = min(samples_per_class, *(len(indices) for indices in for_class))
+    indices = [index for group in for_class for index in group[:count]]
+    display_loader = make_device_aware_loader(
+        Subset(dataset, indices),
+        count,
+        device,
+        shuffle=False,
+    )
+
+    def reconstruct(images: Tensor, labels: Tensor) -> Tensor:
+        mu, _ = model.encode(images, labels)
+        return model.decode(mu, labels)
+
+    rows = []
+    row_labels = []
+    for name, (images, labels) in zip(dataset.classes, display_loader, strict=True):
+        reconstructions = generate_in_batches(
+            (images.to(device), labels.to(device)),
+            count,
+            reconstruct,
+            module=model,
+        )
+        rows.extend((images.mul(2).sub(1), reconstructions.mul(2).sub(1)))
+        row_labels.extend((f"{name}\nOriginal", f"{name}\nRecon."))
+    save_image_row_grid(
+        rows, row_labels, path, title="Posterior-mean reconstruction", dpi=200
+    )
+
+
+def save_conditional_metric_summary(metrics: dict[str, float], path: Path) -> None:
+    """Save the conditional-ELBO metric summary."""
+    with plt.ioff():
+        figure, axis = plt.subplots(figsize=(6, 4))
+        axis.bar(
+            ("MSE + KL", "Summed MSE", "Conditional KL"),
+            (metrics["loss"], metrics["distortion"], metrics["rate"]),
+            color=("#4c78a8", "#f58518", "#54a24b"),
+        )
+        axis.set_title("Training-set MSE + conditional KL")
+        axis.grid(axis="y", alpha=0.25)
+        figure.tight_layout()
+        figure.savefig(path, dpi=200)
+        plt.close(figure)
 
 
 __all__ = [
+    "CLASS_NAMES",
+    "CVAE_OBJECTIVE",
+    "IMAGE_SIZE",
     "ConditionalVAE",
     "conditional_vae_loss",
     "evaluate_cvae",
+    "glasses_data_config",
+    "glasses_dataset",
+    "save_conditional_metric_summary",
+    "save_conditional_reconstructions",
     "save_conditional_samples",
 ]
