@@ -60,7 +60,6 @@ from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.hierarchical_vae import (
-    HIERARCHY_OBJECTIVE,
     ActiveUnitAccumulator,
     HierarchicalVAE,
     LadderVAE,
@@ -93,10 +92,7 @@ def load_model(
     path: Path, device: torch.device
 ) -> tuple[HierarchicalVAE, dict[str, object]]:
     checkpoint = torch.load(path, map_location=device, weights_only=True)
-    if (
-        checkpoint.get("data_config") != glasses_data_config()
-        or checkpoint.get("objective") != HIERARCHY_OBJECTIVE
-    ):
+    if checkpoint.get("data_config") != glasses_data_config():
         raise ValueError(
             f"{path} is not a glasses-256 RGB hierarchy checkpoint; "
             "rerun 5.0_hierarchical_vae.py and 5.1_ladder_vae.py"
@@ -414,7 +410,6 @@ def evaluate() -> None:
             "held_out": False,
             "evaluated_examples": len(loader.dataset),
             "seed": SEED,
-            "objective": HIERARCHY_OBJECTIVE,
             "distortion": "summed RGB MSE per image",
             "kl_evaluation": "at posterior-mean top latent (diagnostic, not ELBO)",
             "summary_rows": [

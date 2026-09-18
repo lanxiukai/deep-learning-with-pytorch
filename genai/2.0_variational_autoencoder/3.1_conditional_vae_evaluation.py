@@ -45,7 +45,6 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.conditional_vae import (
-    CVAE_OBJECTIVE,
     ConditionalVAE,
     evaluate_cvae,
     save_conditional_metric_summary,
@@ -91,7 +90,6 @@ def evaluate() -> None:
         expected_metadata={
             "model_name": "conditional_vae",
             "data_config": data_config,
-            "objective": CVAE_OBJECTIVE,
         },
     )
 
@@ -123,7 +121,6 @@ def evaluate() -> None:
                     **data_config,
                     "evaluated_examples": len(loader.dataset),
                     "seed": SEED,
-                    "objective": CVAE_OBJECTIVE,
                     "sample_rows": list(GLASSES_CLASS_NAMES),
                     "shared_base_noise_across_classes": True,
                     "held_out": False,

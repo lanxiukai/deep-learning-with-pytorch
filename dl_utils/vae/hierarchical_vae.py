@@ -13,8 +13,6 @@ from dl_utils.vae.vae_common import (
     split_gaussian_parameters,
 )
 
-HIERARCHY_OBJECTIVE = "summed_rgb_mse_plus_two_layer_kl"
-
 
 class HierarchicalVAE(nn.Module):
     """Two-level q(z2 | x) q(z1 | z2, x) teaching baseline."""
@@ -285,7 +283,6 @@ def model_config(
 
 
 __all__ = [
-    "HIERARCHY_OBJECTIVE",
     "ActiveUnitAccumulator",
     "HierarchicalVAE",
     "LadderVAE",

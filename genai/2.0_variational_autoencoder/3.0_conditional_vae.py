@@ -70,7 +70,6 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.conditional_vae import (
-    CVAE_OBJECTIVE,
     ConditionalVAE,
     conditional_vae_loss,
     save_conditional_samples,
@@ -206,7 +205,6 @@ def train_cvae(
             "model_name": "conditional_vae",
             "model_config": model_config,
             "data_config": glasses_data_config(),
-            "objective": CVAE_OBJECTIVE,
             "training_config": {
                 "epochs": EPOCHS,
                 "batch_size": train_loader.batch_size,

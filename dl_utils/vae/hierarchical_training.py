@@ -16,7 +16,6 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.hierarchical_vae import (
-    HIERARCHY_OBJECTIVE,
     HierarchicalVAE,
     hierarchical_vae_loss,
     model_config,
@@ -151,7 +150,6 @@ def train_hierarchy(
             "model_name": model_name,
             "model_config": model_config(model),
             "data_config": glasses_data_config(),
-            "objective": HIERARCHY_OBJECTIVE,
             "posterior_family": model.posterior_family,
             "warmup_epochs": warmup_epochs,
             "free_bits_per_group": free_bits,

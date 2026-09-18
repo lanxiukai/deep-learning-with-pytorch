@@ -23,8 +23,6 @@ from dl_utils.vae.vae_common import (
     split_gaussian_parameters,
 )
 
-CVAE_OBJECTIVE = "summed_rgb_mse_plus_conditional_kl"
-
 
 class ConditionalDecoder(ImageDecoder):
     """Decode a latent and class representation into an RGB Gaussian mean."""
@@ -287,7 +285,6 @@ def save_conditional_metric_summary(metrics: dict[str, float], path: Path) -> No
 
 
 __all__ = [
-    "CVAE_OBJECTIVE",
     "ConditionalVAE",
     "conditional_vae_loss",
     "evaluate_cvae",
