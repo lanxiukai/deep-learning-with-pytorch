@@ -51,8 +51,8 @@ environment or dependency workflow.
   labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images
   and pass labels only to their second-stage priors.
 - [vae/vae.py](vae/vae.py) preserves the 256x256 introductory VAE and the
-  comparable standard/beta-VAE training path. Focused modules cover compact
-  32x32 hierarchical VAEs plus reusable discrete-tokenizer, token-prior, and
+  comparable standard/beta-VAE training path. Focused modules cover 256x256 RGB
+  hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior, and
   perceptual-autoencoder blocks for the 128x128 CelebA lessons.
   The KL perceptual autoencoder also supports an f=8, 128px continuous first
   stage for latent diffusion; its 16x16 latent resolution is distinct from the
@@ -60,6 +60,8 @@ environment or dependency workflow.
   projected features and unprojected 2048D features.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
+  Its RGB backbone is shared with the HVAE/Ladder lessons through
+  `vae/image_networks.py`; all three use the existing glasses-256 cache.
   Its lesson entries reuse [data/loading.py](data/loading.py) and the shared
   model-weight checkpoint helpers. Sampling reuses the fixed class-noise grid
   and bounded inference in [gan/inference.py](gan/inference.py), Gaussian

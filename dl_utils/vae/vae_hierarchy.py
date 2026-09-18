@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor, nn
 
+from dl_utils.vae.image_networks import ImageDecoder, ImageEncoder
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
     fuse_diagonal_gaussians,
@@ -13,8 +13,10 @@ from dl_utils.vae.vae_common import (
     split_gaussian_parameters,
 )
 
+HIERARCHY_OBJECTIVE = "summed_rgb_mse_plus_two_layer_kl"
 
-class HierarchicalVAE32(nn.Module):
+
+class HierarchicalVAE(nn.Module):
     """Two-level q(z2 | x) q(z1 | z2, x) teaching baseline."""
 
     posterior_family = "conditional_network"
@@ -22,29 +24,21 @@ class HierarchicalVAE32(nn.Module):
     def __init__(
         self,
         *,
-        z1_dim: int = 24,
-        z2_dim: int = 12,
-        hidden_channels: int = 64,
-        context_dim: int = 192,
+        z1_dim: int = 96,
+        z2_dim: int = 32,
+        hidden_channels: int = 256,
+        context_dim: int = 512,
     ) -> None:
         super().__init__()
+        if hidden_channels < 128 or hidden_channels % 128:
+            raise ValueError("hidden_channels must be a positive multiple of 128")
         self.z1_dim = z1_dim
         self.z2_dim = z2_dim
         self.hidden_channels = hidden_channels
         self.context_dim = context_dim
-        self.bottom_up_image = nn.Sequential(
-            nn.Conv2d(1, hidden_channels // 2, 4, 2, 1),
-            nn.SiLU(),
-            nn.Conv2d(hidden_channels // 2, hidden_channels, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels),
-            nn.SiLU(),
-            nn.Conv2d(hidden_channels, hidden_channels * 2, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels * 2),
-            nn.SiLU(),
-            nn.Flatten(),
-        )
+        self.bottom_up_image = ImageEncoder(hidden_channels)
         self.bottom_up_lower = nn.Sequential(
-            nn.Linear(hidden_channels * 2 * 4 * 4, context_dim),
+            nn.Linear(hidden_channels * 4 * 4, context_dim),
             nn.SiLU(),
         )
         self.bottom_up_top = nn.Sequential(
@@ -62,23 +56,11 @@ class HierarchicalVAE32(nn.Module):
             nn.SiLU(),
             nn.Linear(context_dim, 2 * z1_dim),
         )
-        self.decoder_input = nn.Sequential(
-            nn.Linear(z1_dim, hidden_channels * 2 * 4 * 4),
-            nn.SiLU(),
-        )
-        self.decoder = nn.Sequential(
-            nn.Unflatten(1, (hidden_channels * 2, 4, 4)),
-            nn.ConvTranspose2d(hidden_channels * 2, hidden_channels, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels),
-            nn.SiLU(),
-            nn.ConvTranspose2d(hidden_channels, hidden_channels // 2, 4, 2, 1),
-            nn.GroupNorm(8, hidden_channels // 2),
-            nn.SiLU(),
-            nn.ConvTranspose2d(hidden_channels // 2, 1, 4, 2, 1),
-            nn.Sigmoid(),
-        )
+        self.decoder = ImageDecoder(z1_dim, hidden_channels)
 
     def bottom_up(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        if images.shape[1:] != (3, 256, 256):
+            raise ValueError("Expected RGB images from the 256x256 glasses cache")
         lower_evidence = self.bottom_up_lower(self.bottom_up_image(images))
         top_evidence = self.bottom_up_top(lower_evidence)
         q2_mu, q2_logvar = split_gaussian_parameters(self.top_posterior(top_evidence))
@@ -137,21 +119,27 @@ class HierarchicalVAE32(nn.Module):
     def decode(self, z1: Tensor) -> Tensor:
         leading_shape = z1.shape[:-1]
         flat_z1 = z1.reshape(-1, self.z1_dim)
-        images = self.decoder(self.decoder_input(flat_z1))
-        return images.reshape(*leading_shape, 1, 32, 32)
+        images = self.decoder(flat_z1)
+        return images.reshape(*leading_shape, 3, 256, 256)
 
     def forward(self, images: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         latents = self.infer(images, sample=True)
         return self.decode(latents["z1"]), latents
 
-    def sample(self, count: int, *, device: torch.device) -> Tensor:
-        z2 = torch.randn(count, self.z2_dim, device=device)
+    def generate(self, z2: Tensor, lower_noise: Tensor) -> Tensor:
+        """Sample p(z1 | z2) with explicit base noise, then decode its RGB mean."""
         p1_mu, p1_logvar = split_gaussian_parameters(self.lower_prior(z2))
-        z1 = reparameterize_logvar(p1_mu, p1_logvar)
+        z1 = reparameterize_logvar(p1_mu, p1_logvar, noise=lower_noise)
         return self.decode(z1)
 
+    def sample(self, count: int, *, device: torch.device) -> Tensor:
+        return self.generate(
+            torch.randn(count, self.z2_dim, device=device),
+            torch.randn(count, self.z1_dim, device=device),
+        )
 
-class LadderVAE32(HierarchicalVAE32):
+
+class LadderVAE(HierarchicalVAE):
     """Replace the lower conditional network with prior-evidence fusion."""
 
     posterior_family = "ladder_precision_fusion"
@@ -159,10 +147,10 @@ class LadderVAE32(HierarchicalVAE32):
     def __init__(
         self,
         *,
-        z1_dim: int = 24,
-        z2_dim: int = 12,
-        hidden_channels: int = 64,
-        context_dim: int = 192,
+        z1_dim: int = 96,
+        z2_dim: int = 32,
+        hidden_channels: int = 256,
+        context_dim: int = 512,
     ) -> None:
         super().__init__(
             z1_dim=z1_dim,
@@ -244,9 +232,13 @@ def hierarchical_vae_loss(
     kl_weight: float,
     free_bits: float,
 ) -> tuple[Tensor, dict[str, Tensor]]:
-    """Negative two-level ELBO with group-wise free bits after batch means."""
+    """Summed RGB MSE + two KL terms, with warm-up and group-wise free bits.
+
+    As in VAE/CVAE, observation variance is 1/2 and the Gaussian constant
+    is omitted. Free bits clamp each layer's batch-mean KL, not each unit.
+    """
     distortion = (
-        F.binary_cross_entropy(reconstruction, target, reduction="none")
+        (reconstruction - target).square()
         .flatten(1)
         .sum(dim=1)
         .mean()
@@ -282,7 +274,7 @@ def hierarchical_vae_loss(
 
 
 def model_config(
-    model: HierarchicalVAE32,
+    model: HierarchicalVAE,
 ) -> dict[str, int]:
     return {
         "z1_dim": model.z1_dim,
@@ -293,9 +285,10 @@ def model_config(
 
 
 __all__ = [
+    "HIERARCHY_OBJECTIVE",
     "ActiveUnitAccumulator",
-    "HierarchicalVAE32",
-    "LadderVAE32",
+    "HierarchicalVAE",
+    "LadderVAE",
     "hierarchical_vae_loss",
     "model_config",
 ]

@@ -5,43 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
-from dl_utils.data.factor_shapes import FactorShapes32
 from dl_utils.filesystem.directories import reset_dir
+from dl_utils.gan.inference import generate_in_batches
+from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.conditional_vae import glasses_data_config
 from dl_utils.vae.training_artifacts import save_training_metrics
-from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
 from dl_utils.vae.vae_hierarchy import (
-    ActiveUnitAccumulator,
-    HierarchicalVAE32,
+    HIERARCHY_OBJECTIVE,
+    HierarchicalVAE,
     hierarchical_vae_loss,
     model_config,
 )
-
-
-def make_factor_shape_loaders(
-    *,
-    batch_size: int,
-    workers: int,
-    split_seed: int,
-    device: torch.device,
-) -> tuple[DataLoader, DataLoader]:
-    train_set = FactorShapes32(split="train", split_seed=split_seed)
-    test_set = FactorShapes32(split="test", split_seed=split_seed)
-    common = {
-        "batch_size": batch_size,
-        "num_workers": workers,
-        "pin_memory": device.type == "cuda",
-        "persistent_workers": workers > 0,
-    }
-    return (
-        DataLoader(train_set, shuffle=True, drop_last=True, **common),
-        DataLoader(test_set, shuffle=False, drop_last=False, **common),
-    )
 
 
 def warmup_weight(update: int, *, warmup_updates: int) -> float:
@@ -51,78 +31,54 @@ def warmup_weight(update: int, *, warmup_updates: int) -> float:
 
 
 @torch.inference_mode()
-def evaluate_hierarchy(
-    model: HierarchicalVAE32,
-    loader: DataLoader,
+def save_prior_samples(
+    model: HierarchicalVAE,
+    path: Path,
     *,
-    device: torch.device,
-    active_variance_threshold: float,
-) -> dict[str, float]:
-    model.eval()
-    distortion = 0.0
-    kl_z1 = 0.0
-    kl_z2 = 0.0
-    examples = 0
-    active = ActiveUnitAccumulator()
-    for images, _ in loader:
-        images = images.to(device, non_blocking=True)
-        latents = model.infer(images, sample=False)
-        reconstruction = model.decode(latents["z1"])
-        distortion += float(
-            F.binary_cross_entropy(reconstruction, images, reduction="sum")
-        )
-        kl_z1 += float(
-            diagonal_gaussian_kl_from_logvar(
-                latents["q1_mu"],
-                latents["q1_logvar"],
-                latents["p1_mu"],
-                latents["p1_logvar"],
-            ).sum()
-        )
-        kl_z2 += float(
-            diagonal_gaussian_kl_from_logvar(
-                latents["q2_mu"], latents["q2_logvar"]
-            ).sum()
-        )
-        active.update(latents)
-        examples += images.shape[0]
-    active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
-    return {
-        "distortion": distortion / examples,
-        "kl_z1": kl_z1 / examples,
-        "kl_z2": kl_z2 / examples,
-        "total_rate": (kl_z1 + kl_z2) / examples,
-        "active_z1_corrections": float(active_z1),
-        "active_z2_units": float(active_z2),
-    }
+    top_noise: torch.Tensor,
+    lower_noise: torch.Tensor,
+    batch_size: int,
+    columns: int,
+) -> None:
+    samples = generate_in_batches(
+        (top_noise, lower_noise), batch_size, model.generate, module=model
+    )
+    save_image(samples, path, nrow=columns)
 
 
 def train_hierarchy(
-    model: HierarchicalVAE32,
+    model: HierarchicalVAE,
     train_loader: DataLoader,
-    test_loader: DataLoader,
     *,
     device: torch.device,
     epochs: int,
     learning_rate: float,
+    minimum_learning_rate: float,
     warmup_epochs: float,
     free_bits: float,
-    active_variance_threshold: float,
     out_dir: Path,
     model_name: str,
-    split_seed: int,
+    seed: int,
     sample_count: int,
     sample_grid_columns: int,
     sample_every: int,
     progress_interval: float,
     max_metric_panels: int,
 ) -> None:
+    # Match data order and base noise across the two posterior families.
+    set_seed(seed)
     if not out_dir.exists():
         reset_dir(str(out_dir))
     training_dir = out_dir / "training"
     reset_dir(str(training_dir))
     history = []
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=minimum_learning_rate
+    )
+    # Reuse both noise tensors so the grids show model changes across epochs.
+    top_noise = torch.randn(sample_count, model.z2_dim, device=device)
+    lower_noise = torch.randn(sample_count, model.z1_dim, device=device)
     warmup_updates = round(warmup_epochs * len(train_loader))
     update = 0
     with tqdm(
@@ -137,7 +93,6 @@ def train_hierarchy(
             metrics = MetricAccumulator(
                 ("loss", "distortion", "kl_z1", "kl_z2"), device=device
             )
-            active = ActiveUnitAccumulator()
             for images, _ in train_loader:
                 update += 1
                 images = images.to(device, non_blocking=True)
@@ -162,65 +117,64 @@ def train_hierarchy(
                     ),
                     num_examples=images.shape[0],
                 )
-                active.update(latents)
                 progress.set_postfix(
                     loss=f"{metrics.compute()['loss']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            values = metrics.compute()
-            active_z1, active_z2 = active.counts(
-                variance_threshold=active_variance_threshold
-            )
+            values = metrics.compute_finite()
             history.append(
                 values
                 | {
-                    "active_z1": float(active_z1),
-                    "active_z2": float(active_z2),
                     "kl_weight": warmup_weight(update, warmup_updates=warmup_updates),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
                 }
             )
+            scheduler.step()
             if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
-                model.eval()
-                with torch.inference_mode():
-                    samples = model.sample(sample_count, device=device)
-                save_image(
-                    samples,
+                save_prior_samples(
+                    model,
                     training_dir / f"epoch_{epoch:03d}.png",
-                    nrow=sample_grid_columns,
+                    top_noise=top_noise,
+                    lower_noise=lower_noise,
+                    batch_size=train_loader.batch_size,
+                    columns=sample_grid_columns,
                 )
 
-    validation = evaluate_hierarchy(
-        model,
-        test_loader,
-        device=device,
-        active_variance_threshold=active_variance_threshold,
-    )
     save_training_metrics(
         history, out_dir, prefix=model_name, max_panels=max_metric_panels
     )
-    torch.save(
-        {
-            "state_dict": model.state_dict(),
+    save_model_weights(
+        model,
+        out_dir / f"{model_name}.pth",
+        metadata={
             "model_name": model_name,
             "model_config": model_config(model),
+            "data_config": glasses_data_config(),
+            "objective": HIERARCHY_OBJECTIVE,
             "posterior_family": model.posterior_family,
             "warmup_epochs": warmup_epochs,
             "free_bits_per_group": free_bits,
-            "split_seed": split_seed,
-            "validation": validation,
+            "training_config": {
+                "epochs": epochs,
+                "batch_size": train_loader.batch_size,
+                "optimizer": "Adam",
+                "learning_rate": learning_rate,
+                "scheduler": "CosineAnnealingLR",
+                "minimum_learning_rate": minimum_learning_rate,
+                "betas": [0.9, 0.999],
+                "seed": seed,
+            },
         },
-        out_dir / f"{model_name}.pth",
     )
-    model.eval()
-    with torch.inference_mode():
-        samples = model.sample(sample_count, device=device)
-    save_image(samples, out_dir / "prior_samples.png", nrow=sample_grid_columns)
+    save_prior_samples(
+        model,
+        out_dir / "prior_samples.png",
+        top_noise=top_noise,
+        lower_noise=lower_noise,
+        batch_size=train_loader.batch_size,
+        columns=sample_grid_columns,
+    )
 
 
-__all__ = [
-    "evaluate_hierarchy",
-    "make_factor_shape_loaders",
-    "train_hierarchy",
-    "warmup_weight",
-]
+__all__ = ["save_prior_samples", "train_hierarchy", "warmup_weight"]

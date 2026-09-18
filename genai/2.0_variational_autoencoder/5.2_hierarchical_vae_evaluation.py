@@ -13,8 +13,12 @@ division remains an empirical observation, not a property implied by the
 hierarchical ELBO.
 
 Data:
-    FactorShapes32 test split, generated with the same split seed as training.
-    Factor annotations do not enter the models.
+    data/glasses-256, read directly as 256x256 RGB in [0, 1].
+    All 4,500 training images are used; labels are ignored. These are
+    training-set diagnostics, not held-out generalization estimates.
+    Distortion is summed RGB MSE per image, matching the training objective.
+    Reported KL uses posterior means for deterministic layer diagnostics;
+    it is not a Monte Carlo estimate of the hierarchical ELBO.
 
 Checkpoints:
     output/vae/hierarchical_vae/baseline/hierarchical_vae.pth: default HVAE
@@ -28,22 +32,13 @@ Outputs:
     output/vae/hierarchical_vae/evaluation/<model>/fixed_evidence_changed_top.png
     output/vae/hierarchical_vae/evaluation/metric_comparison.png
 
-Evaluation data -- FactorShapes32 test:
-Available and evaluated images:       706
-Batch size:                            64
-Intervention samples per image:         8
-Visual variants per fixed input:        6
-Active-variance threshold:           0.01
-
-Default dimensions:
-Evaluation input:                32x32 grayscale
-Generated image:                 32x32 grayscale
-Latent vectors:                  z1=24 / z2=12 values
-
-Model size:
-Hierarchical VAE:                 0.876 M parameters
-Ladder VAE:                       0.874 M parameters
-Loaded total:                     1.750 M parameters
+Evaluation defaults:
+    Training-set diagnostic images: all 4,500; batch size: 16.
+    Intervention samples per image: 8; visual variants per input: 6.
+    Decode batch size: 16, including interventions and visual grids.
+    Active-variance threshold: 0.01.
+    Model dimensions are loaded from the checkpoint (z1=96 / z2=32 by default).
+    Old FactorShapes32 checkpoints must be replaced by rerunning 5.0 and 5.1.
 """
 
 from __future__ import annotations
@@ -52,73 +47,78 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.factor_shapes import FactorShapes32
+from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.gan.inference import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.vae.conditional_vae import glasses_data_config, glasses_dataset
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
 )
 from dl_utils.vae.vae_hierarchy import (
+    HIERARCHY_OBJECTIVE,
     ActiveUnitAccumulator,
-    HierarchicalVAE32,
-    LadderVAE32,
+    HierarchicalVAE,
+    LadderVAE,
 )
 
 PROJECT_ROOT = infer_project_root()
+DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 OUTPUT_DIR = OUTPUT_ROOT / "hierarchical_vae" / "evaluation"
 DISPLAY_SAMPLES = 8
 
 
 # Edit these defaults to explore the lesson.
-BATCH_SIZE = 64
+BATCH_SIZE = 16
+DECODE_BATCH_SIZE = 16
 INTERVENTION_SAMPLES = 8
 VISUAL_VARIANTS = 6
 ACTIVE_VARIANCE_THRESHOLD = 1e-2
 WORKERS = 4
 SEED = 123
-SPLIT_SEED = 2026
 HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "baseline" / "hierarchical_vae.pth"
 LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "baseline" / "ladder_vae.pth"
 
 
 def load_model(
     path: Path, device: torch.device
-) -> tuple[HierarchicalVAE32, dict[str, object]]:
+) -> tuple[HierarchicalVAE, dict[str, object]]:
     checkpoint = torch.load(path, map_location=device, weights_only=True)
+    if (
+        checkpoint.get("data_config") != glasses_data_config()
+        or checkpoint.get("objective") != HIERARCHY_OBJECTIVE
+    ):
+        raise ValueError(
+            f"{path} is not a glasses-256 RGB hierarchy checkpoint; "
+            "rerun 5.0_hierarchical_vae.py and 5.1_ladder_vae.py"
+        )
     model_name = checkpoint.get("model_name")
     if model_name == "hierarchical_vae":
-        model: HierarchicalVAE32 = HierarchicalVAE32(**checkpoint["model_config"])
+        model: HierarchicalVAE = HierarchicalVAE(**checkpoint["model_config"])
     elif model_name == "ladder_vae":
-        model = LadderVAE32(**checkpoint["model_config"])
+        model = LadderVAE(**checkpoint["model_config"])
     else:
         raise ValueError(f"{path} is not an HVAE/Ladder checkpoint")
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval(), checkpoint
 
 
-def make_test_loader(
-    *,
-    split_seed: int,
-    device: torch.device,
-) -> DataLoader:
-    dataset = FactorShapes32(split="test", split_seed=split_seed)
-    return DataLoader(
-        dataset,
-        batch_size=BATCH_SIZE,
+def make_evaluation_loader(device: torch.device) -> DataLoader:
+    return make_device_aware_loader(
+        glasses_dataset(DATA_DIR),
+        BATCH_SIZE,
+        device,
         shuffle=False,
         num_workers=WORKERS,
-        pin_memory=device.type == "cuda",
-        persistent_workers=WORKERS > 0,
     )
 
 
@@ -133,19 +133,32 @@ def _sample_gaussian(mu: Tensor, logvar: Tensor, samples: int) -> Tensor:
     return mu[:, None, :] + torch.exp(0.5 * logvar[:, None, :]) * epsilon
 
 
-def _decode_distortion(model: HierarchicalVAE32, z1: Tensor, target: Tensor) -> Tensor:
-    reconstruction = model.decode(z1)
-    expanded_target = target[:, None, ...].expand_as(reconstruction)
-    return (
-        F.binary_cross_entropy(reconstruction, expanded_target, reduction="none")
-        .flatten(2)
-        .sum(dim=2)
+def _decode_distortion(model: HierarchicalVAE, z1: Tensor, target: Tensor) -> Tensor:
+    batch_size, samples = z1.shape[:2]
+    image_indices = torch.arange(batch_size, device=target.device).repeat_interleave(
+        samples
     )
+    # Reduce each decoded chunk immediately instead of retaining RGB particles.
+    return generate_in_batches(
+        (z1.flatten(0, 1), image_indices),
+        DECODE_BATCH_SIZE,
+        lambda latent, indices: (model.decode(latent) - target[indices])
+        .square()
+        .flatten(1)
+        .sum(dim=1),
+        output_device=target.device,
+    ).reshape(batch_size, samples)
+
+
+def _decode_grid(model: HierarchicalVAE, z1: Tensor) -> Tensor:
+    return generate_in_batches(
+        z1.reshape(-1, model.z1_dim), DECODE_BATCH_SIZE, model.decode
+    ).reshape(*z1.shape[:-1], 3, 256, 256)
 
 
 @torch.inference_mode()
 def sampled_counterfactual_distortions(
-    model: HierarchicalVAE32,
+    model: HierarchicalVAE,
     images: Tensor,
     *,
     samples: int,
@@ -192,7 +205,7 @@ def sampled_counterfactual_distortions(
 
 @torch.inference_mode()
 def evaluate_model(
-    model: HierarchicalVAE32,
+    model: HierarchicalVAE,
     loader: DataLoader,
     *,
     intervention_samples: int,
@@ -214,9 +227,7 @@ def evaluate_model(
         images = images.to(device, non_blocking=True)
         latents = model.infer(images, sample=False)
         reconstruction = model.decode(latents["z1"])
-        deterministic_distortion += F.binary_cross_entropy(
-            reconstruction, images, reduction="sum"
-        ).item()
+        deterministic_distortion += (reconstruction - images).square().sum().item()
         kl_z1 += (
             diagonal_gaussian_kl_from_logvar(
                 latents["q1_mu"],
@@ -266,7 +277,7 @@ def evaluate_model(
 
 @torch.inference_mode()
 def save_counterfactual_grids(
-    model: HierarchicalVAE32,
+    model: HierarchicalVAE,
     loader: DataLoader,
     out_dir: Path,
     *,
@@ -294,11 +305,11 @@ def save_counterfactual_grids(
     zero_p1_mu, _, _, _ = model.lower_distributions(lower_evidence, zero_z2)
     summary = torch.cat(
         (
-            images,
-            model.decode(posterior["q1_mu"]),
-            model.decode(posterior["p1_mu"]),
-            model.decode(top_replaced["q1_mu"]),
-            model.decode(zero_p1_mu),
+            images.cpu(),
+            _decode_grid(model, posterior["q1_mu"]),
+            _decode_grid(model, posterior["p1_mu"]),
+            _decode_grid(model, top_replaced["q1_mu"]),
+            _decode_grid(model, zero_p1_mu),
         )
     )
     save_image(
@@ -310,7 +321,7 @@ def save_counterfactual_grids(
     fixed_top = q2_mu
     p1_mu, p1_logvar, _, _ = model.lower_distributions(lower_evidence, fixed_top)
     lower_samples = _sample_gaussian(p1_mu, p1_logvar, variants)
-    lower_images = model.decode(lower_samples)
+    lower_images = _decode_grid(model, lower_samples)
     save_image(
         lower_images.flatten(0, 1),
         out_dir / "fixed_top_resampled_lower_prior.png",
@@ -327,8 +338,8 @@ def save_counterfactual_grids(
         repeated_evidence,
         top_samples.reshape(-1, model.z2_dim),
     )
-    upper_images = model.decode(
-        changed_q1_mu.reshape(images.shape[0], variants, model.z1_dim)
+    upper_images = _decode_grid(
+        model, changed_q1_mu.reshape(images.shape[0], variants, model.z1_dim)
     )
     save_image(
         upper_images.flatten(0, 1),
@@ -394,12 +405,25 @@ def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
     paths = checkpoint_paths()
-    loader = make_test_loader(split_seed=SPLIT_SEED, device=device)
+    loader = make_evaluation_loader(device)
     out_root = OUTPUT_DIR
     reset_dir(str(out_root))
     results: dict[str, object] = {
         "protocol": {
-            "dataset": "FactorShapes32 test",
+            **glasses_data_config(),
+            "held_out": False,
+            "evaluated_examples": len(loader.dataset),
+            "seed": SEED,
+            "objective": HIERARCHY_OBJECTIVE,
+            "distortion": "summed RGB MSE per image",
+            "kl_evaluation": "at posterior-mean top latent (diagnostic, not ELBO)",
+            "summary_rows": [
+                "original",
+                "posterior means",
+                "lower prior mean",
+                "top prior mean with lower evidence",
+                "both prior means",
+            ],
             "intervention_samples": INTERVENTION_SAMPLES,
             "active_variance_threshold": ACTIVE_VARIANCE_THRESHOLD,
             "interpretation": (
@@ -411,6 +435,7 @@ def evaluate() -> None:
     }
     for name, path in paths.items():
         model, checkpoint = load_model(path, device)
+        set_seed(SEED)
         metrics = evaluate_model(
             model,
             loader,
@@ -433,6 +458,8 @@ def evaluate() -> None:
         metrics["posterior_family"] = checkpoint["posterior_family"]
         metrics["warmup_epochs"] = checkpoint["warmup_epochs"]
         metrics["free_bits_per_group"] = checkpoint["free_bits_per_group"]
+        metrics["model_config"] = checkpoint["model_config"]
+        metrics["training_config"] = checkpoint["training_config"]
         results["models"][name] = metrics
     save_metric_comparison(results["models"], out_root / "metric_comparison.png")
     (out_root / "metrics.json").write_text(

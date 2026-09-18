@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from itertools import pairwise
 from pathlib import Path
 
 import torch
@@ -17,6 +16,7 @@ from dl_utils.gan.inference import generate_in_batches, make_fixed_class_latent_
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.image_networks import ImageDecoder, ImageEncoder
 from dl_utils.vae.vae_common import (
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
@@ -53,7 +53,7 @@ def glasses_dataset(root: Path) -> ImageFolder:
     return dataset
 
 
-class ConditionalDecoder(nn.Module):
+class ConditionalDecoder(ImageDecoder):
     """Decode a latent and class representation into an RGB Gaussian mean."""
 
     def __init__(
@@ -62,32 +62,11 @@ class ConditionalDecoder(nn.Module):
         condition_dim: int,
         hidden_channels: int,
     ) -> None:
-        super().__init__()
-        self.input = nn.Sequential(
-            nn.Linear(latent_dim + condition_dim, hidden_channels * 4 * 4),
-            nn.SiLU(),
-        )  # (B, latent_dim + condition_dim) -> (B, hidden_channels * 4 * 4)
-        channels = (
-            hidden_channels,
-            hidden_channels,
-            hidden_channels,
-            hidden_channels // 2,
-            hidden_channels // 4,
-            hidden_channels // 8,
-            3,
-        )
-        layers: list[nn.Module] = [nn.Unflatten(1, (hidden_channels, 4, 4))]
-        for in_channels, out_channels in pairwise(channels):
-            layers.append(nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1))
-            if out_channels != 3:
-                layers.extend((nn.GroupNorm(8, out_channels), nn.SiLU()))
-        layers.append(nn.Sigmoid())
-        self.net = nn.Sequential(*layers)  # 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
+        super().__init__(latent_dim + condition_dim, hidden_channels)
 
     def forward(self, z: Tensor, condition: Tensor) -> Tensor:
         # z: (B, latent_dim), condition: (B, condition_dim)
-        features = torch.cat((z, condition), dim=1)
-        return self.net(self.input(features))  # (B, 3, 256, 256)
+        return super().forward(torch.cat((z, condition), dim=1))
 
 
 class ConditionalVAE(nn.Module):
@@ -113,23 +92,7 @@ class ConditionalVAE(nn.Module):
 
         # The posterior, conditional prior, and decoder share the class embedding.
         self.condition_embedding = nn.Embedding(num_classes, condition_dim)
-        channels = (
-            3,
-            hidden_channels // 8,
-            hidden_channels // 4,
-            hidden_channels // 2,
-            hidden_channels,
-            hidden_channels,
-            hidden_channels,
-        )
-        layers: list[nn.Module] = []
-        for in_channels, out_channels in pairwise(channels):
-            layers.append(nn.Conv2d(in_channels, out_channels, 4, 2, 1))
-            if in_channels != 3:
-                layers.append(nn.GroupNorm(8, out_channels))
-            layers.append(nn.SiLU())
-        layers.append(nn.Flatten())
-        self.image_encoder = nn.Sequential(*layers)  # (B, 3, 256, 256) -> (B, H*4*4)
+        self.image_encoder = ImageEncoder(hidden_channels)
         self.posterior = nn.Sequential(
             nn.Linear(hidden_channels * 4 * 4 + condition_dim, posterior_hidden_dim),
             nn.SiLU(),
