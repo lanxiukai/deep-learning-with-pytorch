@@ -33,6 +33,11 @@ import json
 import torch
 from torch.utils.data import DataLoader
 
+from dl_utils.data.glasses import (
+    GLASSES_CLASS_NAMES,
+    glasses_data_config,
+    glasses_dataset,
+)
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -40,12 +45,9 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.conditional_vae import (
-    CLASS_NAMES,
     CVAE_OBJECTIVE,
     ConditionalVAE,
     evaluate_cvae,
-    glasses_data_config,
-    glasses_dataset,
     save_conditional_metric_summary,
     save_conditional_reconstructions,
     save_conditional_samples,
@@ -122,7 +124,7 @@ def evaluate() -> None:
                     "evaluated_examples": len(loader.dataset),
                     "seed": SEED,
                     "objective": CVAE_OBJECTIVE,
-                    "sample_rows": list(CLASS_NAMES),
+                    "sample_rows": list(GLASSES_CLASS_NAMES),
                     "shared_base_noise_across_classes": True,
                     "held_out": False,
                 },

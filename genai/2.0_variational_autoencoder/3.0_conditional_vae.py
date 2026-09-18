@@ -56,6 +56,12 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+from dl_utils.data.glasses import (
+    GLASSES_CLASS_NAMES,
+    GLASSES_IMAGE_SIZE,
+    glasses_data_config,
+    glasses_dataset,
+)
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -64,12 +70,9 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.conditional_vae import (
-    CLASS_NAMES,
     CVAE_OBJECTIVE,
     ConditionalVAE,
     conditional_vae_loss,
-    glasses_data_config,
-    glasses_dataset,
     save_conditional_samples,
 )
 from dl_utils.vae.training_artifacts import save_training_metrics
@@ -78,7 +81,7 @@ PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "conditional_vae"
 CHECKPOINT_NAME = "conditional_vae.pth"
-NUM_CLASSES = len(CLASS_NAMES)
+NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 SAMPLES_PER_CLASS = 8
 SAMPLE_EVERY = 5  # Save after epochs 1, 5, 10, ... and the final epoch.
 PROGRESS_INTERVAL = 0.5
@@ -88,6 +91,7 @@ MAX_METRIC_PANELS = 4
 # Edit these defaults to explore the lesson.
 EPOCHS = 80
 BATCH_SIZE = 16
+IMAGE_SIZE = GLASSES_IMAGE_SIZE
 LATENT_DIM = 128
 CONDITION_DIM = 32
 HIDDEN_CHANNELS = 256

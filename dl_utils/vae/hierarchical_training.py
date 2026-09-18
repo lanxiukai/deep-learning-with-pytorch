@@ -9,19 +9,19 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
+from dl_utils.data.glasses import glasses_data_config
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.gan.inference import generate_in_batches
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.conditional_vae import glasses_data_config
-from dl_utils.vae.training_artifacts import save_training_metrics
-from dl_utils.vae.vae_hierarchy import (
+from dl_utils.vae.hierarchical_vae import (
     HIERARCHY_OBJECTIVE,
     HierarchicalVAE,
     hierarchical_vae_loss,
     model_config,
 )
+from dl_utils.vae.training_artifacts import save_training_metrics
 
 
 def warmup_weight(update: int, *, warmup_updates: int) -> float:

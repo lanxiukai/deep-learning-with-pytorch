@@ -51,6 +51,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
+from dl_utils.data.glasses import glasses_data_config, glasses_dataset
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -58,16 +59,15 @@ from dl_utils.gan.inference import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.conditional_vae import glasses_data_config, glasses_dataset
-from dl_utils.vae.vae_common import (
-    diagonal_gaussian_kl_from_logvar,
-    reparameterize_logvar,
-)
-from dl_utils.vae.vae_hierarchy import (
+from dl_utils.vae.hierarchical_vae import (
     HIERARCHY_OBJECTIVE,
     ActiveUnitAccumulator,
     HierarchicalVAE,
     LadderVAE,
+)
+from dl_utils.vae.vae_common import (
+    diagonal_gaussian_kl_from_logvar,
+    reparameterize_logvar,
 )
 
 PROJECT_ROOT = infer_project_root()

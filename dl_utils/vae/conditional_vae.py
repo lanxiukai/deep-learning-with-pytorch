@@ -10,8 +10,8 @@ from torch import Tensor, nn
 from torch.utils.data import Subset
 from torchvision.datasets import ImageFolder
 
+from dl_utils.data.glasses import GLASSES_CLASS_NAMES, GLASSES_IMAGE_SIZE
 from dl_utils.data.loading import make_device_aware_loader
-from dl_utils.data.vision import image_folder_dataset
 from dl_utils.gan.inference import generate_in_batches, make_fixed_class_latent_grid
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.images import save_image_row_grid
@@ -23,34 +23,7 @@ from dl_utils.vae.vae_common import (
     split_gaussian_parameters,
 )
 
-CLASS_NAMES = ("G", "NoG")
-IMAGE_SIZE = 256
 CVAE_OBJECTIVE = "summed_rgb_mse_plus_conditional_kl"
-
-
-def glasses_data_config() -> dict[str, object]:
-    """Describe the cache and label contract for checkpoint save/load validation."""
-    return {
-        "dataset": "glasses-256",
-        "class_names": list(CLASS_NAMES),
-        "image_size": IMAGE_SIZE,
-        "image_channels": 3,
-        "pixel_range": [0.0, 1.0],
-        "split": "all images (training set)",
-    }
-
-
-def glasses_dataset(root: Path) -> ImageFolder:
-    """Read the existing RGB cache with the same class indices as the cGAN."""
-    if not root.is_dir():
-        raise FileNotFoundError(
-            f"Dataset cache not found: {root}. Prepare it with "
-            "python tool_scripts/download_dataset.py --dataset glasses"
-        )
-    dataset = image_folder_dataset(root)
-    if dataset.classes != list(CLASS_NAMES):
-        raise ValueError(f"Expected classes {CLASS_NAMES}, got {dataset.classes}")
-    return dataset
 
 
 class ConditionalDecoder(ImageDecoder):
@@ -115,8 +88,11 @@ class ConditionalVAE(nn.Module):
     def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""
         # images: (B, 3, 256, 256), labels: (B,)
-        if images.shape[1:] != (3, IMAGE_SIZE, IMAGE_SIZE):
-            raise ValueError("Expected RGB images from the 256x256 glasses cache")
+        if images.shape[1:] != (3, GLASSES_IMAGE_SIZE, GLASSES_IMAGE_SIZE):
+            raise ValueError(
+                f"Expected RGB images from the {GLASSES_IMAGE_SIZE}x"
+                f"{GLASSES_IMAGE_SIZE} glasses cache"
+            )
         condition = self.condition_embedding(labels)  # (B, condition_dim)
         features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(
@@ -218,7 +194,7 @@ def save_conditional_samples(
     device: torch.device,
     samples_per_class: int = 8,
     noise: Tensor | None = None,
-    class_names: tuple[str, ...] = CLASS_NAMES,
+    class_names: tuple[str, ...] = GLASSES_CLASS_NAMES,
 ) -> None:
     """Save G then NoG rows, sharing base noise across corresponding columns.
 
@@ -311,14 +287,10 @@ def save_conditional_metric_summary(metrics: dict[str, float], path: Path) -> No
 
 
 __all__ = [
-    "CLASS_NAMES",
     "CVAE_OBJECTIVE",
-    "IMAGE_SIZE",
     "ConditionalVAE",
     "conditional_vae_loss",
     "evaluate_cvae",
-    "glasses_data_config",
-    "glasses_dataset",
     "save_conditional_metric_summary",
     "save_conditional_reconstructions",
     "save_conditional_samples",
