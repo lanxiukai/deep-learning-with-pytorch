@@ -82,7 +82,8 @@ class HierarchicalVAE(nn.Module):
             nn.Linear(z2_dim, context_dim),
             nn.SiLU(),
             nn.Linear(context_dim, 2 * z1_dim),
-        )
+        )  # (B, z2_dim) -> (B, 2 * z1_dim)
+        # (B, latent_dim) -> (B, 3, 256, 256)
         self.p_0 = ImageDecoder(z1_dim, hidden_channels)
         # Build shared blocks first so equal seeds match them across both models.
         self._init_lower_inference()
@@ -93,7 +94,7 @@ class HierarchicalVAE(nn.Module):
             nn.Linear(self.context_dim + self.z2_dim, self.context_dim),
             nn.SiLU(),
             nn.Linear(self.context_dim, 2 * self.z1_dim),
-        )
+        )  # (B, context_dim + z2_dim) -> (B, 2 * z1_dim)
 
     def lower_parameters(
         self,
@@ -136,7 +137,7 @@ class HierarchicalVAE(nn.Module):
         }
 
     def decode(self, z1: Tensor) -> Tensor:
-        """Return mu_p_0(z1): (..., z1_dim) -> (..., 3, 256, 256)."""
+        """Return mu_p_0(z1): (B, z1_dim) -> (B, 3, 256, 256)."""
         return self.p_0(z1)
 
     def forward(self, images: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
@@ -179,7 +180,7 @@ class LadderVAE(HierarchicalVAE):
             nn.Linear(self.context_dim, self.context_dim),
             nn.SiLU(),
             nn.Linear(self.context_dim, 2 * self.z1_dim),
-        )
+        )  # (B, context_dim) -> (B, 2 * z1_dim)
 
     def lower_parameters(
         self,

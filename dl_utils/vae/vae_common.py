@@ -43,7 +43,7 @@ class ImageEncoder(nn.Sequential):
 
 
 class ImageDecoder(nn.Module):
-    """Decode (..., latent_dim) into (..., 3, 256, 256) RGB means in [0, 1]."""
+    """Decode (B, latent_dim) into (B, 3, 256, 256) RGB means in [0, 1]."""
 
     def __init__(self, latent_dim: int, hidden_channels: int) -> None:
         super().__init__()
@@ -74,15 +74,12 @@ class ImageDecoder(nn.Module):
         self.net = nn.Sequential(*layers)  # 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
 
     def forward(self, z: Tensor) -> Tensor:
-        if z.ndim < 1 or z.shape[-1] != self.latent_dim:
+        if z.ndim != 2 or z.shape[1] != self.latent_dim:
             raise ValueError(
-                f"Expected latent vectors with last dimension {self.latent_dim}"
+                f"Expected latent vectors with shape (B, {self.latent_dim})"
             )
-        leading_shape = z.shape[:-1]
-        images = self.net(self.input(z.reshape(-1, self.latent_dim)))
         # (B, latent_dim) -> (B, 3, 256, 256)
-        # (B, S, latent_dim) -> (B, S, 3, 256, 256)
-        return images.reshape(*leading_shape, 3, 256, 256)
+        return self.net(self.input(z))
 
 
 class ActiveUnitAccumulator:
@@ -189,28 +186,29 @@ def diagonal_gaussian_log_density(
 
 
 def fuse_diagonal_gaussians(
-    prior_mu: Tensor,
-    prior_logvar: Tensor,
-    evidence_mu: Tensor,
-    evidence_logvar: Tensor,
+    mu_a: Tensor,
+    logvar_a: Tensor,
+    mu_b: Tensor,
+    logvar_b: Tensor,
 ) -> tuple[Tensor, Tensor]:
-    """Normalize the product of two diagonal Gaussians.
+    """Return the normalized product of two diagonal Gaussians.
 
-    This is the precision-weighted update used by the Ladder VAE posterior.
+    Each Gaussian is parameterized by its mean and log-variance. The returned
+    mean is precision-weighted; the second result is the fused log-variance.
     """
     if not (
-        prior_mu.shape
-        == prior_logvar.shape
-        == evidence_mu.shape
-        == evidence_logvar.shape
+        mu_a.shape
+        == logvar_a.shape
+        == mu_b.shape
+        == logvar_b.shape
     ):
         raise ValueError("all Gaussian parameters must have matching shapes")
-    prior_precision = torch.exp(-prior_logvar)
-    evidence_precision = torch.exp(-evidence_logvar)
-    fused_precision = prior_precision + evidence_precision
+    precision_a = torch.exp(-logvar_a)
+    precision_b = torch.exp(-logvar_b)
+    fused_precision = precision_a + precision_b
     fused_variance = fused_precision.reciprocal()
     fused_mu = fused_variance * (
-        prior_precision * prior_mu + evidence_precision * evidence_mu
+        precision_a * mu_a + precision_b * mu_b
     )
     return fused_mu, fused_variance.log()
 
