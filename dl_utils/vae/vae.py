@@ -20,6 +20,8 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator, save_metrics_csv
 from dl_utils.vae.vae_common import (
+    ImageDecoder,
+    ImageEncoder,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
     split_gaussian_parameters,
@@ -34,69 +36,29 @@ _METRIC_NAMES = ("total", "reconstruction", "kl")
 
 
 class VAEEncoder(nn.Module):
-    """Map 256x256 RGB images to diagonal-Gaussian posterior parameters."""
+    """Shared ImageEncoder -> q(z | x) mean and log-variance."""
 
-    def __init__(self, z_dim=100):
+    def __init__(self, z_dim: int = 100, hidden_channels: int = 256) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(3, 8, 3, stride=2, padding=1),  # (B, 8, 128, 128)
-            nn.ReLU(inplace=True),
-            nn.Conv2d(8, 16, 3, stride=2, padding=1),  # (B, 16, 64, 64)
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 32, 3, stride=2),  # (B, 32, 31, 31)
-            nn.ReLU(inplace=True),
-            nn.Flatten(),  # (B, 32 * 31 * 31)
-            nn.Linear(32 * 31 * 31, 1024),
-            nn.ReLU(inplace=True),  # (B, 1024)
-        )
-        self.posterior = nn.Linear(1024, 2 * z_dim)  # μ and log-variance
+        self.net = ImageEncoder(hidden_channels)
+        self.posterior = nn.Linear(hidden_channels * 4 * 4, 2 * z_dim)
 
-    def forward(self, inputs):
+    def forward(self, inputs: Tensor) -> tuple[Tensor, Tensor]:
         """Encode an image batch into posterior mean and log-variance."""
         return split_gaussian_parameters(self.posterior(self.net(inputs)))
 
 
-class VAEDecoder(nn.Module):
-    """Decode latent vectors into 256x256 RGB Gaussian means with fixed scale."""
-
-    def __init__(self, z_dim=100):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(z_dim, 1024),
-            nn.ReLU(inplace=True),
-            nn.Linear(1024, 32 * 31 * 31),
-            nn.ReLU(inplace=True),
-            nn.Unflatten(1, (32, 31, 31)),  # (B, 32, 31, 31)
-            nn.ConvTranspose2d(
-                32, 16, 3, stride=2, output_padding=1
-            ),  # (B, 16, 63, 63)
-            nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                16, 8, 3, stride=2, padding=1, output_padding=1
-            ),  # (B, 8, 128, 128)
-            nn.BatchNorm2d(8),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                8, 3, 3, stride=2, padding=1, output_padding=1
-            ),  # (B, 3, 256, 256)
-            nn.Sigmoid(),
-        )
-
-    def forward(self, z):
-        # Pixel-wise Gaussian mean; the fixed likelihood scale is absorbed by
-        # the reconstruction-loss coefficient in the lesson script.
-        return self.net(z)
-
-
 class VAE(nn.Module):
-    """Standard convolutional VAE for 256x256 RGB images."""
+    """Standard/beta-VAE using the shared 256x256 RGB encoder and decoder."""
 
-    def __init__(self, z_dim=100):
+    backbone = "shared_rgb"
+
+    def __init__(self, z_dim: int = 100, hidden_channels: int = 256) -> None:
         super().__init__()
-        self.encoder = VAEEncoder(z_dim)
-        self.decoder = VAEDecoder(z_dim)
+        self.z_dim = z_dim
+        self.hidden_channels = hidden_channels
+        self.encoder = VAEEncoder(z_dim, hidden_channels)
+        self.decoder = ImageDecoder(z_dim, hidden_channels)
 
     def encode(self, inputs):
         """Return posterior mean and log-variance for an image batch."""
@@ -285,7 +247,8 @@ def train_vae(
     save_metrics_csv(loss_history, output_path / f"{model_name}_metrics.csv")
     checkpoint_metadata = {
         "model_name": model_name,
-        "model_config": dict(model_config),
+        "model_config": {"z_dim": model.z_dim, "hidden_channels": model.hidden_channels},
+        "backbone": model.backbone,
         "dataset": "glasses-256",
         "value_range": [0.0, 1.0],
         "seed": seed,
@@ -315,7 +278,6 @@ def train_vae(
 
 __all__ = [
     "VAE",
-    "VAEDecoder",
     "VAEEncoder",
     "reconstruction_and_kl",
     "train_vae",

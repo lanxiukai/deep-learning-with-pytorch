@@ -39,6 +39,7 @@ Default dimensions:
 Training input:           32x32 grayscale
 Generated image:          32x32 grayscale
 Latent vector:                 16 values
+Context hidden layer:        128 units before the mean/log-variance heads
 
 Model size (shared by every K):
 Encoder/posterior:         0.431 M parameters
@@ -83,6 +84,7 @@ EPOCHS = 10
 BATCH_SIZE = 128
 LATENT_DIM = 16
 HIDDEN_CHANNELS = 128
+CONTEXT_DIM = 128  # Posterior MLP width; independent of image channels.
 LR = 2e-4
 WORKERS = 4
 SEED = 42
@@ -117,6 +119,7 @@ def train_iwae_for_particles(
     model_config = {
         "latent_dim": LATENT_DIM,
         "hidden_channels": HIDDEN_CHANNELS,
+        "context_dim": CONTEXT_DIM,
     }
     model = GaussianVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)

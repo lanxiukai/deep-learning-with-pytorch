@@ -41,7 +41,7 @@ Generated image:          256x256 RGB in [0, 1]
 Latent vector:                128 values
 Condition embedding:           32 values
 Encoder channels:         32, 64, 128, 256, 256, 256
-Posterior hidden layer:       512 units before the mean/log-variance heads
+Context hidden layer:         512 units before the mean/log-variance heads
 Decoder channels:         256, 256, 256, 128, 64, 32, 3 (including input)
 Model size:                8.558 M parameters
 Optimizer:                Adam, betas (0.9, 0.999)
@@ -94,7 +94,7 @@ IMAGE_SIZE = GLASSES_IMAGE_SIZE
 LATENT_DIM = 128
 CONDITION_DIM = 32
 HIDDEN_CHANNELS = 256
-POSTERIOR_HIDDEN_DIM = 512
+CONTEXT_DIM = 512  # Posterior MLP width; independent of image channels.
 LR = 2e-4
 MIN_LR = 2e-5
 WORKERS = 4
@@ -129,7 +129,7 @@ def train_cvae(
         "latent_dim": LATENT_DIM,
         "condition_dim": CONDITION_DIM,
         "hidden_channels": HIDDEN_CHANNELS,
-        "posterior_hidden_dim": POSTERIOR_HIDDEN_DIM,
+        "posterior_hidden_dim": CONTEXT_DIM,
     }
     model = ConditionalVAE(**model_config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)

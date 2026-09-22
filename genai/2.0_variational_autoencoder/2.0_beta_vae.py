@@ -29,11 +29,16 @@ Default dimensions:
 Training input:           256x256 RGB
 Generated image:          256x256 RGB
 Latent vector:                100 values
+Backbone channels:        32, 64, 128, 256, 256, 256
+Posterior head:           linear, 256 * 4 * 4 -> 2 * 100
 
 Model size:
-Encoder:                  31.70 M parameters
-Decoder:                  31.63 M parameters
-Total:                    63.33 M parameters
+Encoder:                   3.609 M parameters
+Decoder:                   3.203 M parameters
+Total:                     6.812 M parameters
+
+Uses ImageEncoder/ImageDecoder from vae_common, with GroupNorm and SiLU.
+Checkpoints from the earlier 63.33 M architecture require retraining.
 """
 
 from functools import partial
@@ -47,7 +52,7 @@ from dl_utils.vae.vae import (
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUT_DIR = PROJECT_ROOT / "output" / "vae" / "beta_vae"
-MODEL_CONFIG = {"z_dim": 100}
+MODEL_CONFIG = {"z_dim": 100, "hidden_channels": 256}
 BETA = 4.0
 
 # Training configuration

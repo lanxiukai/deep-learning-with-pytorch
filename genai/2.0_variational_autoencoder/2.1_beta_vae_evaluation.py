@@ -17,6 +17,7 @@ Data:
 Checkpoints:
     output/vae/vae/vae.pth: required standard VAE
     output/vae/beta_vae/beta_vae.pth: required beta-VAE
+    Both require shared_rgb weights; rerun 1.0/2.0 for older checkpoints.
 
 Outputs:
     output/vae/beta_vae/evaluation/metrics.json: rate-distortion report
@@ -38,9 +39,9 @@ Generated image:              256x256 RGB
 Latent vector:                    100 values
 
 Model size:
-Standard VAE:                  63.33 M parameters
-Beta-VAE:                     63.33 M parameters
-Loaded total:                126.66 M parameters
+Standard VAE:                   6.812 M parameters (hidden_channels=256)
+Beta-VAE:                       6.812 M parameters
+Loaded total:                  13.624 M parameters
 """
 
 from __future__ import annotations
@@ -120,6 +121,11 @@ def load_checkpoint(
         raise ValueError(f"unsupported model_name: {model_name!r}")
     if checkpoint.get("dataset") != "glasses-256":
         raise ValueError(f"checkpoint does not use glasses-256: {path}")
+    if checkpoint.get("backbone") != VAE.backbone:
+        raise ValueError(
+            f"{path} does not use the shared_rgb backbone; "
+            "rerun 1.0_vae.py and 2.0_beta_vae.py"
+        )
     model_config = checkpoint.get("model_config")
     state_dict = checkpoint.get("state_dict")
     if not isinstance(model_config, Mapping) or not isinstance(

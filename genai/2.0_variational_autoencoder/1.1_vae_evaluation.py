@@ -15,6 +15,7 @@ Data:
 
 Checkpoint:
     output/vae/vae/vae.pth: frozen checkpoint from 1.0_vae.py
+    Requires the shared_rgb backbone; rerun 1.0 for older checkpoints.
 
 Outputs:
     output/vae/vae/evaluation/metrics.json: reconstruction and posterior metrics
@@ -38,7 +39,7 @@ Generated image:            256x256 RGB
 Latent vector:                  100 values
 
 Model size:
-Frozen standard VAE:         63.33 M parameters
+Frozen standard VAE:          6.812 M parameters (hidden_channels=256)
 """
 
 import json
@@ -201,7 +202,7 @@ def analyze(device):
         CHECKPOINT,
         VAE,
         device=device,
-        expected_metadata={"model_name": "vae"},
+        expected_metadata={"model_name": "vae", "backbone": VAE.backbone},
     )
     z_dim = model_config.get("z_dim")
     if isinstance(z_dim, bool) or not isinstance(z_dim, int) or z_dim < 1:

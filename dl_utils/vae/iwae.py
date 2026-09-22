@@ -25,10 +25,13 @@ class GaussianVAE(nn.Module):
         *,
         latent_dim: int = 16,
         hidden_channels: int = 128,
+        context_dim: int | None = None,
     ) -> None:
         super().__init__()
         self.latent_dim = latent_dim
         self.hidden_channels = hidden_channels
+        # Older configs tied the posterior MLP width to the image channels.
+        self.context_dim = hidden_channels if context_dim is None else context_dim
         self.encoder = nn.Sequential(
             nn.Conv2d(1, hidden_channels // 4, 4, 2, 1),
             nn.SiLU(),
@@ -39,9 +42,9 @@ class GaussianVAE(nn.Module):
             nn.GroupNorm(8, hidden_channels),
             nn.SiLU(),
             nn.Flatten(),
-            nn.Linear(hidden_channels * 4 * 4, hidden_channels),
+            nn.Linear(hidden_channels * 4 * 4, self.context_dim),
             nn.SiLU(),
-            nn.Linear(hidden_channels, 2 * latent_dim),
+            nn.Linear(self.context_dim, 2 * latent_dim),
         )  # (B, 1, 32, 32) -> (B, 2 * latent_dim)
         self.decoder = nn.Sequential(
             nn.Linear(latent_dim, hidden_channels * 4 * 4),

@@ -14,8 +14,9 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from dl_utils.vae.image_networks import ImageDecoder, ImageEncoder
 from dl_utils.vae.vae_common import (
+    ImageDecoder,
+    ImageEncoder,
     diagonal_gaussian_kl_from_logvar,
     fuse_diagonal_gaussians,
     reparameterize_logvar,
@@ -34,17 +35,16 @@ class _TopPosterior(nn.Module):
             ImageEncoder(hidden_channels),
             nn.Linear(hidden_channels * 4 * 4, context_dim),
             nn.SiLU(),
-        )
+        )  # (B, 3, 256, 256) -> (B, hidden_channels * 4 * 4)
+           # -> h_1: (B, context_dim)
         self.head = nn.Sequential(
             nn.Linear(context_dim, context_dim),
             nn.SiLU(),
             nn.Linear(context_dim, 2 * z2_dim),
-        )
+        )  # -> (B, context_dim) -> (B, 2 * z2_dim)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Return h_1: (B, context_dim), mu_q_2/v_q_2: (B, z2_dim)."""
-        if x.shape[1:] != (3, 256, 256):
-            raise ValueError("Expected RGB images from the 256x256 glasses cache")
         h_1 = self.features(x)
         mu_q_2, v_q_2 = split_gaussian_parameters(self.head(h_1))
         return h_1, mu_q_2, v_q_2
@@ -72,8 +72,6 @@ class HierarchicalVAE(nn.Module):
         context_dim: int = 512,
     ) -> None:
         super().__init__()
-        if hidden_channels < 128 or hidden_channels % 128:
-            raise ValueError("hidden_channels must be a positive multiple of 128")
         self.z1_dim = z1_dim
         self.z2_dim = z2_dim
         self.hidden_channels = hidden_channels
@@ -139,10 +137,7 @@ class HierarchicalVAE(nn.Module):
 
     def decode(self, z1: Tensor) -> Tensor:
         """Return mu_p_0(z1): (..., z1_dim) -> (..., 3, 256, 256)."""
-        leading_shape = z1.shape[:-1]
-        flat_z1 = z1.reshape(-1, self.z1_dim)
-        mu_p_0 = self.p_0(flat_z1)
-        return mu_p_0.reshape(*leading_shape, 3, 256, 256)
+        return self.p_0(z1)
 
     def forward(self, x: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """Return (mu_p_0, latents) from stochastic inference followed by decoding."""

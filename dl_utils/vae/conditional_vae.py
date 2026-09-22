@@ -10,14 +10,15 @@ from torch import Tensor, nn
 from torch.utils.data import Subset
 from torchvision.datasets import ImageFolder
 
-from dl_utils.data.glasses import GLASSES_CLASS_NAMES, GLASSES_IMAGE_SIZE
+from dl_utils.data.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.gan.inference import generate_in_batches, make_fixed_class_latent_grid
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.image_networks import ImageDecoder, ImageEncoder
 from dl_utils.vae.vae_common import (
+    ImageDecoder,
+    ImageEncoder,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
     split_gaussian_parameters,
@@ -53,8 +54,6 @@ class ConditionalVAE(nn.Module):
         posterior_hidden_dim: int = 512,
     ) -> None:
         super().__init__()
-        if hidden_channels < 128 or hidden_channels % 128:
-            raise ValueError("hidden_channels must be a positive multiple of 128")
         self.num_classes = num_classes
         self.latent_dim = latent_dim
         self.condition_dim = condition_dim
@@ -86,11 +85,6 @@ class ConditionalVAE(nn.Module):
     def encode(self, images: Tensor, labels: Tensor) -> tuple[Tensor, Tensor]:
         """Return q(z | x, c) parameters; this is the only target-aware API."""
         # images: (B, 3, 256, 256), labels: (B,)
-        if images.shape[1:] != (3, GLASSES_IMAGE_SIZE, GLASSES_IMAGE_SIZE):
-            raise ValueError(
-                f"Expected RGB images from the {GLASSES_IMAGE_SIZE}x"
-                f"{GLASSES_IMAGE_SIZE} glasses cache"
-            )
         condition = self.condition_embedding(labels)  # (B, condition_dim)
         features = self.image_encoder(images)  # (B, hidden_channels * 4 * 4)
         return split_gaussian_parameters(

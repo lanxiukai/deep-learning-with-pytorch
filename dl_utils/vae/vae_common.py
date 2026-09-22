@@ -1,13 +1,88 @@
-"""Gaussian primitives and latent-use diagnostics shared by the VAE lessons."""
+"""Shared RGB networks, Gaussian primitives, and VAE latent-use diagnostics."""
 
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 
 LOG_2PI = math.log(2.0 * math.pi)
+
+
+class ImageEncoder(nn.Sequential):
+    """Reduce an RGB image to a flattened 4x4 feature map."""
+
+    def __init__(self, hidden_channels: int) -> None:
+        if hidden_channels < 128 or hidden_channels % 128:
+            raise ValueError("hidden_channels must be a positive multiple of 128")
+        channels = (
+            3,
+            hidden_channels // 8,
+            hidden_channels // 4,
+            hidden_channels // 2,
+            hidden_channels,
+            hidden_channels,
+            hidden_channels,
+        )
+        layers: list[nn.Module] = []
+        for in_channels, out_channels in pairwise(channels):
+            layers.append(nn.Conv2d(in_channels, out_channels, 4, 2, 1))
+            if in_channels != 3:
+                layers.append(nn.GroupNorm(8, out_channels))
+            layers.append(nn.SiLU())
+        layers.append(nn.Flatten())
+        super().__init__(*layers)
+
+    def forward(self, images: Tensor) -> Tensor:
+        if images.shape[1:] != (3, 256, 256):
+            raise ValueError("Expected 256x256 RGB images with shape (B, 3, 256, 256)")
+        # (B, 3, 256, 256) -> (B, hidden_channels * 4 * 4)
+        return super().forward(images)
+
+
+class ImageDecoder(nn.Module):
+    """Decode (..., latent_dim) into (..., 3, 256, 256) RGB means in [0, 1]."""
+
+    def __init__(self, latent_dim: int, hidden_channels: int) -> None:
+        super().__init__()
+        if hidden_channels < 128 or hidden_channels % 128:
+            raise ValueError("hidden_channels must be a positive multiple of 128")
+        if latent_dim < 1:
+            raise ValueError("latent_dim must be positive")
+        self.latent_dim = latent_dim
+        self.input = nn.Sequential(
+            nn.Linear(latent_dim, hidden_channels * 4 * 4),
+            nn.SiLU(),
+        )
+        channels = (
+            hidden_channels,
+            hidden_channels,
+            hidden_channels,
+            hidden_channels // 2,
+            hidden_channels // 4,
+            hidden_channels // 8,
+            3,
+        )
+        layers: list[nn.Module] = [nn.Unflatten(1, (hidden_channels, 4, 4))]
+        for in_channels, out_channels in pairwise(channels):
+            layers.append(nn.ConvTranspose2d(in_channels, out_channels, 4, 2, 1))
+            if out_channels != 3:
+                layers.extend((nn.GroupNorm(8, out_channels), nn.SiLU()))
+        layers.append(nn.Sigmoid())
+        self.net = nn.Sequential(*layers)  # 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
+
+    def forward(self, z: Tensor) -> Tensor:
+        if z.ndim < 1 or z.shape[-1] != self.latent_dim:
+            raise ValueError(
+                f"Expected latent vectors with last dimension {self.latent_dim}"
+            )
+        leading_shape = z.shape[:-1]
+        images = self.net(self.input(z.reshape(-1, self.latent_dim)))
+        # (B, latent_dim) -> (B, 3, 256, 256)
+        # (B, S, latent_dim) -> (B, S, 3, 256, 256)
+        return images.reshape(*leading_shape, 3, 256, 256)
 
 
 class ActiveUnitAccumulator:
@@ -143,6 +218,8 @@ def fuse_diagonal_gaussians(
 __all__ = [
     "LOG_2PI",
     "ActiveUnitAccumulator",
+    "ImageDecoder",
+    "ImageEncoder",
     "diagonal_gaussian_kl_from_logvar",
     "diagonal_gaussian_log_density",
     "fuse_diagonal_gaussians",
