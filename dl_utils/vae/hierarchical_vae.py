@@ -43,9 +43,9 @@ class _TopPosterior(nn.Module):
             nn.Linear(context_dim, 2 * z2_dim),
         )  # -> (B, context_dim) -> (B, 2 * z2_dim)
 
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Return h_1: (B, context_dim), mu_q_2/v_q_2: (B, z2_dim)."""
-        h_1 = self.features(x)
+        h_1 = self.features(images)
         mu_q_2, v_q_2 = split_gaussian_parameters(self.head(h_1))
         return h_1, mu_q_2, v_q_2
 
@@ -112,13 +112,13 @@ class HierarchicalVAE(nn.Module):
             "v_q_1": v_q_1,
         }
 
-    def infer(self, x: Tensor, *, sample: bool = True) -> dict[str, Tensor]:
+    def infer(self, images: Tensor, *, sample: bool = True) -> dict[str, Tensor]:
         """Return z1/z2, their distribution parameters, and h_1.
 
         sample=False follows successive conditional means instead of sampling.
         """
         # q(z2 | x) -> z2.
-        h_1, mu_q_2, v_q_2 = self.q_2(x)
+        h_1, mu_q_2, v_q_2 = self.q_2(images)
         z2 = reparameterize_logvar(mu_q_2, v_q_2) if sample else mu_q_2
         # p(z1 | z2), q(z1 | z2, x) -> z1.
         parameters_1 = self.lower_parameters(h_1, z2)
@@ -139,9 +139,9 @@ class HierarchicalVAE(nn.Module):
         """Return mu_p_0(z1): (..., z1_dim) -> (..., 3, 256, 256)."""
         return self.p_0(z1)
 
-    def forward(self, x: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+    def forward(self, images: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         """Return (mu_p_0, latents) from stochastic inference followed by decoding."""
-        latents = self.infer(x, sample=True)
+        latents = self.infer(images, sample=True)
         mu_p_0 = self.decode(latents["z1"])
         return mu_p_0, latents
 
@@ -208,7 +208,7 @@ class LadderVAE(HierarchicalVAE):
 
 def hierarchical_vae_loss(
     mu_p_0: Tensor,
-    x: Tensor,
+    images: Tensor,
     latents: dict[str, Tensor],
     *,
     kl_weight: float,
@@ -224,7 +224,7 @@ def hierarchical_vae_loss(
     their sum. kl_z1/z2 stay raw; kl_objective_z1/z2 are clamped, unweighted.
     """
     # First sum coordinates within each example; retain the batch dimension.
-    distortion_per_example = (mu_p_0 - x).square().flatten(1).sum(dim=1)
+    distortion_per_example = (mu_p_0 - images).square().flatten(1).sum(dim=1)
     # Layer 1: KL(q(z1 | z2, x) || p(z1 | z2)) at the same sampled z2.
     kl_z1_per_example = diagonal_gaussian_kl_from_logvar(
         latents["mu_q_1"],
