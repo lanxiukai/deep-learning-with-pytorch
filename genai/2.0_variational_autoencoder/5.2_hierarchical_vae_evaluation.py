@@ -160,37 +160,33 @@ def sampled_counterfactual_distortions(
     samples: int,
 ) -> dict[str, Tensor]:
     """Use paired top samples to isolate lower and upper posterior removal."""
-    lower_evidence, q2_mu, q2_logvar = model.bottom_up(images)
+    h_1, mu_q_2, v_q_2 = model.bottom_up(images)
     batch_size = images.shape[0]
     repeated_evidence = (
-        lower_evidence[:, None, :]
+        h_1[:, None, :]
         .expand(-1, samples, -1)
         .reshape(batch_size * samples, -1)
     )
 
-    q_z2 = _sample_gaussian(q2_mu, q2_logvar, samples)
+    q_z2 = _sample_gaussian(mu_q_2, v_q_2, samples)
     q_z2_flat = q_z2.reshape(batch_size * samples, model.z2_dim)
-    p1_mu, p1_logvar, q1_mu, q1_logvar = model.lower_distributions(
-        repeated_evidence, q_z2_flat
-    )
-    posterior_z1 = reparameterize_logvar(q1_mu, q1_logvar).reshape(
-        batch_size, samples, model.z1_dim
-    )
-    lower_prior_z1 = reparameterize_logvar(p1_mu, p1_logvar).reshape(
-        batch_size, samples, model.z1_dim
-    )
+    parameters_1 = model.lower_distributions(repeated_evidence, q_z2_flat)
+    posterior_z1 = reparameterize_logvar(
+        parameters_1["mu_q_1"], parameters_1["v_q_1"]
+    ).reshape(batch_size, samples, model.z1_dim)
+    lower_prior_z1 = reparameterize_logvar(
+        parameters_1["mu_p_1"], parameters_1["v_p_1"]
+    ).reshape(batch_size, samples, model.z1_dim)
 
     p_z2 = torch.randn_like(q_z2)
     p_z2_flat = p_z2.reshape(batch_size * samples, model.z2_dim)
-    p_top_p1_mu, p_top_p1_logvar, p_top_q1_mu, p_top_q1_logvar = (
-        model.lower_distributions(repeated_evidence, p_z2_flat)
-    )
-    top_replaced_z1 = reparameterize_logvar(p_top_q1_mu, p_top_q1_logvar).reshape(
-        batch_size, samples, model.z1_dim
-    )
-    both_replaced_z1 = reparameterize_logvar(p_top_p1_mu, p_top_p1_logvar).reshape(
-        batch_size, samples, model.z1_dim
-    )
+    replaced_parameters_1 = model.lower_distributions(repeated_evidence, p_z2_flat)
+    top_replaced_z1 = reparameterize_logvar(
+        replaced_parameters_1["mu_q_1"], replaced_parameters_1["v_q_1"]
+    ).reshape(batch_size, samples, model.z1_dim)
+    both_replaced_z1 = reparameterize_logvar(
+        replaced_parameters_1["mu_p_1"], replaced_parameters_1["v_p_1"]
+    ).reshape(batch_size, samples, model.z1_dim)
     return {
         "posterior": _decode_distortion(model, posterior_z1, images),
         "lower_prior": _decode_distortion(model, lower_prior_z1, images),
@@ -226,17 +222,17 @@ def evaluate_model(
         deterministic_distortion += (reconstruction - images).square().sum().item()
         kl_z1 += (
             diagonal_gaussian_kl_from_logvar(
-                latents["q1_mu"],
-                latents["q1_logvar"],
-                latents["p1_mu"],
-                latents["p1_logvar"],
+                latents["mu_q_1"],
+                latents["v_q_1"],
+                latents["mu_p_1"],
+                latents["v_p_1"],
             )
             .sum()
             .item()
         )
         kl_z2 += (
             diagonal_gaussian_kl_from_logvar(
-                latents["q2_mu"], latents["q2_logvar"]
+                latents["mu_q_2"], latents["v_q_2"]
             )
             .sum()
             .item()
@@ -282,30 +278,30 @@ def save_counterfactual_grids(
 ) -> dict[str, float]:
     images, _ = next(iter(loader))
     images = images[:DISPLAY_SAMPLES].to(device)
-    lower_evidence, q2_mu, q2_logvar = model.bottom_up(images)
+    h_1, mu_q_2, v_q_2 = model.bottom_up(images)
     posterior = model.infer_from_top(
-        lower_evidence,
-        q2_mu,
-        q2_logvar,
-        q2_mu,
+        h_1,
+        mu_q_2,
+        v_q_2,
+        mu_q_2,
         sample_lower=False,
     )
-    zero_z2 = torch.zeros_like(q2_mu)
+    zero_z2 = torch.zeros_like(mu_q_2)
     top_replaced = model.infer_from_top(
-        lower_evidence,
-        q2_mu,
-        q2_logvar,
+        h_1,
+        mu_q_2,
+        v_q_2,
         zero_z2,
         sample_lower=False,
     )
-    zero_p1_mu, _, _, _ = model.lower_distributions(lower_evidence, zero_z2)
+    zero_mu_p_1 = model.lower_distributions(h_1, zero_z2)["mu_p_1"]
     summary = torch.cat(
         (
             images.cpu(),
-            _decode_grid(model, posterior["q1_mu"]),
-            _decode_grid(model, posterior["p1_mu"]),
-            _decode_grid(model, top_replaced["q1_mu"]),
-            _decode_grid(model, zero_p1_mu),
+            _decode_grid(model, posterior["mu_q_1"]),
+            _decode_grid(model, posterior["mu_p_1"]),
+            _decode_grid(model, top_replaced["mu_q_1"]),
+            _decode_grid(model, zero_mu_p_1),
         )
     )
     save_image(
@@ -314,9 +310,11 @@ def save_counterfactual_grids(
         nrow=images.shape[0],
     )
 
-    fixed_top = q2_mu
-    p1_mu, p1_logvar, _, _ = model.lower_distributions(lower_evidence, fixed_top)
-    lower_samples = _sample_gaussian(p1_mu, p1_logvar, variants)
+    fixed_top = mu_q_2
+    parameters_1 = model.lower_distributions(h_1, fixed_top)
+    lower_samples = _sample_gaussian(
+        parameters_1["mu_p_1"], parameters_1["v_p_1"], variants
+    )
     lower_images = _decode_grid(model, lower_samples)
     save_image(
         lower_images.flatten(0, 1),
@@ -324,18 +322,19 @@ def save_counterfactual_grids(
         nrow=variants,
     )
 
-    top_samples = _sample_gaussian(q2_mu, q2_logvar, variants)
+    top_samples = _sample_gaussian(mu_q_2, v_q_2, variants)
     repeated_evidence = (
-        lower_evidence[:, None, :]
+        h_1[:, None, :]
         .expand(-1, variants, -1)
-        .reshape(-1, lower_evidence.shape[1])
+        .reshape(-1, h_1.shape[1])
     )
-    _, _, changed_q1_mu, _ = model.lower_distributions(
+    changed_parameters_1 = model.lower_distributions(
         repeated_evidence,
         top_samples.reshape(-1, model.z2_dim),
     )
     upper_images = _decode_grid(
-        model, changed_q1_mu.reshape(images.shape[0], variants, model.z1_dim)
+        model,
+        changed_parameters_1["mu_q_1"].reshape(images.shape[0], variants, model.z1_dim),
     )
     save_image(
         upper_images.flatten(0, 1),

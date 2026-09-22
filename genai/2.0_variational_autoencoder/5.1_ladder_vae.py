@@ -8,6 +8,17 @@ so their precisions add and their means combine by precision weighting.
 The top q(z2 | x) remains bottom-up evidence compared against N(0, I); it is
 not fused with that fixed prior as though a third evidence source existed.
 
+Reading guide 3.3c, section 4 (layer 0 = x, layer 1 = z1, layer 2 = z2):
+    q_2(h_2(x))     -> mu_q_2, v_q_2 -> sample z2
+    p_1(z2)        -> mu_p_1, v_p_1
+    q_hat_1(h_1(x))-> mu_hat_q_1, v_hat_q_1              (hatted evidence)
+    precision fusion -> mu_q_1, v_q_1 -> sample z1       (superscript L)
+    p_0(z1)        -> mu_p_0
+Here v = log(sigma**2). The hatted evidence is not sampled; the fused q,1
+parameters are computed without a learned q_1 block. model(x) returns
+(mu_p_0, latents), retaining both evidence and fused parameters in latents.
+See dl_utils/vae/hierarchical_vae.py, especially LadderVAE.lower_distributions.
+
 The script saves final model weights and the small set of constructor and
 evaluation controls needed for comparison. It has no resume machinery.
 

@@ -8,6 +8,16 @@ and the recognition model is
 
     q(z2 | x) q(z1 | z2, x).
 
+Reading guide 3.3c, section 3 (layer 0 = x, layer 1 = z1, layer 2 = z2):
+    q_2(h_2(x))       -> mu_q_2, v_q_2 -> sample z2       (step 1)
+    p_1(z2)          -> mu_p_1, v_p_1                    (step 2)
+    q_1([h_1(x),z2]) -> mu_q_1, v_q_1 -> sample z1       (step 2)
+    p_0(z1)          -> mu_p_0                          (step 3)
+Here v = log(sigma**2); h_1 and h_2 are deterministic image features.
+model(x) returns (mu_p_0, latents), with the named Gaussian parameters and
+z1/z2 in latents. p(z2) is fixed N(0, I); observation variance is fixed 1/2.
+See dl_utils/vae/hierarchical_vae.py for the numbered blocks and forward path.
+
 The negative ELBO therefore contains a top KL against N(0, I) and a lower KL
 between distributions conditioned on the same sampled z2.  KL warm-up and
 group-wise free bits are visible optimization controls, not guarantees that a

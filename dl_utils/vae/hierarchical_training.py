@@ -95,10 +95,11 @@ def train_hierarchy(
             for images, _ in train_loader:
                 update += 1
                 images = images.to(device, non_blocking=True)
-                reconstruction, latents = model(images)
+                # Sections 3.3/4.4: q,2 -> p,1 and q,1 -> p,0.
+                mu_p_0, latents = model(images)
                 kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
                 loss, terms = hierarchical_vae_loss(
-                    reconstruction,
+                    mu_p_0,
                     images,
                     latents,
                     kl_weight=kl_weight,

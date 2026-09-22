@@ -27,7 +27,7 @@ class ImageEncoder(nn.Sequential):
                 layers.append(nn.GroupNorm(8, out_channels))
             layers.append(nn.SiLU())
         layers.append(nn.Flatten())
-        super().__init__(*layers)  # (B, 3, 256, 256) -> (B, H*4*4)
+        super().__init__(*layers)  # (B, 3, 256, 256) -> (B, hidden_channels*4*4)
 
 
 class ImageDecoder(nn.Module):
