@@ -57,6 +57,7 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.vae import VAE
 from dl_utils.vae.vae_common import (
+    ActiveUnitAccumulator,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
 )
@@ -93,8 +94,7 @@ def evaluate(
         raise ValueError("maximum_batches must be positive")
 
     model.eval()
-    mu_total = torch.zeros(z_dim, dtype=torch.float64)
-    mu_square_total = torch.zeros_like(mu_total)
+    active = ActiveUnitAccumulator()
     kl_total = 0.0
     examples = 0
     squared_error_total = 0.0
@@ -111,8 +111,7 @@ def evaluate(
         )
         squared_error_total += (mean_reconstructions - images).square().sum().item()
         evaluated_elements += images.numel()
-        mu_total += mu.detach().double().sum(dim=0).cpu()
-        mu_square_total += mu.detach().double().square().sum(dim=0).cpu()
+        active.update(mu)
         kl_total += diagonal_gaussian_kl_from_logvar(mu, logvar).sum().item()
         examples += images.shape[0]
 
@@ -143,10 +142,6 @@ def evaluate(
         raise ValueError("at least two images are required for interpolation")
 
     mean_squared_error = squared_error_total / evaluated_elements
-    posterior_mean = mu_total / examples
-    variance_of_mu = (
-        mu_square_total / examples - posterior_mean.square()
-    ).clamp_min(0.0)
     metrics = {
         "posterior_mean_reconstruction": {
             "pixel_mse": mean_squared_error,
@@ -157,8 +152,8 @@ def evaluate(
             "examples": examples,
             "kl_nats_per_image": kl_total / examples,
             "active_variance_threshold": active_variance_threshold,
-            "active_dimensions": int(
-                (variance_of_mu > active_variance_threshold).sum()
+            "active_dimensions": active.count(
+                variance_threshold=active_variance_threshold
             ),
         },
     }

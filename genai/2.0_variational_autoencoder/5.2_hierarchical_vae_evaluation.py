@@ -60,11 +60,11 @@ from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.hierarchical_vae import (
-    ActiveUnitAccumulator,
     HierarchicalVAE,
     LadderVAE,
 )
 from dl_utils.vae.vae_common import (
+    ActiveUnitAccumulator,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
 )
@@ -214,7 +214,8 @@ def evaluate_model(
     kl_z1 = 0.0
     kl_z2 = 0.0
     examples = 0
-    active = ActiveUnitAccumulator()
+    active_z1 = ActiveUnitAccumulator()
+    active_z2 = ActiveUnitAccumulator()
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
         latents = model.infer(images, sample=False)
@@ -237,14 +238,15 @@ def evaluate_model(
             .sum()
             .item()
         )
-        active.update(latents)
+        # Lower-layer corrections and top-layer means have distinct meanings.
+        active_z1.update(latents["mu_q_1"] - latents["mu_p_1"])
+        active_z2.update(latents["mu_q_2"])
         counterfactuals = sampled_counterfactual_distortions(
             model, images, samples=intervention_samples
         )
         for name, values in counterfactuals.items():
             totals[name] += values.sum().item() / intervention_samples
         examples += images.shape[0]
-    active_z1, active_z2 = active.counts(variance_threshold=active_variance_threshold)
     sampled_posterior = totals["posterior"] / examples
     return {
         "posterior_mean_distortion": (deterministic_distortion / examples),
@@ -262,8 +264,12 @@ def evaluate_model(
         "kl_z1": kl_z1 / examples,
         "kl_z2": kl_z2 / examples,
         "total_rate": (kl_z1 + kl_z2) / examples,
-        "active_z1_corrections": float(active_z1),
-        "active_z2_units": float(active_z2),
+        "active_z1_corrections": float(
+            active_z1.count(variance_threshold=active_variance_threshold)
+        ),
+        "active_z2_units": float(
+            active_z2.count(variance_threshold=active_variance_threshold)
+        ),
     }
 
 

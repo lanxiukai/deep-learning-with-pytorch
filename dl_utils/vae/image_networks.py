@@ -27,7 +27,7 @@ class ImageEncoder(nn.Sequential):
                 layers.append(nn.GroupNorm(8, out_channels))
             layers.append(nn.SiLU())
         layers.append(nn.Flatten())
-        super().__init__(*layers)  # (B, 3, 256, 256) -> (B, hidden_channels*4*4)
+        super().__init__(*layers)  # (B, 3, 256, 256) -> (B, hidden_channels * 4 * 4)
 
 
 class ImageDecoder(nn.Module):
@@ -57,4 +57,4 @@ class ImageDecoder(nn.Module):
         self.net = nn.Sequential(*layers)  # 4 -> 8 -> 16 -> 32 -> 64 -> 128 -> 256
 
     def forward(self, z: Tensor) -> Tensor:
-        return self.net(self.input(z))  # (B, 3, 256, 256)
+        return self.net(self.input(z))  # (B, latent_dim) -> (B, 3, 256, 256)

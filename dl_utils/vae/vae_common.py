@@ -1,4 +1,4 @@
-"""Gaussian-distribution primitives shared by the VAE lessons."""
+"""Gaussian primitives and latent-use diagnostics shared by the VAE lessons."""
 
 from __future__ import annotations
 
@@ -8,6 +8,53 @@ import torch
 from torch import Tensor
 
 LOG_2PI = math.log(2.0 * math.pi)
+
+
+class ActiveUnitAccumulator:
+    """Count coordinates whose population variance exceeds a threshold.
+
+    Pass a (batch, units) tensor to update(), normally posterior means.
+    Hierarchical models can instead pass posterior-minus-prior means for
+    a conditional layer. Use one accumulator per layer or statistic; the
+    caller chooses its meaning. This measures variance across examples,
+    not posterior variance or per-coordinate KL.
+    """
+
+    def __init__(self) -> None:
+        self.num_examples = 0
+        self._sum: Tensor | None = None
+        self._square_sum: Tensor | None = None
+
+    def update(self, values: Tensor) -> None:
+        """Accumulate detached float64 moments without storing all examples."""
+        if values.ndim != 2:
+            raise ValueError("values must have shape (batch, units)")
+        if self._sum is not None and values.shape[1:] != self._sum.shape:
+            raise ValueError("the number of units must stay constant across batches")
+        if values.shape[0] == 0:
+            return
+        values = values.detach().double()
+        batch_sum = values.sum(dim=0)
+        batch_square_sum = values.square().sum(dim=0)
+        if self._sum is None:
+            self._sum = batch_sum
+            self._square_sum = batch_square_sum
+        else:
+            assert self._square_sum is not None
+            self._sum += batch_sum
+            self._square_sum += batch_square_sum
+        self.num_examples += values.shape[0]
+
+    def count(self, *, variance_threshold: float = 1e-2) -> int:
+        """Return the active count; fewer than two examples yield zero."""
+        if self.num_examples < 2:
+            return 0
+        assert self._sum is not None and self._square_sum is not None
+        variance = (
+            self._square_sum / self.num_examples
+            - (self._sum / self.num_examples).square()
+        ).clamp_min(0.0)
+        return int((variance > variance_threshold).sum().item())
 
 
 def split_gaussian_parameters(
@@ -95,6 +142,7 @@ def fuse_diagonal_gaussians(
 
 __all__ = [
     "LOG_2PI",
+    "ActiveUnitAccumulator",
     "diagonal_gaussian_kl_from_logvar",
     "diagonal_gaussian_log_density",
     "fuse_diagonal_gaussians",

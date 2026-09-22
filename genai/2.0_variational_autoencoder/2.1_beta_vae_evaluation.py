@@ -5,6 +5,11 @@ fixed prior samples. The evaluation focuses on reconstruction distortion,
 KL rate, beta-weighted rate, and per-dimension latent use. These capacity
 diagnostics do not establish semantic disentanglement.
 
+Active dimensions use the same definition as 1.1_vae_evaluation.py: population
+variance of posterior means across evaluated images greater than 0.01.
+Per-dimension KL remains a separate rate diagnostic; a constant mean offset
+or non-unit posterior variance can yield positive KL without an active mean.
+
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py. Folder
     labels are ignored by both compared models.
@@ -25,7 +30,7 @@ Batch size:                      16
 Maximum batches:                100
 Evaluated images per model:   1,600
 Matched prior samples:            18
-Active-KL threshold:             0.05 nats per dimension
+Active-variance threshold:       0.01 (posterior means across images)
 
 Default dimensions:
 Evaluation input:             256x256 RGB
@@ -58,7 +63,10 @@ from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.vae import VAE
-from dl_utils.vae.vae_common import diagonal_gaussian_kl_from_logvar
+from dl_utils.vae.vae_common import (
+    ActiveUnitAccumulator,
+    diagonal_gaussian_kl_from_logvar,
+)
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
@@ -69,7 +77,7 @@ OUTPUT_DIR = OUTPUT_ROOT / "beta_vae" / "evaluation"
 
 BATCH_SIZE = 16
 MAXIMUM_BATCHES = 100
-ACTIVE_KL_THRESHOLD = 0.05
+ACTIVE_VARIANCE_THRESHOLD = 1e-2
 NUM_WORKERS = 0
 SEED = 42
 NUM_COMPARISON_IMAGES = 8
@@ -93,8 +101,8 @@ class EvaluationResult:
     distortion: float
     rate: float
     weighted_rate: float
-    active_kl_dimensions: int
-    inactive_kl_dimensions: int
+    active_dimensions: int
+    inactive_dimensions: int
     kl_per_dimension: list[float]
     checkpoint: str
 
@@ -141,15 +149,14 @@ def summarize_kl(
     kl_total: Tensor,
     *,
     examples: int,
-    active_kl_threshold: float,
-) -> tuple[float, list[float], int]:
+) -> tuple[float, list[float]]:
+    """Return mean total KL and per-dimension KL, independently of activity."""
     if examples < 1:
         raise ValueError("examples must be positive")
     kl_per_dimension = kl_total / examples
     return (
         kl_per_dimension.sum().item(),
         kl_per_dimension.tolist(),
-        int((kl_per_dimension > active_kl_threshold).sum()),
     )
 
 
@@ -160,7 +167,7 @@ def evaluate_model(
     *,
     info: CheckpointInfo,
     maximum_batches: int,
-    active_kl_threshold: float,
+    active_variance_threshold: float,
     fixed_z: Tensor,
     device: torch.device,
 ) -> tuple[EvaluationResult, Tensor, Tensor]:
@@ -168,11 +175,13 @@ def evaluate_model(
         raise ValueError("maximum_batches must be positive")
     squared_error_total = 0.0
     kl_total = torch.zeros(info.z_dim, dtype=torch.float64)
+    active = ActiveUnitAccumulator()
     examples = 0
     comparison = None
     for images, _ in islice(loader, maximum_batches):
         images = images.to(device, non_blocking=True)
         mu, logvar = model.encode(images)
+        active.update(mu)
         reconstructions = model.decoder(mu)
         squared_error_total += (reconstructions - images).square().sum().item()
         kl_total += (
@@ -191,19 +200,19 @@ def evaluate_model(
 
     if comparison is None or examples == 0:
         raise ValueError("cannot evaluate an empty loader")
-    rate, kl_per_dimension, active_dimensions = summarize_kl(
+    rate, kl_per_dimension = summarize_kl(
         kl_total,
         examples=examples,
-        active_kl_threshold=active_kl_threshold,
     )
+    active_dimensions = active.count(variance_threshold=active_variance_threshold)
     result = EvaluationResult(
         model_name=info.model_name,
         beta=info.beta,
         distortion=squared_error_total / examples,
         rate=rate,
         weighted_rate=info.beta * rate,
-        active_kl_dimensions=active_dimensions,
-        inactive_kl_dimensions=info.z_dim - active_dimensions,
+        active_dimensions=active_dimensions,
+        inactive_dimensions=info.z_dim - active_dimensions,
         kl_per_dimension=kl_per_dimension,
         checkpoint=info.checkpoint,
     )
@@ -287,7 +296,7 @@ def analyze() -> None:
             loader,
             info=info,
             maximum_batches=MAXIMUM_BATCHES,
-            active_kl_threshold=ACTIVE_KL_THRESHOLD,
+            active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
             fixed_z=fixed_z,
             device=device,
         )
@@ -312,7 +321,11 @@ def analyze() -> None:
         "protocol": {
             "dataset": "glasses-256",
             "distortion": "posterior-mean summed-pixel MSE per image",
-            "active_kl_threshold_nats": ACTIVE_KL_THRESHOLD,
+            "active_variance_threshold": ACTIVE_VARIANCE_THRESHOLD,
+            "active_dimension_definition": (
+                "population variance of posterior means across evaluated images "
+                "strictly greater than active_variance_threshold"
+            ),
             "interpretation_warning": (
                 "Capacity diagnostics do not establish semantic "
                 "disentanglement without ground-truth factors."
