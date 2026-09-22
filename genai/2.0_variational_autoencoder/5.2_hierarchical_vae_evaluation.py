@@ -160,7 +160,7 @@ def sampled_counterfactual_distortions(
     samples: int,
 ) -> dict[str, Tensor]:
     """Use paired top samples to isolate lower and upper posterior removal."""
-    h_1, mu_q_2, v_q_2 = model.bottom_up(images)
+    h_1, mu_q_2, v_q_2 = model.q_2(images)
     batch_size = images.shape[0]
     repeated_evidence = (
         h_1[:, None, :]
@@ -170,7 +170,7 @@ def sampled_counterfactual_distortions(
 
     q_z2 = _sample_gaussian(mu_q_2, v_q_2, samples)
     q_z2_flat = q_z2.reshape(batch_size * samples, model.z2_dim)
-    parameters_1 = model.lower_distributions(repeated_evidence, q_z2_flat)
+    parameters_1 = model.lower_parameters(repeated_evidence, q_z2_flat)
     posterior_z1 = reparameterize_logvar(
         parameters_1["mu_q_1"], parameters_1["v_q_1"]
     ).reshape(batch_size, samples, model.z1_dim)
@@ -180,7 +180,7 @@ def sampled_counterfactual_distortions(
 
     p_z2 = torch.randn_like(q_z2)
     p_z2_flat = p_z2.reshape(batch_size * samples, model.z2_dim)
-    replaced_parameters_1 = model.lower_distributions(repeated_evidence, p_z2_flat)
+    replaced_parameters_1 = model.lower_parameters(repeated_evidence, p_z2_flat)
     top_replaced_z1 = reparameterize_logvar(
         replaced_parameters_1["mu_q_1"], replaced_parameters_1["v_q_1"]
     ).reshape(batch_size, samples, model.z1_dim)
@@ -284,30 +284,17 @@ def save_counterfactual_grids(
 ) -> dict[str, float]:
     images, _ = next(iter(loader))
     images = images[:DISPLAY_SAMPLES].to(device)
-    h_1, mu_q_2, v_q_2 = model.bottom_up(images)
-    posterior = model.infer_from_top(
-        h_1,
-        mu_q_2,
-        v_q_2,
-        mu_q_2,
-        sample_lower=False,
-    )
+    h_1, mu_q_2, v_q_2 = model.q_2(images)
+    posterior = model.lower_parameters(h_1, mu_q_2)
     zero_z2 = torch.zeros_like(mu_q_2)
-    top_replaced = model.infer_from_top(
-        h_1,
-        mu_q_2,
-        v_q_2,
-        zero_z2,
-        sample_lower=False,
-    )
-    zero_mu_p_1 = model.lower_distributions(h_1, zero_z2)["mu_p_1"]
+    top_replaced = model.lower_parameters(h_1, zero_z2)
     summary = torch.cat(
         (
             images.cpu(),
             _decode_grid(model, posterior["mu_q_1"]),
             _decode_grid(model, posterior["mu_p_1"]),
             _decode_grid(model, top_replaced["mu_q_1"]),
-            _decode_grid(model, zero_mu_p_1),
+            _decode_grid(model, top_replaced["mu_p_1"]),
         )
     )
     save_image(
@@ -316,10 +303,8 @@ def save_counterfactual_grids(
         nrow=images.shape[0],
     )
 
-    fixed_top = mu_q_2
-    parameters_1 = model.lower_distributions(h_1, fixed_top)
     lower_samples = _sample_gaussian(
-        parameters_1["mu_p_1"], parameters_1["v_p_1"], variants
+        posterior["mu_p_1"], posterior["v_p_1"], variants
     )
     lower_images = _decode_grid(model, lower_samples)
     save_image(
@@ -334,7 +319,7 @@ def save_counterfactual_grids(
         .expand(-1, variants, -1)
         .reshape(-1, h_1.shape[1])
     )
-    changed_parameters_1 = model.lower_distributions(
+    changed_parameters_1 = model.lower_parameters(
         repeated_evidence,
         top_samples.reshape(-1, model.z2_dim),
     )

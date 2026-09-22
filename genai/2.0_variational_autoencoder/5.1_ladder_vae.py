@@ -18,7 +18,7 @@ Here v = log(sigma**2). q_2 includes the full image encoder and also returns
 h_1(x) for q_hat_1. The hatted evidence is not sampled; the fused q,1
 parameters are computed without a learned q_1 block. model(x) returns
 (mu_p_0, latents), retaining both evidence and fused parameters in latents.
-See dl_utils/vae/hierarchical_vae.py, especially LadderVAE.lower_distributions.
+See dl_utils/vae/hierarchical_vae.py, especially LadderVAE.lower_parameters.
 
 The script saves final model weights and the small set of constructor and
 evaluation controls needed for comparison. It has no resume machinery.
