@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
+from dl_utils.data.datasets.celeba import CelebAAlignedDataset, aligned_celeba_transform
 from dl_utils.evaluation.distribution_metrics import FeatureMoments, frechet_distance
 from dl_utils.evaluation.image_features import TorchvisionInceptionFeatures
 

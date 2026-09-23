@@ -33,7 +33,7 @@ import json
 import torch
 from torch.utils.data import DataLoader
 
-from dl_utils.data.glasses import (
+from dl_utils.data.datasets.glasses import (
     GLASSES_CLASS_NAMES,
     glasses_data_config,
     glasses_dataset,

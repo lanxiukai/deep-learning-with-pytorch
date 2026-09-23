@@ -16,7 +16,7 @@ environment or dependency workflow.
 | Area | Responsibility | Start with |
 |---|---|---|
 | [d2l/](d2l/) | D2L-style textbook helpers | The relevant lesson call site |
-| [data/](data/) | Downloads, datasets, image preparation, and loaders | [celeba.py](data/celeba.py) and [vision.py](data/vision.py) |
+| [data/](data/) | Downloads, datasets, image preparation, and loaders | [datasets/](data/datasets/) and [vision.py](data/vision.py) |
 | [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
 | [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
 | [evaluation/](evaluation/) | Supervised evaluation, image features, distribution metrics, and reconstruction metrics | [supervised.py](evaluation/supervised.py), [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
@@ -24,6 +24,18 @@ environment or dependency workflow.
 | [filesystem/](filesystem/), [plot/](plot/) | Project paths, output directories, and figures | [figures.py](plot/figures.py), [curves.py](plot/curves.py), and [images.py](plot/images.py) |
 
 ## Design boundaries
+
+- [data/datasets/](data/datasets/) owns dataset readers, labels, preparation
+  rules, and the named download catalog. CelebA separates image/attribute
+  reading, CPU/CUDA pipelines, and local split preparation. Glasses keeps its
+  reviewed correction JSON beside the dataset module and includes it in the
+  built package.
+  [data/downloads.py](data/downloads.py) owns HTTP/Kaggle downloads and archive
+  extraction; [data/preparation.py](data/preparation.py) builds image caches;
+  [data/loading.py](data/loading.py) owns loader construction and tensor batches.
+  Dataset wrappers retain their shuffle, drop-last, pinning, and worker-sharing
+  policies. [data/vision.py](data/vision.py) retains ImageFolder helpers and the
+  original D2L/EBM loader imports.
 
 - [runtime/devices.py](runtime/devices.py) owns device selection and explicit
   CUDA backend configuration. [runtime/randomness.py](runtime/randomness.py)
@@ -98,7 +110,7 @@ environment or dependency workflow.
   class-latent grids across GANs, VAEs, and plotting helpers without depending
   on a model family. [gan/normalization.py](gan/normalization.py) retains
   EMA normalization-buffer calibration for conditional GAN generators.
-- [data/celeba.py](data/celeba.py) loads aligned faces using the official
+- [data/datasets/celeba/](data/datasets/celeba/) loads aligned faces using the official
   partitions and optional binary attributes. Conditional GANs use Smiling
   labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images
   and pass labels only to their second-stage priors.

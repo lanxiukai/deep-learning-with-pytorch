@@ -62,7 +62,7 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from dl_utils.data.glasses import glasses_dataset
+from dl_utils.data.datasets.glasses import glasses_dataset
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu

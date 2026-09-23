@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from dl_utils.data.celeba import CelebATrainingStream
+from dl_utils.data.datasets.celeba import CelebATrainingStream
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import configure_device, try_gpu

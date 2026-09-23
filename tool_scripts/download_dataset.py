@@ -7,16 +7,17 @@ import os
 from collections.abc import Callable, Sequence
 
 from dl_utils.d2l.time_machine import read_time_machine
-from dl_utils.data.dataset_preparation import (
-    apply_glasses_label_corrections,
-    build_image_folder_cache,
+from dl_utils.data.datasets.celeba.preparation import (
     celeba_dataset_is_ready,
-    download_kaggle_dataset,
-    ensure_glasses_classification,
     prepare_celeba_cyclegan_splits,
 )
-from dl_utils.data.downloads import download, download_extract
-from dl_utils.data.vision import vision_loaders
+from dl_utils.data.datasets.glasses import (
+    apply_glasses_label_corrections,
+    ensure_glasses_classification,
+)
+from dl_utils.data.datasets.vision import vision_loaders
+from dl_utils.data.downloads import download, download_extract, download_kaggle_dataset
+from dl_utils.data.preparation import build_image_folder_cache
 from dl_utils.filesystem.project_root import infer_project_root
 
 PROJECT_ROOT = infer_project_root()

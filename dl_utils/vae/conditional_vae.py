@@ -10,7 +10,7 @@ from torch import Tensor, nn
 from torch.utils.data import Subset
 from torchvision.datasets import ImageFolder
 
-from dl_utils.data.glasses import GLASSES_CLASS_NAMES
+from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.inference.batching import generate_in_batches
 from dl_utils.inference.latent_sampling import make_fixed_class_latent_grid

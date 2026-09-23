@@ -50,7 +50,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.glasses import glasses_data_config, glasses_dataset
+from dl_utils.data.datasets.glasses import glasses_data_config, glasses_dataset
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root

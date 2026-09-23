@@ -1,119 +1,23 @@
-"""Aligned CelebA images with optional binary attribute conditioning."""
+"""CPU/PIL and CUDA/nvJPEG loading pipelines for aligned CelebA."""
 
-from __future__ import annotations
-
-import csv
 from collections.abc import Iterator
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.io import ImageReadMode, decode_jpeg, read_file
+from torchvision.io import ImageReadMode, decode_jpeg
 
-from dl_utils.data.images import load_rgb_image
 from dl_utils.data.loading import make_device_aware_loader
 
-CELEBA_PARTITIONS = {"train": 0, "validation": 1, "test": 2}
+from .dataset import CelebAAlignedDataset, CelebAEncodedDataset, _aligned_image_paths
+
 CELEBA_ALIGNED_CROP_SIZE = 178
-CELEBA_SMILING_ATTRIBUTE = "Smiling"
-CELEBA_SMILING_CLASSES = ("Not smiling", "Smiling")
+
+
 CELEBA_PIPELINES = frozenset({"auto", "cpu", "cuda"})
-
-
-@lru_cache(maxsize=16)
-def _aligned_image_paths(root: Path, split: str) -> tuple[Path, ...]:
-    """Resolve and validate one split once per process."""
-    root = Path(root)
-    if split not in CELEBA_PARTITIONS:
-        choices = ", ".join(sorted(CELEBA_PARTITIONS))
-        raise ValueError(f"split must be one of {{{choices}}}.")
-
-    partition_path = root / "list_eval_partition.csv"
-    image_candidates = (
-        root / "img_align_celeba" / "img_align_celeba",
-        root / "img_align_celeba",
-    )
-    image_dir = next(
-        (candidate for candidate in image_candidates if candidate.is_dir()),
-        None,
-    )
-    missing = [
-        path
-        for path in (partition_path, image_dir)
-        if path is None or not path.exists()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            f"aligned CelebA files are incomplete under {root}: {missing}"
-        )
-    assert image_dir is not None
-
-    partition = CELEBA_PARTITIONS[split]
-    with partition_path.open(newline="", encoding="utf-8") as stream:
-        rows = csv.DictReader(stream)
-        image_paths = tuple(
-            image_dir / row["image_id"]
-            for row in rows
-            if int(row["partition"]) == partition
-        )
-    if not image_paths:
-        raise ValueError(f"CelebA split {split!r} contains no images.")
-
-    missing_images = [path for path in image_paths if not path.is_file()]
-    if missing_images:
-        preview = ", ".join(str(path) for path in missing_images[:3])
-        raise FileNotFoundError(
-            f"CelebA split {split!r} is missing {len(missing_images)} "
-            f"images; first missing paths: {preview}"
-        )
-    return image_paths
-
-
-class CelebAAlignedDataset(Dataset):
-    """Read one official split from the locally prepared aligned CelebA."""
-
-    def __init__(self, root, split="train", transform=None, *, attribute=None):
-        super().__init__()
-        self.image_paths = _aligned_image_paths(Path(root), split)
-        self.transform = transform
-        if attribute is None:
-            self.targets = [0] * len(self.image_paths)
-        else:
-            with (Path(root) / "list_attr_celeba.csv").open(
-                newline="", encoding="utf-8"
-            ) as stream:
-                labels = {
-                    row["image_id"]: int(int(row[attribute]) > 0)
-                    for row in csv.DictReader(stream)
-                }
-            self.targets = [labels[path.name] for path in self.image_paths]
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, index):
-        image = load_rgb_image(self.image_paths[index])
-        if self.transform is not None:
-            image = self.transform(image)
-        return image, self.targets[index]
-
-
-class CelebAEncodedDataset(Dataset):
-    """Read encoded aligned JPEG bytes for batched CUDA decoding."""
-
-    def __init__(self, root, split="train"):
-        super().__init__()
-        self.image_paths = _aligned_image_paths(Path(root), split)
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, index):
-        return read_file(str(self.image_paths[index]))
 
 
 def _collate_encoded(batch):
@@ -437,19 +341,3 @@ class CelebATrainingStream:
                 raise ValueError("limit must fit within the loaded batch.")
             images = images[:limit]
         return images
-
-
-__all__ = [
-    "CELEBA_ALIGNED_CROP_SIZE",
-    "CELEBA_PARTITIONS",
-    "CELEBA_PIPELINES",
-    "CelebAAlignedDataset",
-    "CelebAEncodedDataset",
-    "CelebATrainingStream",
-    "cuda_jpeg_works",
-    "make_aligned_celeba_loader",
-    "make_celeba_training_loader",
-    "make_encoded_celeba_loader",
-    "prepare_encoded_celeba_batch",
-    "resolve_celeba_pipeline",
-]

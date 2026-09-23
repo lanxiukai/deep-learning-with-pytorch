@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
+from dl_utils.data.datasets.celeba import CelebAAlignedDataset, aligned_celeba_transform
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 

@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision.utils import save_image
 
-from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
+from dl_utils.data.datasets.celeba import CelebAAlignedDataset, aligned_celeba_transform
 from dl_utils.diffusion.lesson_utils import append_record
 from dl_utils.evaluation.distribution_metrics import feature_metrics
 from dl_utils.evaluation.image_features import TorchvisionInceptionFeatures

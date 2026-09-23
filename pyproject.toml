@@ -56,7 +56,7 @@ where = ["."]
 include = ["dl_utils*"]
 
 [tool.setuptools.package-data]
-"dl_utils.data" = ["*.json"]
+"dl_utils.data.datasets" = ["*.json"]
 
 [dependency-groups]
 dev = [

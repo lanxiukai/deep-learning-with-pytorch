@@ -56,7 +56,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from dl_utils.data.glasses import (
+from dl_utils.data.datasets.glasses import (
     GLASSES_CLASS_NAMES,
     GLASSES_IMAGE_SIZE,
     glasses_data_config,

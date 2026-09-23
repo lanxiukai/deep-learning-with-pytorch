@@ -17,7 +17,7 @@ from typing import cast
 import torch
 from tqdm import tqdm
 
-from dl_utils.data.celeba import CelebAAlignedDataset
+from dl_utils.data.datasets.celeba import CelebAAlignedDataset
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.lesson_utils import (

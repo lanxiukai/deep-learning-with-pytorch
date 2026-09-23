@@ -44,7 +44,7 @@ from torch import Tensor, nn
 from torchvision.utils import save_image
 from tqdm import tqdm
 
-from dl_utils.data.vision import vision_loaders
+from dl_utils.data.datasets.vision import vision_loaders
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.plot.curves import save_loss_panels

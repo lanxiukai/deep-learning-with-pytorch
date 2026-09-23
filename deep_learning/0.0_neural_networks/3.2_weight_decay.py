@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from dl_utils.d2l.linear import linreg, squared_loss, synthetic_data
-from dl_utils.data.vision import load_array
+from dl_utils.data.loading import load_array
 from dl_utils.evaluation.supervised import evaluate_loss
 from dl_utils.plot.figures import Animator
 from dl_utils.training.optimization import sgd

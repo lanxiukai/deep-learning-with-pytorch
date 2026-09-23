@@ -32,7 +32,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.celeba import (
+from dl_utils.data.datasets.celeba import (
     CELEBA_SMILING_ATTRIBUTE,
     CELEBA_SMILING_CLASSES,
     make_aligned_celeba_loader,

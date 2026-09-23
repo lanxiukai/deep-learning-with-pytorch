@@ -7,59 +7,25 @@ import shutil
 import tarfile
 import tempfile
 import zipfile
+from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 
+from dl_utils.data.datasets.catalog import DATA_HUB, DATA_URL
+from dl_utils.data.datasets.catalog import DOWNLOAD_SUBDIRECTORIES as _DOWNLOAD_SUBDIR
 from dl_utils.filesystem.project_root import infer_project_root
 
-
-DATA_URL = 'https://d2l-data.s3-accelerate.amazonaws.com/'
 DOWNLOAD_TIMEOUT = (10, 60)
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
-DATA_HUB = {
-    'kaggle_house_train': (
-        DATA_URL + 'kaggle_house_pred_train.csv',
-        '585e9cc93e70b39160e7921475f9bcd7d31219ce',
-    ),
-    'kaggle_house_test': (
-        DATA_URL + 'kaggle_house_pred_test.csv',
-        'fa19780a7b011d9b009e8bff8e99922a8ee2eb90',
-    ),
-    'time_machine': (
-        DATA_URL + 'timemachine.txt',
-        '090b5e7e70c295757f55df93cb0a180b9691891a',
-    ),
-    'fra-eng': (
-        DATA_URL + 'fra-eng.zip',
-        '94646ad1522d915e7b0f9296181140edcf86a4f5',
-    ),
-    'pokemon': (
-        DATA_URL + 'pokemon.zip',
-        'c065c0e2593b8b161a2d7873e42418bf6a21106c',
-    ),
-    'airfoil': (
-        DATA_URL + 'airfoil_self_noise.dat',
-        '76e5be1548fd8222e5074cf0faae75edff8cf93f',
-    ),
-}
-
-# map DATA_HUB keys to subdirectories under data/ (avoids scattering files at root)
-_DOWNLOAD_SUBDIR = {
-    'airfoil':             'airfoil_self_noise',
-    'kaggle_house_train':  'kaggle_house_price',
-    'kaggle_house_test':   'kaggle_house_price',
-    'time_machine':        'time_machine',
-    'fra-eng':             'fra_eng',
-    'pokemon':             'pokemon',
-}
 
 
 def _sha1sum(path: str) -> str:
     """Return the SHA-1 digest used by the upstream D2L data registry."""
     digest = hashlib.sha1()
-    with open(path, 'rb') as stream:
-        for chunk in iter(lambda: stream.read(DOWNLOAD_CHUNK_SIZE), b''):
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(DOWNLOAD_CHUNK_SIZE), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -67,7 +33,7 @@ def _sha1sum(path: str) -> str:
 def download(name, cache_dir=None, *, data_root=None):
     """
     Download a file inserted into DATA_HUB, and return the local filename.
-    
+
     Args:
         name: the name of the file to download
         cache_dir: the exact folder to cache the file (Default: None)
@@ -79,13 +45,13 @@ def download(name, cache_dir=None, *, data_root=None):
     assert name in DATA_HUB, f"{name} does not exist in {DATA_HUB}"
     url, sha1_hash = DATA_HUB[name]
     parsed_url = urlsplit(url)
-    if parsed_url.scheme.lower() != 'https':
+    if parsed_url.scheme.lower() != "https":
         raise ValueError(f"Refusing non-HTTPS dataset URL for {name!r}")
     if cache_dir is not None and data_root is not None:
         raise ValueError("cache_dir and data_root are mutually exclusive")
     if cache_dir is None:
         if data_root is None:
-            data_root = infer_project_root() / 'data'
+            data_root = infer_project_root() / "data"
         cache_dir = os.fspath(data_root)
         subdir = _DOWNLOAD_SUBDIR.get(name)
         if subdir:
@@ -96,14 +62,13 @@ def download(name, cache_dir=None, *, data_root=None):
     if not filename:
         raise ValueError(f"Dataset URL has no filename for {name!r}")
     fname = os.path.join(cache_dir, filename)
-    if os.path.exists(fname) and hmac.compare_digest(
-            _sha1sum(fname), sha1_hash):
+    if os.path.exists(fname) and hmac.compare_digest(_sha1sum(fname), sha1_hash):
         return fname  # cache hit
 
     print(f"Downloading {fname} from {url}...")
     file_descriptor, temporary_path = tempfile.mkstemp(
-        prefix=f'.{filename}.',
-        suffix='.part',
+        prefix=f".{filename}.",
+        suffix=".part",
         dir=cache_dir,
     )
     os.close(file_descriptor)
@@ -116,7 +81,7 @@ def download(name, cache_dir=None, *, data_root=None):
                 timeout=DOWNLOAD_TIMEOUT,
                 verify=True,
             ) as response,
-            open(temporary_path, 'wb') as stream,
+            open(temporary_path, "wb") as stream,
         ):
             response.raise_for_status()
             for chunk in response.iter_content(DOWNLOAD_CHUNK_SIZE):
@@ -127,9 +92,7 @@ def download(name, cache_dir=None, *, data_root=None):
 
         actual_sha1 = digest.hexdigest()
         if not hmac.compare_digest(actual_sha1, sha1_hash):
-            raise RuntimeError(
-                f"Checksum mismatch for downloaded dataset {name!r}"
-            )
+            raise RuntimeError(f"Checksum mismatch for downloaded dataset {name!r}")
         os.chmod(temporary_path, 0o644)
         os.replace(temporary_path, fname)
     finally:
@@ -141,7 +104,7 @@ def download(name, cache_dir=None, *, data_root=None):
 def download_extract(name, folder=None, *, data_root=None):
     """
     Download and extract a zip/tar file.
-    
+
     Args:
         name: the name of the file to download
         folder: the folder to extract the file to (Default: None)
@@ -152,32 +115,36 @@ def download_extract(name, folder=None, *, data_root=None):
     fname = download(name, data_root=data_root)
     base_dir = os.path.dirname(fname)
     data_dir, ext = os.path.splitext(fname)
-    if ext == '.zip':
-        with zipfile.ZipFile(fname, 'r') as fp:
+    if ext == ".zip":
+        with zipfile.ZipFile(fname, "r") as fp:
             archive_entries = fp.namelist()
             top_dirs = {
-                entry.strip('/').split('/', 1)[0]
-                for entry in archive_entries if entry.strip('/')
+                entry.strip("/").split("/", 1)[0]
+                for entry in archive_entries
+                if entry.strip("/")
             }
             if _is_flattened_archive_complete(
-                    base_dir, data_dir, archive_entries, top_dirs):
+                base_dir, data_dir, archive_entries, top_dirs
+            ):
                 data_dir = base_dir
             else:
                 fp.extractall(base_dir)
-    elif ext in ('.tar', '.gz'):
-        with tarfile.open(fname, 'r') as fp:
+    elif ext in (".tar", ".gz"):
+        with tarfile.open(fname, "r") as fp:
             archive_entries = fp.getnames()
             top_dirs = {
-                entry.strip('/').split('/', 1)[0]
-                for entry in archive_entries if entry.strip('/')
+                entry.strip("/").split("/", 1)[0]
+                for entry in archive_entries
+                if entry.strip("/")
             }
             if _is_flattened_archive_complete(
-                    base_dir, data_dir, archive_entries, top_dirs):
+                base_dir, data_dir, archive_entries, top_dirs
+            ):
                 data_dir = base_dir
             else:
                 fp.extractall(base_dir)
     else:
-        assert False, 'only zip/tar files can be extracted'
+        assert False, "only zip/tar files can be extracted"
 
     # Flatten archives that contain a single top-level directory
     # (e.g. fra-eng.zip → fra-eng/fra.txt → avoid fra_eng/fra-eng/fra.txt)
@@ -186,10 +153,11 @@ def download_extract(name, folder=None, *, data_root=None):
             inner_dir = os.path.join(base_dir, top_dirs.pop())
             if os.path.isdir(inner_dir) and inner_dir == data_dir:
                 for item in os.listdir(inner_dir):
-                    shutil.move(os.path.join(inner_dir, item),
-                                os.path.join(base_dir, item))
+                    shutil.move(
+                        os.path.join(inner_dir, item), os.path.join(base_dir, item)
+                    )
                 os.rmdir(inner_dir)
-                data_dir = base_dir   # flattened — point to parent
+                data_dir = base_dir  # flattened — point to parent
 
     return os.path.join(data_dir, folder) if folder else data_dir
 
@@ -202,14 +170,57 @@ def _is_flattened_archive_complete(base_dir, data_dir, entries, top_dirs):
     if os.path.join(base_dir, top_dir) != data_dir:
         return False
 
-    prefix = f'{top_dir}/'
+    prefix = f"{top_dir}/"
     top_level_items = {
-        entry.strip('/')[len(prefix):].split('/', 1)[0]
+        entry.strip("/")[len(prefix) :].split("/", 1)[0]
         for entry in entries
-        if entry.strip('/').startswith(prefix)
-        and entry.strip('/')[len(prefix):]
+        if entry.strip("/").startswith(prefix) and entry.strip("/")[len(prefix) :]
     }
     return bool(top_level_items) and all(
-        os.path.exists(os.path.join(base_dir, item))
-        for item in top_level_items
+        os.path.exists(os.path.join(base_dir, item)) for item in top_level_items
     )
+
+
+def download_kaggle_dataset(
+    owner_dataset: str,
+    destination: Path,
+    *,
+    is_ready: Callable[[Path], bool] | None = None,
+) -> bool:
+    """Download a Kaggle dataset unless its destination is already ready."""
+    destination = Path(destination)
+    populated = destination.is_dir() and any(destination.iterdir())
+    if populated and (is_ready is None or is_ready(destination)):
+        print(f"  Already exists: {destination}")
+        return True
+    if populated:
+        print(f"  Existing download is incomplete; retrying: {destination}")
+
+    try:
+        import kagglehub
+    except ImportError:
+        print(
+            "  SKIP: kagglehub not installed. "
+            "Install via: uv sync --no-dev --extra celeba"
+        )
+        return False
+
+    kagglehub.dataset_download(
+        owner_dataset,
+        output_dir=os.fspath(destination),
+    )
+    if not destination.is_dir() or not any(destination.iterdir()):
+        raise RuntimeError(f"Kaggle download produced no files under {destination}")
+    if is_ready is not None and not is_ready(destination):
+        raise RuntimeError(f"Kaggle download is incomplete under {destination}")
+    print(f"  Downloaded to: {destination}")
+    return True
+
+
+__all__ = [
+    "DATA_HUB",
+    "DATA_URL",
+    "download",
+    "download_extract",
+    "download_kaggle_dataset",
+]

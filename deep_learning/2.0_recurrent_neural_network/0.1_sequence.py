@@ -5,7 +5,7 @@ Sequence Models for Time Series Data
 import torch
 from torch import nn
 
-from dl_utils.data.vision import load_array
+from dl_utils.data.loading import load_array
 from dl_utils.evaluation.supervised import evaluate_loss
 from dl_utils.plot.figures import plot
 

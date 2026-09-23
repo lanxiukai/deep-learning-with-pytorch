@@ -4,8 +4,9 @@ Linear Regression (Concise Implementation)
 
 import torch
 from torch import nn
+
 from dl_utils.d2l.linear import synthetic_data
-from dl_utils.data.vision import load_array
+from dl_utils.data.loading import load_array
 
 if __name__ == '__main__':
     true_w = torch.tensor([2, -3.4])
