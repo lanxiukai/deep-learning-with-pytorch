@@ -3,14 +3,18 @@ Learning Rate Scheduler
 '''
 
 import math
+
 import torch
-from dl_utils.plot._backend import pyplot as plt
 from torch import nn
 from torch.optim import lr_scheduler
+
 from dl_utils.d2l.data_fashion import load_data_fashion_mnist
-from dl_utils.runtime.devices import try_gpu
+from dl_utils.evaluation.supervised import accuracy, evaluate_accuracy_gpu
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.figures import Animator, plot
-from dl_utils.training.metrics import Accumulator, accuracy, evaluate_accuracy_gpu
+from dl_utils.runtime.devices import try_gpu
+from dl_utils.training.metrics import Accumulator
+
 
 def net_fn():
     model = nn.Sequential(

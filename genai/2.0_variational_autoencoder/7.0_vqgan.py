@@ -82,8 +82,8 @@ from dl_utils.gan.sn_gan import (
 )
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.training_artifacts import save_training_metrics
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,

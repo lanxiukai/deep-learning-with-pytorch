@@ -1,4 +1,4 @@
-"""Image-grid rendering primitives."""
+"""Image-grid rendering primitives for already generated images."""
 
 import math
 import os
@@ -7,7 +7,6 @@ from typing import Any
 import torch
 import torchvision
 
-from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot._backend import pyplot as _plt
 
 
@@ -157,56 +156,3 @@ def save_image_row_grid(
             fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
         finally:
             _plt.close(fig)
-
-
-def save_training_samples(
-    generator,
-    noise,
-    labels,
-    output_path,
-    *,
-    class_names,
-    title,
-    dpi=200,
-    shared_latents_across_classes=False,
-    inference_batch_size: int | None = None,
-    class_indices=None,
-) -> None:
-    """Generate and save fixed class-conditional samples grouped by class."""
-    class_names = tuple(class_names)
-    if class_indices is None:
-        class_indices = tuple(range(len(class_names)))
-    else:
-        class_indices = tuple(class_indices)
-    if len(class_indices) != len(class_names):
-        raise ValueError("class_indices and class_names must have equal length.")
-    sample_batch_size = (
-        len(noise) if inference_batch_size is None else inference_batch_size
-    )
-    samples = generate_in_batches(
-        (noise, labels),
-        sample_batch_size,
-        lambda noise_batch, label_batch: generator(
-            noise_batch,
-            label_batch,
-        ).float(),
-        module=generator,
-    )
-
-    cpu_labels = labels.cpu()
-    image_rows = [samples[cpu_labels == class_index] for class_index in class_indices]
-    save_image_row_grid(
-        image_rows,
-        [name.title() for name in class_names],
-        output_path,
-        title=title,
-        column_labels=[
-            (
-                f"Shared z {index + 1}"
-                if shared_latents_across_classes
-                else f"Sample {index + 1}"
-            )
-            for index in range(len(image_rows[0]) if image_rows else 0)
-        ],
-        dpi=dpi,
-    )

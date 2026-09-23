@@ -55,7 +55,7 @@ from dl_utils.gan.progressive import (
 from dl_utils.gan.sample_artifacts import save_gan_samples
 from dl_utils.gan.stylegan_layers import RESOLUTIONS
 from dl_utils.gan.training_state import append_gan_metrics, start_gan_checkpoint
-from dl_utils.plot.figures import save_loss_panels
+from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.ema import update_ema_by_images

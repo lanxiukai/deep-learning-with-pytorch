@@ -3,13 +3,16 @@ Model Selection, Underfitting and Overfitting (Polynomial Regression)
 '''
 
 import math
+
 import numpy as np
 import torch
 from torch import nn
+
 from dl_utils.d2l.data_fashion import train_epoch_ch3
 from dl_utils.data.vision import load_array
+from dl_utils.evaluation.supervised import evaluate_loss
 from dl_utils.plot.figures import Animator
-from dl_utils.training.metrics import evaluate_loss
+
 
 def train(train_features, test_features, train_labels, test_labels, num_epochs=400):
     loss = nn.MSELoss(reduction='none')

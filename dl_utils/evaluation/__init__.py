@@ -1,1 +1,1 @@
-"""Shared image features, distribution metrics, and reconstruction metrics."""
+"""Supervised, reconstruction, and feature-distribution evaluation."""

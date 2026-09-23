@@ -19,11 +19,23 @@ environment or dependency workflow.
 | [data/](data/) | Downloads, datasets, image preparation, and loaders | [celeba.py](data/celeba.py) and [vision.py](data/vision.py) |
 | [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
 | [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
-| [evaluation/](evaluation/) | Shared image features, distribution metrics, and reconstruction metrics | [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
-| [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [accelerator.py](training/accelerator.py), [checkpoints.py](training/checkpoints.py), and [metrics.py](training/metrics.py) |
-| [filesystem/](filesystem/), [plot/](plot/) | Project paths, output directories, and figures | [figures.py](plot/figures.py) and [images.py](plot/images.py) |
+| [evaluation/](evaluation/) | Supervised evaluation, image features, distribution metrics, and reconstruction metrics | [supervised.py](evaluation/supervised.py), [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
+| [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [accelerator.py](training/accelerator.py), [checkpoints.py](training/checkpoints.py), [metrics.py](training/metrics.py), and [history.py](training/history.py) |
+| [filesystem/](filesystem/), [plot/](plot/) | Project paths, output directories, and figures | [figures.py](plot/figures.py), [curves.py](plot/curves.py), and [images.py](plot/images.py) |
 
 ## Design boundaries
+
+- [training/metrics.py](training/metrics.py) owns scalar accumulators;
+  [evaluation/supervised.py](evaluation/supervised.py) owns dataset-level
+  accuracy and loss evaluation. [training/history.py](training/history.py)
+  aligns metric histories and writes CSV records without running models.
+- [plot/curves.py](plot/curves.py) and [plot/images.py](plot/images.py) render
+  prepared data. [training/artifacts.py](training/artifacts.py) composes
+  history records, inference, and plotting for training outputs, including
+  conditional sample grids and optional metric curves. GAN-specific loss
+  layouts belong to [gan/artifacts.py](gan/artifacts.py).
+  Existing D2L and EBM imports through `training.metrics` and `plot.figures`
+  remain available; new callers use the focused modules above.
 
 - Foundation lessons import the [DDPM](diffusion/diffusion_ddpm.py),
   score-SDE, flow-matching, and U-Net modules directly. The

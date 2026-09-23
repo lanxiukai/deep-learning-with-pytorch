@@ -49,6 +49,7 @@ from tqdm import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.gan.artifacts import save_loss_curves
 from dl_utils.gan.cyclegan import (
     LAMBDA_CYCLE,
     CycleGANDiscriminator,
@@ -58,7 +59,6 @@ from dl_utils.gan.cyclegan import (
     train_cyclegan_epoch,
 )
 from dl_utils.plot._backend import pyplot as plt
-from dl_utils.plot.figures import save_loss_curves
 from dl_utils.runtime.devices import try_gpu
 
 # installation

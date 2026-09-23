@@ -14,11 +14,12 @@ from tqdm import tqdm
 
 from dl_utils.data.vision import image_folder_loader
 from dl_utils.filesystem.directories import reset_dir
-from dl_utils.plot.figures import save_loss_panels
+from dl_utils.plot.curves import save_loss_panels
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
-from dl_utils.training.metrics import MetricAccumulator, save_metrics_csv
+from dl_utils.training.history import save_metrics_csv
+from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.vae_common import (
     ImageDecoder,
     ImageEncoder,

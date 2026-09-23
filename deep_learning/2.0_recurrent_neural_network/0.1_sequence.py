@@ -4,9 +4,10 @@ Sequence Models for Time Series Data
 
 import torch
 from torch import nn
+
 from dl_utils.data.vision import load_array
+from dl_utils.evaluation.supervised import evaluate_loss
 from dl_utils.plot.figures import plot
-from dl_utils.training.metrics import evaluate_loss
 
 T = 1000  # Generate a total of 1000 points
 time = torch.arange(1, T + 1, dtype=torch.float32)

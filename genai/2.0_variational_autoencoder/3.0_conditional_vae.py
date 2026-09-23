@@ -67,9 +67,9 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.training_artifacts import save_training_metrics
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
     conditional_vae_loss,

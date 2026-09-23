@@ -12,7 +12,7 @@ from dl_utils.gan.dcgan import (
     initialize_dcgan_weights,
     save_dcgan_sample_grid,
 )
-from dl_utils.plot.figures import save_loss_panels
+from dl_utils.plot.curves import save_loss_panels
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.training.metrics import MetricAccumulator
 

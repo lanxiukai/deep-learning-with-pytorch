@@ -52,6 +52,7 @@ from tqdm import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.gan.artifacts import save_loss_curves
 from dl_utils.gan.pix2pix import (
     CelebAColorizationDataset,
     ConditionalPatchDiscriminator,
@@ -61,7 +62,6 @@ from dl_utils.gan.pix2pix import (
     initialize_pix2pix_weights,
 )
 from dl_utils.plot._backend import pyplot as plt
-from dl_utils.plot.figures import save_loss_curves
 from dl_utils.runtime.devices import try_gpu
 
 PROJECT_ROOT = infer_project_root()
