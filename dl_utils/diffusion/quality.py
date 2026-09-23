@@ -14,94 +14,9 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.utils import save_image
 
 from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
-from dl_utils.diffusion.image_quality import (
-    FeatureMoments,
-    TorchvisionInceptionFeatures,
-    frechet_distance,
-)
 from dl_utils.diffusion.lesson_utils import append_record
-
-
-def polynomial_mmd(first: torch.Tensor, second: torch.Tensor) -> float:
-    """Unbiased squared MMD with the degree-three KID polynomial kernel."""
-    if first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]:
-        raise ValueError("Expected feature matrices with matching dimensions.")
-    first_count, second_count = len(first), len(second)
-    if min(first_count, second_count) < 2:
-        raise ValueError("MMD requires at least two samples per distribution.")
-    first, second = first.double(), second.double()
-    dim = first.shape[1]
-    first_kernel = (first @ first.T / dim + 1).pow(3)
-    second_kernel = (second @ second.T / dim + 1).pow(3)
-    cross_kernel = (first @ second.T / dim + 1).pow(3)
-    return float(
-        (first_kernel.sum() - first_kernel.diagonal().sum()) / (first_count * (first_count - 1))
-        + (second_kernel.sum() - second_kernel.diagonal().sum()) / (second_count * (second_count - 1))
-        - 2 * cross_kernel.mean()
-    )
-
-
-def feature_precision_recall(real, fake, *, neighbors=3, chunk_size=256):
-    """k-NN manifold estimates: precision measures fidelity, recall coverage.
-
-    Each ball uses its own manifold center's k-th *other* neighbor radius.
-    Chunking only bounds distance-matrix memory; it does not approximate k-NN.
-    """
-    if min(len(real), len(fake)) <= neighbors:
-        raise ValueError("Precision/recall needs more samples than neighbors.")
-
-    def radii(features):
-        distances = []
-        for start in range(0, len(features), chunk_size):
-            block = features[start : start + chunk_size]
-            matrix = torch.cdist(block, features)
-            matrix[
-                torch.arange(len(block)), torch.arange(start, start + len(block))
-            ] = float("inf")
-            distances.append(matrix.topk(neighbors, largest=False).values[:, -1])
-        return torch.cat(distances)
-
-    def coverage(queries, centers, radius):
-        inside = []
-        for block in queries.split(chunk_size):
-            inside.append((torch.cdist(block, centers) <= radius[None]).any(dim=1))
-        return torch.cat(inside).float().mean().item()
-
-    return coverage(fake, real, radii(real)), coverage(real, fake, radii(fake))
-
-
-def feature_metrics(real, fake, *, seed=20260909, kid_subsets=20, neighbors=3):
-    """Compute distribution metrics; unbiased KID estimates may be negative."""
-    real, fake = real.cpu().float(), fake.cpu().float()
-    moments = []
-    for features in (real, fake):
-        value = FeatureMoments(features.shape[1])
-        value.update(features)
-        moments.append(value)
-    rng = torch.Generator().manual_seed(seed)
-    subset_size = min(512, len(real), len(fake))
-    kid = torch.tensor(
-        [
-            polynomial_mmd(
-                real[torch.randperm(len(real), generator=rng)[:subset_size]],
-                fake[torch.randperm(len(fake), generator=rng)[:subset_size]],
-            )
-            for _ in range(kid_subsets)
-        ],
-        dtype=torch.float64,
-    )
-    precision, recall = feature_precision_recall(real, fake, neighbors=neighbors)
-    return {
-        "torchvision_fid": frechet_distance(*moments),
-        "torchvision_kid_mean": kid.mean().item(),
-        "torchvision_kid_subset_std": kid.std(unbiased=False).item(),
-        "feature_precision": precision,
-        "feature_recall": recall,
-        "feature_dim": real.shape[1],
-        "kid_subsets": kid_subsets,
-        "kid_subset_size": subset_size,
-        "manifold_neighbors": neighbors,
-    }
+from dl_utils.evaluation.distribution_metrics import feature_metrics
+from dl_utils.evaluation.image_features import TorchvisionInceptionFeatures
 
 
 class DiffusionQualityMonitor:

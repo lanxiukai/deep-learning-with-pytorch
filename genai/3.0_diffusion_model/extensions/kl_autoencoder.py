@@ -25,12 +25,12 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.diffusion.image_quality import structural_similarity_index
 from dl_utils.diffusion.lesson_utils import (
     OUTPUT_ROOT,
     add_data_arguments,
     make_image_loader,
 )
+from dl_utils.evaluation.reconstruction_metrics import structural_similarity_index
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,

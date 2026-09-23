@@ -18,14 +18,15 @@ environment or dependency workflow.
 | [d2l/](d2l/) | D2L-style textbook helpers | The relevant lesson call site |
 | [data/](data/) | Downloads, datasets, image preparation, and loaders | [celeba.py](data/celeba.py) and [vision.py](data/vision.py) |
 | [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
+| [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
+| [evaluation/](evaluation/) | Shared image features, distribution metrics, and reconstruction metrics | [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
 | [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [accelerator.py](training/accelerator.py), [checkpoints.py](training/checkpoints.py), and [metrics.py](training/metrics.py) |
 | [filesystem/](filesystem/), [plot/](plot/) | Project paths, output directories, and figures | [figures.py](plot/figures.py) and [images.py](plot/images.py) |
 
 ## Design boundaries
 
-- [diffusion/ddpm.py](diffusion/ddpm.py) is a compatibility facade. New
-  foundation lessons import the DDPM, score-SDE, flow-matching, and U-Net
-  modules directly. The
+- Foundation lessons import the [DDPM](diffusion/diffusion_ddpm.py),
+  score-SDE, flow-matching, and U-Net modules directly. The
   [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) follows the
   128px CelebA main line: discrete denoising, continuous score learning, then
   direct velocity learning. `diffusion/flow_matching.py` owns conditional
@@ -35,11 +36,14 @@ environment or dependency workflow.
   `diffusion/lesson_utils.py` shares data, binned losses, and checkpoint
   handling while objectives and optimization remain in scripts;
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
-  using Inception/Fréchet primitives in
-  [diffusion/image_quality.py](diffusion/image_quality.py) and its own MMD
-  helper. The image-quality module belongs to diffusion and flow matching,
-  including SSIM for the latent-diffusion first stage. GAN evaluation keeps
-  its own Inception/Fréchet implementation in `gan/quality.py`.
+  using shared [image features](evaluation/image_features.py) and
+  [distribution metrics](evaluation/distribution_metrics.py).
+  [gan/quality.py](gan/quality.py) retains its CelebA generator evaluation
+  protocol and seeded 256D projection; diffusion monitoring retains full
+  2048D features, sampling callbacks, and NFE accounting. Sharing primitives
+  does not make these evaluation protocols interchangeable.
+  [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
+  SSIM, including for the latent-diffusion first stage.
 - [gan/training.py](gan/training.py) owns shared BF16 runtime selection, data
   access, output paths, EMA setup, checkpoints, and sample artifacts for the
   ProGAN-to-StyleGAN2 sequence. Those lesson scripts retain model schedules,
@@ -47,9 +51,12 @@ environment or dependency workflow.
 - [gan/conditional_training.py](gan/conditional_training.py) owns the repeated
   conditional hinge epoch used by SN-GAN, SAGAN, and BigGAN. Their lesson
   scripts retain lesson-specific hyperparameters, update ratios, regularization,
-  EMA, checkpoints, and artifacts.
-- [gan/inference.py](gan/inference.py) shares paired class sample grids,
-  bounded generation, and EMA normalization-buffer calibration.
+  EMA, checkpoints, and artifacts. [gan/update_schedule.py](gan/update_schedule.py)
+  owns discriminator-to-generator update schedules.
+- [inference/](inference/) shares bounded tensor inference and paired
+  class-latent grids across GANs, VAEs, and plotting helpers without depending
+  on a model family. [gan/normalization.py](gan/normalization.py) retains
+  EMA normalization-buffer calibration for conditional GAN generators.
 - [data/celeba.py](data/celeba.py) loads aligned faces using the official
   partitions and optional binary attributes. Conditional GANs use Smiling
   labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images
@@ -68,13 +75,17 @@ environment or dependency workflow.
   [vae/vae_common.py](vae/vae_common.py); all use the existing glasses-256 cache.
   Its lesson entries reuse [data/loading.py](data/loading.py) and the shared
   model-weight checkpoint helpers. Sampling reuses the fixed class-noise grid
-  and bounded inference in [gan/inference.py](gan/inference.py), Gaussian
+  and bounded inference in [inference/](inference/), Gaussian
   reparameterization in [vae/vae_common.py](vae/vae_common.py), and labeled
   grids in [plot/images.py](plot/images.py). The scripts retain optimization
   order, hyperparameters, and artifact timing.
 - [training/checkpoints.py](training/checkpoints.py) owns serialization and
   state restoration; [training/session.py](training/session.py) manages output
   lifecycles without owning optimization loops.
+- [training/ema.py](training/ema.py) shares parameter averaging across model
+  families; [training/validation.py](training/validation.py) checks finite
+  model, optimizer, and auxiliary state. Worker-count resolution belongs to
+  [data/loading.py](data/loading.py).
 
 ## API and side effects
 

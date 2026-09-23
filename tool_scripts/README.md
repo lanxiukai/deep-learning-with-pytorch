@@ -124,9 +124,10 @@ The encoded CelebA loader selects file-system tensor sharing in its workers
 for the local Python/CUDA JPEG runtime. This applies to both fresh training
 and refinement, without changing the parent process's sharing strategy.
 
-The evaluation and tuning code is retained for future VAE adaptation. The GAN
-quality evaluator owns its feature extraction and moment calculations in
-`dl_utils.gan.quality`; VAE sampling, objectives, and acceptance criteria still
+The evaluation and tuning code is retained for future VAE adaptation. Shared
+feature extraction and distribution metrics live in `dl_utils.evaluation`;
+`dl_utils.gan.quality` owns the CelebA generator protocol and seeded 256D
+projection. VAE sampling, objectives, and acceptance criteria still
 need model-specific adaptation. Smoke runs, temporary benchmarks, logs,
 and superseded experiment checkpoints are disposable after accepted artifacts
 have been copied and checked.

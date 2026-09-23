@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 
 from dl_utils.data.glasses import glasses_data_config
 from dl_utils.filesystem.directories import reset_dir
-from dl_utils.gan.inference import generate_in_batches
+from dl_utils.inference.batching import generate_in_batches
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator

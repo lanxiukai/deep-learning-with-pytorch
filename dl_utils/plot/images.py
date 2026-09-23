@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import torchvision
 
-from dl_utils.gan.inference import generate_in_batches
+from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot._backend import pyplot as _plt
 
 

@@ -21,9 +21,9 @@ from dl_utils.data.celeba import (
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.biggan import BigGANGenerator
-from dl_utils.gan.inference import generate_in_batches
 from dl_utils.gan.sagan import SAGANGenerator
 from dl_utils.gan.sn_gan import SNGenerator
+from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed

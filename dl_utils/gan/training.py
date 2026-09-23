@@ -15,10 +15,11 @@ from torch import nn
 from torch.optim import Optimizer
 
 from dl_utils.data.celeba import CelebATrainingStream
+from dl_utils.data.loading import resolve_num_workers
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.inference import generate_in_batches
 from dl_utils.gan.stylegan_common import denormalize
+from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot.images import save_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
@@ -81,18 +82,6 @@ class FixedResolutionGANOptions:
     path_batch_shrink: int
     num_workers: int
     prefetch_factor: int
-
-
-def resolve_num_workers(requested: int | None, fallback: int = 4) -> int:
-    """Resolve a bounded DataLoader worker count for the current host."""
-    if fallback < 0:
-        raise ValueError("fallback must be non-negative.")
-    num_workers = (
-        min(8, os.cpu_count() or fallback) if requested is None else int(requested)
-    )
-    if num_workers < 0:
-        raise ValueError("num_workers must be non-negative.")
-    return num_workers
 
 
 def resolve_progressive_gan_options(
@@ -335,53 +324,6 @@ def append_gan_metrics(
         history[name].append(float(value))
 
 
-def _iter_named_tensors(value: Any, prefix: str):
-    """Yield tensors from nested mappings and sequences with readable names."""
-    if isinstance(value, torch.Tensor):
-        yield prefix, value
-    elif isinstance(value, Mapping):
-        for key, child in value.items():
-            yield from _iter_named_tensors(child, f"{prefix}.{key}")
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(value):
-            yield from _iter_named_tensors(child, f"{prefix}[{index}]")
-
-
-def validate_finite_gan_state(
-    models: Mapping[str, nn.Module],
-    optimizers: Mapping[str, Optimizer],
-    *,
-    extra_tensors: Mapping[str, torch.Tensor] | None = None,
-) -> None:
-    """Reject non-finite model, optimizer, or auxiliary training state."""
-    named_tensors = []
-    for name, model in models.items():
-        named_tensors.extend(_iter_named_tensors(model.state_dict(), f"models.{name}"))
-    for name, optimizer in optimizers.items():
-        named_tensors.extend(
-            _iter_named_tensors(tuple(optimizer.state.values()), f"optimizers.{name}")
-        )
-    named_tensors.extend(_iter_named_tensors(dict(extra_tensors or {}), "extra"))
-    tensors_by_device: dict[torch.device, list[tuple[str, torch.Tensor]]] = {}
-    for name, tensor in named_tensors:
-        if tensor.is_floating_point() or tensor.is_complex():
-            tensors_by_device.setdefault(tensor.device, []).append((name, tensor))
-
-    nonfinite = []
-    for entries in tensors_by_device.values():
-        finite = torch.stack([torch.isfinite(tensor).all() for _, tensor in entries])
-        finite_values = finite.cpu().tolist()
-        nonfinite.extend(
-            name
-            for (name, _), is_finite in zip(entries, finite_values, strict=True)
-            if not is_finite
-        )
-    if nonfinite:
-        shown = ", ".join(nonfinite[:5])
-        suffix = "" if len(nonfinite) <= 5 else f" (+{len(nonfinite) - 5} more)"
-        raise FloatingPointError(f"non-finite GAN state: {shown}{suffix}")
-
-
 def save_gan_samples(
     generator: nn.Module,
     fixed_z: torch.Tensor,
@@ -423,9 +365,7 @@ __all__ = [
     "initialize_gan_models",
     "prepare_gan_run",
     "resolve_fixed_resolution_gan_options",
-    "resolve_num_workers",
     "resolve_progressive_gan_options",
     "save_gan_samples",
     "start_gan_checkpoint",
-    "validate_finite_gan_state",
 ]

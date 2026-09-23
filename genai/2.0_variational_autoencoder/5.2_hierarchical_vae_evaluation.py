@@ -54,7 +54,7 @@ from dl_utils.data.glasses import glasses_data_config, glasses_dataset
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.inference import generate_in_batches
+from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed

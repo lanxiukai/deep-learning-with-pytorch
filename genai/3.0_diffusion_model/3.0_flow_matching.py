@@ -30,7 +30,7 @@ from dl_utils.diffusion.lesson_utils import (
 from dl_utils.diffusion.quality import DiffusionQualityMonitor
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.training.optimization import update_ema
+from dl_utils.training.ema import update_ema
 
 TIME_EMBEDDING_SCALE = 1000.0
 

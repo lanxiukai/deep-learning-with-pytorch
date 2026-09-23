@@ -14,11 +14,7 @@ from torchvision.utils import save_image
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.quality import GenerationQualityEvaluator
 from dl_utils.gan.stylegan_common import ProgressivePhase, denormalize
-from dl_utils.gan.training import (
-    initialize_gan_models,
-    prepare_gan_run,
-    validate_finite_gan_state,
-)
+from dl_utils.gan.training import initialize_gan_models, prepare_gan_run
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import (
     TrainingCheckpoint,
@@ -26,6 +22,7 @@ from dl_utils.training.checkpoints import (
     load_training_checkpoint,
     save_model_weights,
 )
+from dl_utils.training.validation import validate_finite_training_state
 
 MODEL_CLASSES = {
     "progan": ("ProGANGenerator", "ProGANDiscriminator"),
@@ -328,7 +325,7 @@ def refine_gan(args, *, model_name, lesson):
         seconds = time.perf_counter() - start
         state["training_seconds"] += seconds
         state["added_images"] += count * batch_size
-        validate_finite_gan_state(models, optimizers)
+        validate_finite_training_state(models, optimizers)
         quality, samples = evaluator.evaluate(ema)
         record = {
             "added_images": state["added_images"],

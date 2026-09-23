@@ -12,7 +12,8 @@ from torchvision.datasets import ImageFolder
 
 from dl_utils.data.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
-from dl_utils.gan.inference import generate_in_batches, make_fixed_class_latent_grid
+from dl_utils.inference.batching import generate_in_batches
+from dl_utils.inference.latent_sampling import make_fixed_class_latent_grid
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.training.metrics import MetricAccumulator

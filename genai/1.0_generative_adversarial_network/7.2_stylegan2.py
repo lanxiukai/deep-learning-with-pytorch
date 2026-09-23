@@ -54,13 +54,13 @@ from dl_utils.gan.training import (
     resolve_fixed_resolution_gan_options,
     save_gan_samples,
     start_gan_checkpoint,
-    validate_finite_gan_state,
 )
 from dl_utils.plot.figures import save_loss_panels
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
+from dl_utils.training.ema import update_ema_by_images
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.optimization import update_ema_by_images
+from dl_utils.training.validation import validate_finite_training_state
 
 BATCH_SIZE = 64
 TOTAL_KIMG = 2_500
@@ -396,7 +396,7 @@ def main(args):
             options.r1_batch_shrink,
             options.path_batch_shrink,
         )
-        validate_finite_gan_state(
+        validate_finite_training_state(
             models,
             optimizers,
             extra_tensors={"path_mean": path_mean},

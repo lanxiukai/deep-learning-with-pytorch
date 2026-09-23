@@ -40,10 +40,9 @@ from dl_utils.gan.biggan import (
     modified_orthogonal_regularization,
 )
 from dl_utils.gan.conditional_training import train_conditional_hinge_epoch
-from dl_utils.gan.inference import (
-    make_fixed_class_latent_grid,
-    refresh_generator_statistics,
-)
+from dl_utils.gan.normalization import refresh_generator_statistics
+from dl_utils.gan.update_schedule import UpdateRatioSchedule
+from dl_utils.inference.latent_sampling import make_fixed_class_latent_grid
 from dl_utils.plot.figures import save_loss_panels
 from dl_utils.plot.images import save_training_samples
 from dl_utils.runtime.devices import try_gpu
@@ -53,7 +52,7 @@ from dl_utils.training.accelerator import (
     make_fused_adam,
     resolve_training_precision,
 )
-from dl_utils.training.optimization import UpdateRatioSchedule, update_ema
+from dl_utils.training.ema import update_ema
 from dl_utils.training.session import TrainingSession
 
 PROJECT_ROOT = infer_project_root()

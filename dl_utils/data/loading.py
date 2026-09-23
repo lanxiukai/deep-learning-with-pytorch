@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from functools import partial
 
 import torch
@@ -57,4 +58,16 @@ def make_device_aware_loader(
     )
 
 
-__all__ = ["make_device_aware_loader"]
+def resolve_num_workers(requested: int | None, fallback: int = 4) -> int:
+    """Resolve a bounded DataLoader worker count for the current host."""
+    if fallback < 0:
+        raise ValueError("fallback must be non-negative.")
+    num_workers = (
+        min(8, os.cpu_count() or fallback) if requested is None else int(requested)
+    )
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative.")
+    return num_workers
+
+
+__all__ = ["make_device_aware_loader", "resolve_num_workers"]

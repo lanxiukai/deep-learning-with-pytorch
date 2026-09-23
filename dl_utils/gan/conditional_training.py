@@ -12,9 +12,9 @@ from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,
     generator_hinge_loss,
 )
+from dl_utils.gan.update_schedule import UpdateRatioSchedule
 from dl_utils.training.accelerator import BF16Precision, FP32Precision
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.optimization import UpdateRatioSchedule
 
 
 @dataclass(frozen=True)

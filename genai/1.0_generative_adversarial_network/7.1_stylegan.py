@@ -56,13 +56,13 @@ from dl_utils.gan.training import (
     resolve_progressive_gan_options,
     save_gan_samples,
     start_gan_checkpoint,
-    validate_finite_gan_state,
 )
 from dl_utils.plot.figures import save_loss_panels
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
+from dl_utils.training.ema import update_ema_by_images
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.optimization import update_ema_by_images
+from dl_utils.training.validation import validate_finite_training_state
 
 BATCH_SIZES = {4: 256, 8: 256, 16: 128, 32: 64, 64: 64, 128: 64}
 PHASE_KIMG = 200
@@ -352,7 +352,7 @@ def main(args):
             options.d_reg_every,
             options.reg_batch_shrink,
         )
-        validate_finite_gan_state(models, optimizers)
+        validate_finite_training_state(models, optimizers)
         seen_images += phase.num_images
         seen_kimg = seen_images / 1_000
         append_gan_metrics(loss_history, seen_kimg, metrics)
