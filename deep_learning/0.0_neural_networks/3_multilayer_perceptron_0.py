@@ -4,12 +4,14 @@ Multilayer Perceptron
 
 import torch
 from torch import nn
+
 from dl_utils.d2l.data_fashion import (
     load_data_fashion_mnist,
     predict_ch3,
     train_ch3,
 )
-from dl_utils.training.timing import Timer
+from dl_utils.runtime.timing import Timer
+
 
 def relu(X):
     return torch.max(X, torch.zeros_like(X))

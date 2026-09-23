@@ -1,1 +1,1 @@
-"""Runtime device selection and reproducibility utilities."""
+"""Device configuration, GPU targets, random state, and elapsed-time utilities."""

@@ -4,8 +4,8 @@ import os
 import torch
 from tqdm.auto import tqdm
 
-from ..devices.randomness import set_seed
 from ..plot.images import save_grid
+from ..runtime.randomness import set_seed
 from ..training.timing import Timer
 from ._ebm_types import _RBMSamplingConfig
 from .rbm_primitives import rbm_energy_free_energy_fast

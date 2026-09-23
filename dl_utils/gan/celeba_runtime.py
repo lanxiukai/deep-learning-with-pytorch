@@ -14,13 +14,9 @@ from torch import nn
 from dl_utils.data.celeba import CelebATrainingStream
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.runtime.devices import try_gpu
+from dl_utils.runtime.devices import configure_device, try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.training.accelerator import (
-    BF16Precision,
-    configure_device,
-    resolve_bf16_precision,
-)
+from dl_utils.training.precision import BF16Precision, resolve_bf16_precision
 
 
 @dataclass

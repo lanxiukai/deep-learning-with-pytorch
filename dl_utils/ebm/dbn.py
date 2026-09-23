@@ -4,8 +4,8 @@ import os
 import torch
 from tqdm.auto import tqdm
 
-from ..devices.randomness import set_seed
 from ..plot.images import save_grid
+from ..runtime.randomness import set_seed
 from ..training.timing import Timer
 from ._ebm_types import LayerConfig, _DBNRunConfig, _DBNSamplingConfig, layer_cfg
 from .rbm_model import BinaryRBM

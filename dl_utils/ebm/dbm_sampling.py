@@ -8,9 +8,9 @@ from imageio.typing import ArrayLike
 from tqdm.auto import tqdm
 
 from ..data.vision import vision_loaders
-from ..devices.randomness import set_seed
 from ..filesystem.directories import reset_dir
 from ..plot.images import save_grid
+from ..runtime.randomness import set_seed
 from ..training.timing import Timer
 from ._ebm_types import _DBMConfig
 from .dbm_diagnostics import _compute_mcmc_metrics, _save_mcmc_convergence_plots

@@ -50,9 +50,10 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.runtime.timing import Timer
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.training.timing import Timer, format_epoch_timing
+from dl_utils.training.timing import format_epoch_timing
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "mnist"

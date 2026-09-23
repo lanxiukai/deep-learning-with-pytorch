@@ -20,13 +20,13 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.celeba_evaluation import CelebAGeneratorEvaluator
 from dl_utils.gan.celeba_runtime import GANRun, initialize_gan_models, prepare_gan_run
 from dl_utils.gan.stylegan_layers import denormalize
-from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import (
     TrainingCheckpoint,
     load_model_weights,
     load_training_checkpoint,
     save_model_weights,
 )
+from dl_utils.training.optimization import make_fused_adam
 from dl_utils.training.validation import validate_finite_training_state
 
 

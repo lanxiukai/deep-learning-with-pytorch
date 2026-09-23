@@ -230,7 +230,7 @@ def final_review(args, output, suite):
     from dl_utils.gan.stylegan import StyleGANGenerator
     from dl_utils.gan.stylegan2 import StyleGenerator
     from dl_utils.gan.stylegan_layers import denormalize
-    from dl_utils.training.accelerator import configure_device
+    from dl_utils.runtime.devices import configure_device
     from dl_utils.training.checkpoints import load_model_weights
 
     torch.set_num_threads(4)

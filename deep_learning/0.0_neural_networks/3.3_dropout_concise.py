@@ -4,8 +4,10 @@ Dropout (Concise Implementation)
 
 import torch
 from torch import nn
+
 from dl_utils.d2l.data_fashion import load_data_fashion_mnist, train_ch3
-from dl_utils.training.timing import Timer
+from dl_utils.runtime.timing import Timer
+
 
 def init_weights(m):
     if type(m) == nn.Linear:

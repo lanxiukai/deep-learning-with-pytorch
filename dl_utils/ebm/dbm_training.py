@@ -7,9 +7,9 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from ..data.vision import TensorDataLoader, vision_loaders
-from ..devices.randomness import set_seed
 from ..filesystem.directories import reset_dir
 from ..plot.images import save_grid
+from ..runtime.randomness import set_seed
 from ..training.metrics import NumericScalar, save_metrics_csv
 from ..training.timing import Timer
 from ._ebm_types import DBMPretrainMetrics, EpochMetrics, MetricHistory, StepMetrics, _DBMConfig, layer_cfg

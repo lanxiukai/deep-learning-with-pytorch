@@ -20,10 +20,20 @@ environment or dependency workflow.
 | [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
 | [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
 | [evaluation/](evaluation/) | Supervised evaluation, image features, distribution metrics, and reconstruction metrics | [supervised.py](evaluation/supervised.py), [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
-| [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [accelerator.py](training/accelerator.py), [checkpoints.py](training/checkpoints.py), [metrics.py](training/metrics.py), and [history.py](training/history.py) |
+| [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [precision.py](training/precision.py), [checkpoints.py](training/checkpoints.py), [metrics.py](training/metrics.py), and [history.py](training/history.py) |
 | [filesystem/](filesystem/), [plot/](plot/) | Project paths, output directories, and figures | [figures.py](plot/figures.py), [curves.py](plot/curves.py), and [images.py](plot/images.py) |
 
 ## Design boundaries
+
+- [runtime/devices.py](runtime/devices.py) owns device selection and explicit
+  CUDA backend configuration. [runtime/randomness.py](runtime/randomness.py)
+  owns seeding and RNG snapshots; [runtime/timing.py](runtime/timing.py) owns
+  the general-purpose timer. Training precision and backward-step policies
+  remain in [training/precision.py](training/precision.py), and optimizer
+  construction belongs to [training/optimization.py](training/optimization.py).
+  Checkpoints retain their existing RNG payload and restoration semantics.
+  `training.timing.Timer` remains available for D2L and EBM callers;
+  [filesystem](filesystem/__init__.py) exports its two path/directory helpers.
 
 - [training/metrics.py](training/metrics.py) owns scalar accumulators;
   [evaluation/supervised.py](evaluation/supervised.py) owns dataset-level

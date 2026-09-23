@@ -2,13 +2,15 @@
 Softmax Regression
 '''
 
-from dl_utils.plot._backend import pyplot as plt
 import torch
+
 from dl_utils.d2l.data_fashion import get_fashion_mnist_labels, load_data_fashion_mnist
+from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.figures import set_axes
 from dl_utils.plot.images import show_images
+from dl_utils.runtime.timing import Timer
 from dl_utils.training.optimization import sgd
-from dl_utils.training.timing import Timer
+
 
 def softmax(X):
     '''Compute the softmax of the input.

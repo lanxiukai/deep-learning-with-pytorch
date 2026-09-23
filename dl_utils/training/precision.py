@@ -1,6 +1,4 @@
-"""Single-GPU precision helpers for long-running training lessons."""
-
-from __future__ import annotations
+"""FP32 and BF16 training contexts and optimizer-step policies."""
 
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -54,18 +52,6 @@ class FP32Precision:
         optimizer.step()
 
 
-def configure_device(device: torch.device) -> None:
-    """Enable safe throughput-oriented CUDA backend settings."""
-    if device.type != "cuda":
-        return
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-    torch.set_float32_matmul_precision("high")
-
-
 def resolve_bf16_precision(device: torch.device) -> BF16Precision:
     """Require CUDA BF16 support and construct the training context."""
     if device.type != "cuda":
@@ -91,20 +77,9 @@ def resolve_training_precision(
     return FP32Precision(device)
 
 
-def make_fused_adam(parameters, *, device: torch.device, **kwargs):
-    """Create Adam with its fused CUDA implementation when available."""
-    return torch.optim.Adam(
-        parameters,
-        fused=device.type == "cuda",
-        **kwargs,
-    )
-
-
 __all__ = [
     "BF16Precision",
     "FP32Precision",
-    "configure_device",
-    "make_fused_adam",
     "resolve_bf16_precision",
     "resolve_training_precision",
 ]

@@ -6,8 +6,8 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from ..data.vision import TensorDataLoader, vision_loaders
-from ..devices.randomness import set_seed
 from ..filesystem.directories import reset_dir
+from ..runtime.randomness import set_seed
 from ..training.timing import Timer
 from ._ebm_types import (
     EpochMetrics,

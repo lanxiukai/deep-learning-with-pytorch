@@ -56,10 +56,10 @@ from dl_utils.gan.sample_artifacts import save_gan_samples
 from dl_utils.gan.stylegan_layers import RESOLUTIONS
 from dl_utils.gan.training_state import append_gan_metrics, start_gan_checkpoint
 from dl_utils.plot.curves import save_loss_panels
-from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.ema import update_ema_by_images
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.training.optimization import make_fused_adam
 from dl_utils.training.validation import validate_finite_training_state
 
 BATCH_SIZES = {4: 256, 8: 256, 16: 128, 32: 64, 64: 64, 128: 64}

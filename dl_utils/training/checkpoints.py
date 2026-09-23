@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import random
 import tempfile
 from collections.abc import Callable, Mapping
 from os import PathLike
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
 
+from dl_utils.runtime.randomness import capture_rng_state, restore_rng_state
 
 CHECKPOINT_FORMAT_VERSION = 1
 
@@ -84,37 +83,6 @@ def atomic_torch_save(payload: Any, path: str | PathLike[str]) -> Path:
     return destination
 
 
-def capture_rng_state() -> dict[str, Any]:
-    """Capture Python, NumPy, CPU Torch, and available CUDA RNG states."""
-    state = {
-        "python": random.getstate(),
-        "numpy": np.random.get_state(),
-        "torch": torch.get_rng_state(),
-    }
-    if torch.cuda.is_available():
-        state["cuda"] = torch.cuda.get_rng_state_all()
-    return state
-
-
-def restore_rng_state(state: Mapping[str, Any]) -> None:
-    """Restore random-number generators captured by :func:`capture_rng_state`."""
-    required = {"python", "numpy", "torch"}
-    missing = sorted(required - set(state))
-    if missing:
-        raise ValueError(f"RNG state is missing keys: {missing}.")
-
-    random.setstate(state["python"])
-    np.random.set_state(state["numpy"])
-    torch.set_rng_state(state["torch"].cpu())
-
-    cuda_states = state.get("cuda")
-    if cuda_states is not None and torch.cuda.is_available():
-        for device_index, device_state in enumerate(
-            cuda_states[: torch.cuda.device_count()]
-        ):
-            torch.cuda.set_rng_state(device_state.cpu(), device_index)
-
-
 def _validate_named_objects(
     objects: Mapping[str, Any],
     expected_type: type,
@@ -127,8 +95,7 @@ def _validate_named_objects(
             raise ValueError(f"{description} keys must be non-empty strings.")
         if not isinstance(value, expected_type):
             raise TypeError(
-                f"{description}[{name!r}] must be a "
-                f"{expected_type.__name__}."
+                f"{description}[{name!r}] must be a {expected_type.__name__}."
             )
 
 
@@ -148,12 +115,9 @@ def make_training_checkpoint(
     return {
         "checkpoint_format_version": CHECKPOINT_FORMAT_VERSION,
         "epoch": epoch,
-        "models": {
-            name: model.state_dict() for name, model in models.items()
-        },
+        "models": {name: model.state_dict() for name, model in models.items()},
         "optimizers": {
-            name: optimizer.state_dict()
-            for name, optimizer in optimizers.items()
+            name: optimizer.state_dict() for name, optimizer in optimizers.items()
         },
         "training_state": dict(training_state or {}),
         "metadata": dict(metadata or {}),
@@ -187,9 +151,7 @@ def save_periodic_checkpoint(
     if archive_every_epochs is not None and archive_every_epochs < 1:
         raise ValueError("archive_every_epochs must be positive or None.")
 
-    should_save = (
-        epoch == 1 or epoch % every_epochs == 0 or epoch == total_epochs
-    )
+    should_save = epoch == 1 or epoch % every_epochs == 0 or epoch == total_epochs
     if not should_save:
         return None
 
@@ -253,9 +215,7 @@ def load_training_checkpoint(
     )
     if not isinstance(checkpoint, dict):
         raise ValueError("Training checkpoint must contain a mapping.")
-    if checkpoint.get("checkpoint_format_version") != (
-        CHECKPOINT_FORMAT_VERSION
-    ):
+    if checkpoint.get("checkpoint_format_version") != (CHECKPOINT_FORMAT_VERSION):
         raise ValueError(
             "Unsupported training checkpoint format: "
             f"{checkpoint.get('checkpoint_format_version')!r}."
@@ -323,9 +283,7 @@ def load_model_weights(
     *,
     device: str | torch.device,
     expected_metadata: Mapping[str, Any] | None = None,
-    config_transform: (
-        Callable[[dict[str, Any]], Mapping[str, Any]] | None
-    ) = None,
+    config_transform: (Callable[[dict[str, Any]], Mapping[str, Any]] | None) = None,
     strict: bool = True,
 ) -> tuple[nn.Module, dict[str, Any]]:
     """Load and validate one metadata-rich model weight checkpoint."""

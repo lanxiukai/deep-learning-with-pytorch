@@ -12,7 +12,7 @@ from torch import nn
 from dl_utils.gan.stylegan_layers import denormalize
 from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot.images import save_grid
-from dl_utils.training.accelerator import BF16Precision
+from dl_utils.training.precision import BF16Precision
 
 
 def save_gan_samples(
