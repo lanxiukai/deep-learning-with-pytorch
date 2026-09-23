@@ -69,12 +69,12 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.training.training_artifacts import save_training_metrics
 from dl_utils.vae.conditional_vae import (
     ConditionalVAE,
     conditional_vae_loss,
     save_conditional_samples,
 )
-from dl_utils.vae.training_artifacts import save_training_metrics
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"

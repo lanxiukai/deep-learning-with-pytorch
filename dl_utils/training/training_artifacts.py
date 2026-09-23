@@ -1,4 +1,4 @@
-"""Save VAE epoch metric CSV files and paginated panels in each run root."""
+"""Save epoch metric CSV files and paginated panels in each run root."""
 
 from pathlib import Path
 

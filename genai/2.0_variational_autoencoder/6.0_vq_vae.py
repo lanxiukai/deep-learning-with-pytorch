@@ -75,6 +75,7 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.training.training_artifacts import save_training_metrics
 from dl_utils.vae.quantization import VQVAE, TokenUsageAccumulator
 from dl_utils.vae.token_prior import (
     PixelCNNPrior,
@@ -83,7 +84,6 @@ from dl_utils.vae.token_prior import (
     sample_pixelcnn_prior_images,
     train_pixelcnn_prior_epoch,
 )
-from dl_utils.vae.training_artifacts import save_training_metrics
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vq_vae"
