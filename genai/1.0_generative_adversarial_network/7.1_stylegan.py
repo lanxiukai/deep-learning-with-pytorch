@@ -41,22 +41,22 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from dl_utils.gan.stylegan import StyleGANDiscriminator, StyleGANGenerator
-from dl_utils.gan.stylegan_common import (
-    RESOLUTIONS,
+from dl_utils.gan.celeba_runtime import initialize_gan_models, prepare_gan_run
+from dl_utils.gan.continuation import continue_gan
+from dl_utils.gan.progressive import (
     build_progressive_schedule,
     phase_alpha,
-    r1_penalty,
-    sample_mixing_latents,
-)
-from dl_utils.gan.training import (
-    append_gan_metrics,
-    initialize_gan_models,
-    prepare_gan_run,
     resolve_progressive_gan_options,
-    save_gan_samples,
-    start_gan_checkpoint,
 )
+from dl_utils.gan.sample_artifacts import save_gan_samples
+from dl_utils.gan.stylegan import StyleGANDiscriminator, StyleGANGenerator
+from dl_utils.gan.stylegan.continuation import (
+    add_refinement_arguments,
+    make_continuation_plan,
+)
+from dl_utils.gan.stylegan_layers import RESOLUTIONS
+from dl_utils.gan.stylegan_training import r1_penalty, sample_mixing_latents
+from dl_utils.gan.training_state import append_gan_metrics, start_gan_checkpoint
 from dl_utils.plot.figures import save_loss_panels
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
@@ -234,11 +234,18 @@ def train_phase(
 
 def main(args):
     if args.refine_from is not None or args.refine_resume is not None:
-        from dl_utils.gan.refinement import refine_gan
-
         if args.resume_from is not None:
             raise ValueError("Use only one progressive or refinement resume mode.")
-        refine_gan(args, model_name="stylegan", lesson=globals())
+        continue_gan(
+            args,
+            plan=make_continuation_plan(
+                args,
+                model_config=MODEL_CONFIG,
+                discriminator_config=DISCRIMINATOR_CONFIG,
+                train_phase=train_phase,
+                d_reg_every=D_REG_EVERY,
+            ),
+        )
         return
     options = resolve_progressive_gan_options(
         phase_kimg=args.phase_kimg,
@@ -406,9 +413,7 @@ def parse_args():
         description="Train the progressive 128x128 CelebA StyleGAN."
     )
     parser.add_argument("--resume-from", type=Path, metavar="CHECKPOINT")
-    from dl_utils.gan.refinement import add_refinement_arguments
-
-    add_refinement_arguments(parser, model_name="stylegan")
+    add_refinement_arguments(parser)
     parser.add_argument("--phase-kimg", type=int)
     parser.add_argument("--batch-scale", type=int)
     parser.add_argument("--d-reg-every", type=int)

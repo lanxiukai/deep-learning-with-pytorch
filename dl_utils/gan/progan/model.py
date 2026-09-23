@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from dl_utils.gan.stylegan_common import (
+from dl_utils.gan.stylegan_layers import (
     RESOLUTIONS,
     EqualizedConv2d,
     EqualizedLinear,
@@ -49,7 +49,7 @@ class GeneratorInputBlock(nn.Module):
         hidden = self.pixel_norm(z)
         hidden = self.linear(hidden).view(z.shape[0], -1, 4, 4)  # (B, C, 4, 4)
         hidden = self.pixel_norm(F.leaky_relu(hidden, 0.2))
-        hidden = self.convolution(hidden)                        # (B, C, 4, 4)
+        hidden = self.convolution(hidden)  # (B, C, 4, 4)
         return self.pixel_norm(F.leaky_relu(hidden, 0.2))
 
 
@@ -75,8 +75,12 @@ class GeneratorBlock(nn.Module):
     def forward(self, inputs):
         # inputs shape: (B, C_in, H, W)
         hidden = filtered_upsample2d(inputs)  # (B, C_in, 2H, 2W)
-        hidden = self.pixel_norm(F.leaky_relu(self.conv1(hidden), 0.2))  # (B, C_out, 2H, 2W)
-        hidden = self.pixel_norm(F.leaky_relu(self.conv2(hidden), 0.2))  # (B, C_out, 2H, 2W)
+        hidden = self.pixel_norm(
+            F.leaky_relu(self.conv1(hidden), 0.2)
+        )  # (B, C_out, 2H, 2W)
+        hidden = self.pixel_norm(
+            F.leaky_relu(self.conv2(hidden), 0.2)
+        )  # (B, C_out, 2H, 2W)
         return hidden
 
 
@@ -164,7 +168,7 @@ class DiscriminatorBlock(nn.Module):
         # inputs shape: (B, C_in, H, W)
         hidden = F.leaky_relu(self.conv1(inputs), 0.2)  # (B, C_in, H, W)
         hidden = F.leaky_relu(self.conv2(hidden), 0.2)  # (B, C_out, H, W)
-        return filtered_downsample2d(hidden)            # (B, C_out, H/2, W/2)
+        return filtered_downsample2d(hidden)  # (B, C_out, H/2, W/2)
 
 
 class ProGANDiscriminator(nn.Module):

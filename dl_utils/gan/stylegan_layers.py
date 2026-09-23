@@ -1,14 +1,11 @@
-"""Shared model and training primitives for compact style-based GAN lessons.
+"""Shared numerical layers for ProGAN, StyleGAN, and StyleGAN2.
 
 The model modules intentionally do not inherit from one another. This module
-contains numerical building blocks and training utilities whose behavior stays
+contains numerical building blocks whose behavior stays
 the same across ProGAN, StyleGAN, and StyleGAN2.
 """
 
 import math
-import random
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from functools import lru_cache
 
 import torch
@@ -25,116 +22,6 @@ CHANNEL_MULTIPLIERS = {
     128: 1,
 }
 NOISE_MODES = frozenset({"random", "fixed", "none"})
-
-
-@dataclass(frozen=True)
-class ProgressivePhase:
-    """One fade-in or stabilization phase at a fixed resolution."""
-
-    resolution: int
-    name: str
-    batch_size: int
-    num_batches: int
-
-    @property
-    def num_images(self):
-        return self.num_batches * self.batch_size
-
-
-def build_progressive_schedule(
-    *,
-    resolutions: Sequence[int],
-    batch_sizes: Mapping[int, int],
-    phase_kimg: int,
-) -> tuple[ProgressivePhase, ...]:
-    """Build the fade-in and stabilization phases used by ProGAN."""
-    resolutions = tuple(int(value) for value in resolutions)
-    phase_kimg = int(phase_kimg)
-    if phase_kimg < 1:
-        raise ValueError("phase_kimg must be positive.")
-    phases = []
-    for resolution in resolutions:
-        batch_size = int(batch_sizes[resolution])
-        target_images = phase_kimg * 1_000
-        if batch_size < 1:
-            raise ValueError("progressive batch sizes must be positive.")
-        names = (
-            ("stabilization",)
-            if resolution == resolutions[0]
-            else ("fade-in", "stabilization")
-        )
-        phases.extend(
-            ProgressivePhase(
-                resolution=resolution,
-                name=name,
-                batch_size=batch_size,
-                num_batches=math.ceil(target_images / batch_size),
-            )
-            for name in names
-        )
-    return tuple(phases)
-
-
-def phase_alpha(phase: ProgressivePhase, batch_index: int) -> float:
-    """Return the linear fade-in coefficient for one phase batch."""
-    if phase.name != "fade-in" or phase.num_batches == 1:
-        return 1.0
-    return batch_index / (phase.num_batches - 1)
-
-
-def sample_mixing_latents(
-    batch_size: int,
-    z_dim: int,
-    device: torch.device,
-    mixing_probability: float,
-) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Sample a primary Z batch and an optional style-mixing batch."""
-    if not 0.0 <= mixing_probability <= 1.0:
-        raise ValueError("mixing_probability must be within [0, 1].")
-    z = torch.randn(batch_size, z_dim, device=device)
-    mixing_z = torch.randn_like(z) if random.random() < mixing_probability else None
-    # z: (B, z_dim), mixing_z: (B, z_dim) or None
-    return z, mixing_z
-
-
-def r1_penalty(
-    real_scores: torch.Tensor,
-    real_images: torch.Tensor,
-) -> torch.Tensor:
-    """Measure squared discriminator gradients at real images."""
-    # real_scores: (B,), real_images: (B, 3, H, W)
-    # R1 = Eₓ[ ||∇ₓ D(x)||² ]
-    gradients = torch.autograd.grad(  # ∂output / ∂input
-        real_scores.sum(),  # outputs
-        real_images,  # inputs
-        create_graph=True,
-    )[0]  # (B, 3, H, W)
-    return gradients.square().flatten(1).sum(dim=1).mean()
-
-
-def path_length_penalty(
-    images: torch.Tensor,
-    ws: torch.Tensor,
-    running_mean: torch.Tensor,
-    decay: float = 0.01,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Regularize image-space change per unit movement in W."""
-    # images: (Bpath, 3, H, W), ws: (Bpath, num_ws, style_dim)
-    if running_mean.ndim != 0:
-        raise ValueError("running_mean must be a scalar tensor.")
-    if not 0.0 <= decay <= 1.0:
-        raise ValueError("decay must be within [0, 1].")
-
-    noise = torch.randn_like(images) / math.sqrt(images.shape[2] * images.shape[3])
-    gradients = torch.autograd.grad(  # ∂output / ∂input
-        (images * noise).sum(),  # output
-        ws,  # input
-        create_graph=True,
-    )[0]  # (Bpath, num_ws, style_dim)
-    lengths = torch.sqrt(gradients.square().sum(dim=2).mean(dim=1) + 1e-8)  # (B,)
-    # running_mean + decay * (lengths.mean() - running_mean)
-    updated_mean = running_mean.lerp(lengths.mean().detach(), decay)
-    return (lengths - updated_mean).square().mean(), updated_mean
 
 
 def make_channel_map(base_channels, resolutions=RESOLUTIONS):
@@ -445,17 +332,11 @@ __all__ = [
     "MinibatchStandardDeviation",
     "NoiseInjection",
     "PixelNorm",
-    "ProgressivePhase",
-    "build_progressive_schedule",
     "denormalize",
     "filter2d",
     "filtered_downsample2d",
     "filtered_upsample2d",
     "make_channel_map",
-    "path_length_penalty",
-    "phase_alpha",
-    "r1_penalty",
-    "sample_mixing_latents",
     "validate_alpha",
     "validate_resolution",
 ]

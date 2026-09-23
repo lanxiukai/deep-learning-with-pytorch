@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from dl_utils.gan.stylegan_common import (
+from dl_utils.gan.stylegan_layers import (
     RESOLUTIONS,
     EqualizedConv2d,
     EqualizedLinear,

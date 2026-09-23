@@ -38,17 +38,36 @@ environment or dependency workflow.
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
   using shared [image features](evaluation/image_features.py) and
   [distribution metrics](evaluation/distribution_metrics.py).
-  [gan/quality.py](gan/quality.py) retains its CelebA generator evaluation
+  [gan/celeba_evaluation.py](gan/celeba_evaluation.py) retains its CelebA generator evaluation
   protocol and seeded 256D projection; diffusion monitoring retains full
   2048D features, sampling callbacks, and NFE accounting. Sharing primitives
   does not make these evaluation protocols interchangeable.
   [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
   SSIM, including for the latent-diffusion first stage.
-- [gan/training.py](gan/training.py) owns shared BF16 runtime selection, data
-  access, output paths, EMA setup, checkpoints, and sample artifacts for the
-  ProGAN-to-StyleGAN2 sequence. Those lesson scripts retain model schedules,
-  objectives, regularization, and update order.
-- [gan/conditional_training.py](gan/conditional_training.py) owns the repeated
+- [gan/celeba_runtime.py](gan/celeba_runtime.py) owns BF16 runtime selection,
+  CelebA access, output paths, and model/EMA setup for the ProGAN-to-StyleGAN2
+  sequence. [gan/training_state.py](gan/training_state.py) owns their checkpoint
+  and kimg metric-history contracts; [gan/sample_artifacts.py](gan/sample_artifacts.py)
+  renders fixed-latent grids.
+- [gan/progan/](gan/progan/), [gan/stylegan/](gan/stylegan/), and
+  [gan/stylegan2/](gan/stylegan2/) keep models and continuation adapters in
+  their named packages. Their package exports retain the model import API.
+  [gan/progressive.py](gan/progressive.py) owns shared progressive schedules
+  and options; [StyleGAN2 training_config.py](gan/stylegan2/training_config.py)
+  owns its fixed-resolution epochs and options. Lesson scripts still own
+  experiment budgets, objectives, regularization timing, and update order.
+- [gan/continuation.py](gan/continuation.py) owns bounded continuation,
+  checkpoint recovery, evaluation, and candidate selection. Each model's
+  `continuation.py` supplies explicit constructors, configuration, checkpoint
+  compatibility, sampling settings, and a callback to the lesson trainer.
+  StyleGAN2's adapter also owns lazy-regularization optimizer ratios and
+  running path-mean updates. Existing `--refine-*` flags and checkpoint keys,
+  including the historical `path_mean` field, retain their meaning.
+- [gan/stylegan_layers.py](gan/stylegan_layers.py) shares numerical layers;
+  [gan/stylegan_training.py](gan/stylegan_training.py) shares latent mixing
+  and R1. [StyleGAN2 regularization.py](gan/stylegan2/regularization.py) owns
+  path-length regularization.
+- [gan/conditional_hinge.py](gan/conditional_hinge.py) owns the repeated
   conditional hinge epoch used by SN-GAN, SAGAN, and BigGAN. Their lesson
   scripts retain lesson-specific hyperparameters, update ratios, regularization,
   EMA, checkpoints, and artifacts. [gan/update_schedule.py](gan/update_schedule.py)

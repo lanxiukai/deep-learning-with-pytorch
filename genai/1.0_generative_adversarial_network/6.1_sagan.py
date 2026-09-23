@@ -32,7 +32,7 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.conditional_training import train_conditional_hinge_epoch
+from dl_utils.gan.conditional_hinge import train_conditional_hinge_epoch
 from dl_utils.gan.normalization import refresh_generator_statistics
 from dl_utils.gan.sagan import (
     SAGANDiscriminator,

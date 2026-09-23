@@ -172,7 +172,9 @@ def train_conditional_hinge_epoch(
         )
         discriminator_steps = result.discriminator_steps
         batch_size = real.shape[0]
-        discriminator_metrics.add_batch_means((result.discriminator,), num_examples=batch_size)
+        discriminator_metrics.add_batch_means(
+            (result.discriminator,), num_examples=batch_size
+        )
         if result.generator_total is not None:
             assert result.generator_adversarial is not None
             assert result.generator_regularization is not None

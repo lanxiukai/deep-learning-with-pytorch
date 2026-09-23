@@ -33,28 +33,27 @@ Model size:
 """
 
 import argparse
-import math
-from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from dl_utils.gan.celeba_runtime import initialize_gan_models, prepare_gan_run
+from dl_utils.gan.continuation import continue_gan
+from dl_utils.gan.sample_artifacts import save_gan_samples
 from dl_utils.gan.stylegan2 import StyleDiscriminator, StyleGenerator
-from dl_utils.gan.stylegan_common import (
-    path_length_penalty,
-    r1_penalty,
-    sample_mixing_latents,
+from dl_utils.gan.stylegan2.continuation import (
+    add_refinement_arguments,
+    make_continuation_plan,
 )
-from dl_utils.gan.training import (
-    append_gan_metrics,
-    initialize_gan_models,
-    prepare_gan_run,
+from dl_utils.gan.stylegan2.regularization import path_length_penalty
+from dl_utils.gan.stylegan2.training_config import (
+    build_training_schedule,
     resolve_fixed_resolution_gan_options,
-    save_gan_samples,
-    start_gan_checkpoint,
 )
+from dl_utils.gan.stylegan_training import r1_penalty, sample_mixing_latents
+from dl_utils.gan.training_state import append_gan_metrics, start_gan_checkpoint
 from dl_utils.plot.figures import save_loss_panels
 from dl_utils.training.accelerator import make_fused_adam
 from dl_utils.training.checkpoints import save_model_weights
@@ -98,50 +97,6 @@ METRIC_NAMES = (
     "r1_penalty",
     "path_penalty",
 )
-
-
-@dataclass(frozen=True)
-class TrainingEpoch:
-    """One data epoch in a fixed-resolution image budget."""
-
-    num_batches: int
-    num_images: int
-    final_batch_size: int
-
-    def batch_size_at(self, batch_index, batch_size):
-        if not 0 <= batch_index < self.num_batches:
-            raise ValueError("batch_index is outside this training epoch.")
-        if batch_index == self.num_batches - 1:
-            return self.final_batch_size
-        return batch_size
-
-
-def build_training_schedule(total_kimg, batch_size, dataset_size):
-    """Build data epochs with an exact final image and batch count."""
-    if min(total_kimg, batch_size, dataset_size) < 1:
-        raise ValueError("total_kimg, batch_size, and dataset_size must be positive.")
-    if dataset_size < batch_size:
-        raise ValueError("dataset_size must contain at least one complete batch.")
-    total_images = total_kimg * 1_000
-    total_batches = math.ceil(total_images / batch_size)
-    final_training_batch = total_images - batch_size * (total_batches - 1)
-    batches_per_epoch = dataset_size // batch_size
-    schedule = []
-    for batch_start in range(0, total_batches, batches_per_epoch):
-        num_batches = min(batches_per_epoch, total_batches - batch_start)
-        is_last = batch_start + num_batches == total_batches
-        final_batch_size = final_training_batch if is_last else batch_size
-        num_images = num_batches * batch_size
-        if is_last:
-            num_images -= batch_size - final_training_batch
-        schedule.append(
-            TrainingEpoch(
-                num_batches=num_batches,
-                num_images=num_images,
-                final_batch_size=final_batch_size,
-            )
-        )
-    return tuple(schedule)
 
 
 def train_epoch(
@@ -265,11 +220,19 @@ def train_epoch(
 
 def main(args):
     if args.refine_from is not None or args.refine_resume is not None:
-        from dl_utils.gan.refinement import refine_gan
-
         if args.resume_from is not None:
             raise ValueError("Use only one fixed-resolution or refinement resume mode.")
-        refine_gan(args, model_name="stylegan2", lesson=globals())
+        continue_gan(
+            args,
+            plan=make_continuation_plan(
+                args,
+                model_config=MODEL_CONFIG,
+                discriminator_config=DISCRIMINATOR_CONFIG,
+                train_epoch=train_epoch,
+                d_reg_every=D_REG_EVERY,
+                g_reg_every=G_REG_EVERY,
+            ),
+        )
         return
     options = resolve_fixed_resolution_gan_options(
         total_kimg=args.total_kimg,
@@ -453,9 +416,7 @@ def parse_args():
         description="Train the full-resolution 128x128 CelebA StyleGAN2."
     )
     parser.add_argument("--resume-from", type=Path, metavar="CHECKPOINT")
-    from dl_utils.gan.refinement import add_refinement_arguments
-
-    add_refinement_arguments(parser, model_name="stylegan2")
+    add_refinement_arguments(parser)
     parser.add_argument("--total-kimg", type=int)
     parser.add_argument("--batch-scale", type=int)
     parser.add_argument("--r1-batch-shrink", type=int)

@@ -225,11 +225,11 @@ def final_review(args, output, suite):
     import torch
     from torchvision.utils import save_image
 
+    from dl_utils.gan.celeba_evaluation import CelebAGeneratorEvaluator
     from dl_utils.gan.progan import ProGANGenerator
-    from dl_utils.gan.quality import GenerationQualityEvaluator
     from dl_utils.gan.stylegan import StyleGANGenerator
     from dl_utils.gan.stylegan2 import StyleGenerator
-    from dl_utils.gan.stylegan_common import denormalize
+    from dl_utils.gan.stylegan_layers import denormalize
     from dl_utils.training.accelerator import configure_device
     from dl_utils.training.checkpoints import load_model_weights
 
@@ -237,7 +237,7 @@ def final_review(args, output, suite):
     device = torch.device("cuda")
     configure_device(device)
     torch.hub.set_dir(str(ROOT / ".cache" / "torch" / "hub"))
-    evaluator = GenerationQualityEvaluator(
+    evaluator = CelebAGeneratorEvaluator(
         ROOT / "data" / "celeba",
         device=device,
         examples=args.review_samples,

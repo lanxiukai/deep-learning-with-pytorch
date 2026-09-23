@@ -15,7 +15,7 @@ from dl_utils.evaluation.distribution_metrics import FeatureMoments, frechet_dis
 from dl_utils.evaluation.image_features import TorchvisionInceptionFeatures
 
 
-class GenerationQualityEvaluator:
+class CelebAGeneratorEvaluator:
     """Evaluate EMA generators against a fixed, unaugmented CelebA split."""
 
     def __init__(
