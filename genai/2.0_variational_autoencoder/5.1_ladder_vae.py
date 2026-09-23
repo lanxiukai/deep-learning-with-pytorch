@@ -8,11 +8,11 @@ so their precisions add and their means combine by precision weighting.
 The top q(z2 | x) remains bottom-up evidence compared against N(0, I); it is
 not fused with that fixed prior as though a third evidence source existed.
 
-Reading guide 3.3c, section 4 (layer 0 = x, layer 1 = z1, layer 2 = z2):
+Inference and generation flow (layer 0 = x, layer 1 = z1, layer 2 = z2):
     q_2(x)         -> mu_q_2, v_q_2 -> sample z2
     p_1(z2)        -> mu_p_1, v_p_1
     q_hat_1(h_1(x))-> mu_hat_q_1, v_hat_q_1              (hatted evidence)
-    precision fusion -> mu_q_1, v_q_1 -> sample z1       (superscript L)
+    precision fusion -> mu_q_1, v_q_1 -> sample z1
     p_0(z1)        -> mu_p_0
 Here v = log(sigma**2). q_2 includes the full image encoder and also returns
 h_1(x) for q_hat_1. The hatted evidence is not sampled; the fused q,1
@@ -72,7 +72,7 @@ from dl_utils.vae.hierarchical_vae import LadderVAE
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "ladder_vae" / "baseline"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae"
 MODEL_NAME = "ladder_vae"
 SAMPLE_COUNT = 16
 SAMPLE_GRID_COLUMNS = 8

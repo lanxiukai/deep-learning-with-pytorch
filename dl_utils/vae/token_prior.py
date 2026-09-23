@@ -140,15 +140,15 @@ def train_pixelcnn_prior_epoch(
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        metrics.update((loss,), num_examples=images.shape[0])
-        nll = metrics.compute()["nll"]
+        metrics.add_batch_means((loss,), num_examples=images.shape[0])
+        nll = metrics.compute_weighted_means()["nll"]
         progress.set_postfix(
             nll=f"{nll:.4f}",
             bpt=f"{nll / math.log(2):.3f}",
             refresh=False,
         )
         progress.update(1)
-    return metrics.compute()["nll"]
+    return metrics.compute_weighted_means()["nll"]
 
 
 @torch.inference_mode()
@@ -168,8 +168,8 @@ def evaluate_pixelcnn_prior(
         labels = labels.to(device, non_blocking=True)
         indices = tokenizer.encode_indices(images)
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
-        metrics.update((loss,), num_examples=images.shape[0])
-    nll = metrics.compute()["nll"]
+        metrics.add_batch_means((loss,), num_examples=images.shape[0])
+    nll = metrics.compute_weighted_means()["nll"]
     return {
         "nll_nats_per_token": nll,
         "bits_per_token": nll / math.log(2),

@@ -151,7 +151,7 @@ def train_iwae_for_particles(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics_accumulator.update(
+                metrics_accumulator.add_batch_means(
                     (
                         loss,
                         metrics["reconstruction_loss"],
@@ -160,14 +160,14 @@ def train_iwae_for_particles(
                     ),
                     num_examples=images.shape[0],
                 )
-                running_metrics = metrics_accumulator.compute()
+                running_metrics = metrics_accumulator.compute_weighted_means()
                 progress.set_postfix(
                     loss=f"{running_metrics['loss']:.3f}",
                     ess=f"{running_metrics['ess_fraction']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            history.append(metrics_accumulator.compute())
+            history.append(metrics_accumulator.compute_weighted_means())
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == EPOCHS:
                 model.eval()
                 with torch.inference_mode():

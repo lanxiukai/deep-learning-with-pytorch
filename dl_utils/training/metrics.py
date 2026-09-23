@@ -25,13 +25,13 @@ class MetricAccumulator:
         self._accumulated_values = torch.zeros(len(self.names), device=device)
         self._accumulated_examples = 0
 
-    def update(
+    def add_batch_means(
         self,
         values: Sequence[torch.Tensor],
         *,
         num_examples: int,
     ) -> None:
-        """Add one ordered collection of scalar metric tensors."""
+        """Add batch-mean scalar metrics weighted by the number of examples."""
         if num_examples < 1:
             raise ValueError("num_examples must be positive.")
         if len(values) != len(self.names):
@@ -44,25 +44,21 @@ class MetricAccumulator:
         self._accumulated_values += stacked_values * num_examples
         self._accumulated_examples += num_examples
 
-    def compute_finite(self) -> dict[str, float]:
-        """Return means or identify a metric containing a non-finite value."""
+    def compute_weighted_means(
+        self, *, require_finite: bool = False
+    ) -> dict[str, float]:
+        """Return example-weighted means, optionally rejecting non-finite values."""
         if self._accumulated_examples == 0:
-            raise RuntimeError("cannot compute metrics before an update.")
+            raise RuntimeError("cannot compute metrics before adding a batch.")
         means = self._accumulated_values / self._accumulated_examples
-        nonfinite_indices = (~torch.isfinite(means)).nonzero().flatten().tolist()
-        if nonfinite_indices:
-            metric_index = nonfinite_indices[0]
-            name = self.names[metric_index]
-            value = means[metric_index].item()
-            raise FloatingPointError(f"non-finite mean metric {name}={value}")
+        if require_finite:
+            nonfinite_indices = (~torch.isfinite(means)).nonzero().flatten().tolist()
+            if nonfinite_indices:
+                metric_index = nonfinite_indices[0]
+                name = self.names[metric_index]
+                value = means[metric_index].item()
+                raise FloatingPointError(f"non-finite mean metric {name}={value}")
         return dict(zip(self.names, means.tolist(), strict=True))
-
-    def compute(self) -> dict[str, float]:
-        """Return weighted means for all configured metrics."""
-        if self._accumulated_examples == 0:
-            raise RuntimeError("cannot compute metrics before an update.")
-        means = (self._accumulated_values / self._accumulated_examples).tolist()
-        return dict(zip(self.names, means, strict=True))
 
 
 class Accumulator:

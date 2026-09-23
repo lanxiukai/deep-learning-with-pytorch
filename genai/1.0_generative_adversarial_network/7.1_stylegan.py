@@ -223,13 +223,13 @@ def train_phase(
         finally:
             discriminator.requires_grad_(True)
 
-        metrics.update(
+        metrics.add_batch_means(
             (loss_d_main, loss_g_main, weighted_r1),
             num_examples=batch_size,
         )
         global_step += 1
 
-    return metrics.compute_finite(), global_step
+    return metrics.compute_weighted_means(require_finite=True), global_step
 
 
 def main(args):

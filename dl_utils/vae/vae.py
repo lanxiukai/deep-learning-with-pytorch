@@ -139,12 +139,12 @@ def _train_epoch(
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
         optimizer.step()
-        metrics.update(
+        metrics.add_batch_means(
             (total_loss, reconstruction_loss, kl_loss),
             num_examples=images.shape[0],
         )
         progress_bar.update(1)
-    return metrics.compute_finite()
+    return metrics.compute_weighted_means(require_finite=True)
 
 
 def train_vae(

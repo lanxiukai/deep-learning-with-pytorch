@@ -165,7 +165,7 @@ def train_cvae(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics.update(
+                metrics.add_batch_means(
                     (
                         loss,
                         terms["distortion"],
@@ -174,12 +174,12 @@ def train_cvae(
                     num_examples=images.shape[0],
                 )
                 progress.set_postfix(
-                    loss=f"{metrics.compute()['loss']:.3f}",
+                    loss=f"{metrics.compute_weighted_means()['loss']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
 
-            train_metrics = metrics.compute_finite()
+            train_metrics = metrics.compute_weighted_means(require_finite=True)
             train_metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
             history.append(train_metrics)
             scheduler.step()

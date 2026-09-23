@@ -129,12 +129,12 @@ def evaluate_tokenizer(
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
         reconstruction, indices, diagnostics = model(images)
-        metrics.update(
+        metrics.add_batch_means(
             (F.mse_loss(reconstruction, images), diagnostics["quantization_mse"]),
             num_examples=images.shape[0],
         )
         usage.update(indices)
-    means = metrics.compute()
+    means = metrics.compute_weighted_means()
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
@@ -187,12 +187,12 @@ def train_tokenizer(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics.update(
+                metrics.add_batch_means(
                     (loss, diagnostics["quantization_mse"]),
                     num_examples=images.shape[0],
                 )
                 usage.update(indices)
-                running_metrics = metrics.compute()
+                running_metrics = metrics.compute_weighted_means()
                 progress.set_postfix(
                     loss=f"{running_metrics['mse']:.4f}",
                     quant=f"{running_metrics['quantization_mse']:.4f}",
@@ -205,7 +205,7 @@ def train_tokenizer(
                 )
             if preview is None:
                 raise ValueError("training loader produced no batches; reduce batch size")
-            means = metrics.compute()
+            means = metrics.compute_weighted_means()
             epoch_usage = usage.statistics()
             history.append(
                 means

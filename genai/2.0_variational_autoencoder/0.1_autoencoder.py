@@ -158,9 +158,9 @@ def train_epoch(
         optimizer.zero_grad(set_to_none=True)
         reconstruction_loss.backward()
         optimizer.step()
-        metrics.update((reconstruction_loss,), num_examples=images.shape[0])
+        metrics.add_batch_means((reconstruction_loss,), num_examples=images.shape[0])
         progress_bar.update(1)
-    return metrics.compute_finite()["reconstruction"]
+    return metrics.compute_weighted_means(require_finite=True)["reconstruction"]
 
 
 def main() -> None:

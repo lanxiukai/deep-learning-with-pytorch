@@ -1,4 +1,4 @@
-"""HVAE / Ladder VAE notation from reading guide 3.3c, sections 3-4.
+"""Hierarchical and Ladder variational autoencoders.
 
 Layers: 0 = x, 1 = z1, 2 = z2. mu is the mean; v = log(sigma**2).
 Both models share these generative distributions::
@@ -51,7 +51,7 @@ class _TopPosterior(nn.Module):
 
 
 class HierarchicalVAE(nn.Module):
-    """Top-down HVAE inference (guide section 3)::
+    """Top-down hierarchical VAE inference::
 
         Distribution            Network              Parameters
         q_phi^down(z2 | x)      self.q_2(x)          mu_q_2, v_q_2
@@ -146,10 +146,10 @@ class HierarchicalVAE(nn.Module):
         mu_p_0 = self.decode(latents["z1"])
         return mu_p_0, latents
 
-    def generate(self, z2: Tensor, lower_noise: Tensor) -> Tensor:
-        """Return mu_p_0 using supplied z2 and standard-normal lower_noise."""
+    def generate(self, z2: Tensor, noise_1: Tensor) -> Tensor:
+        """Return mu_p_0 from z2 and standard-normal noise_1."""
         mu_p_1, v_p_1 = split_gaussian_parameters(self.p_1(z2))
-        z1 = reparameterize_logvar(mu_p_1, v_p_1, noise=lower_noise)
+        z1 = reparameterize_logvar(mu_p_1, v_p_1, noise=noise_1)
         return self.decode(z1)
 
     def sample(self, count: int, *, device: torch.device) -> Tensor:
@@ -161,15 +161,15 @@ class HierarchicalVAE(nn.Module):
 
 
 class LadderVAE(HierarchicalVAE):
-    """Ladder inference (guide section 4); p distributions are unchanged::
+    """Ladder inference; the generative distributions are unchanged::
 
         Distribution or factor       Network / operation  Parameters
         q_phi^down(z2 | x)           self.q_2(x)          mu_q_2, v_q_2
         q_tilde_phi(z1 | x)          self.q_hat_1(h_1)    mu_hat_q_1, v_hat_q_1
         q_{theta,phi}^L(z1 | z2, x)  precision fusion     mu_q_1, v_q_1
 
-    hat denotes unfused evidence; the shared mu_q_1/v_q_1 keys denote the
-    guide's mu_q_1^L/v_q_1^L. Fusion has no learned network of its own.
+    Hat denotes unfused image evidence; mu_q_1/v_q_1 are the fused posterior
+    parameters. Fusion has no learned network of its own.
     """
 
     posterior_family = "ladder_precision_fusion"
@@ -190,7 +190,7 @@ class LadderVAE(HierarchicalVAE):
         """Return prior, hatted evidence, and fused posterior mu/v for z1."""
         mu_p_1, v_p_1 = split_gaussian_parameters(self.p_1(z2))
         mu_hat_q_1, v_hat_q_1 = split_gaussian_parameters(self.q_hat_1(h_1))
-        # Equation (4.3): fused q,1; keep gradients through both inputs.
+        # Fuse the conditional prior with image evidence; keep gradients through both.
         mu_q_1, v_q_1 = fuse_diagonal_gaussians(
             mu_p_1,
             v_p_1,
@@ -217,31 +217,28 @@ def hierarchical_vae_loss(
 ) -> tuple[Tensor, dict[str, Tensor]]:
     """Return (loss, detached metrics), shared by HVAE and Ladder.
 
-    Guide equations (3.4)/(4.5): distortion = mean(D_i),
-    kl_z1 = mean(r_1(x_i, z2_i)), kl_z2 = mean(R_2(x_i)).
+    Distortion is the batch-mean sum of squared pixel errors. Each KL term
+    sums latent dimensions per example, then averages across the batch.
     The fixed-variance Gaussian observation constant is omitted.
 
     free_bits clamps each layer's batch-mean KL in nats; kl_weight scales
     their sum. kl_z1/z2 stay raw; kl_objective_z1/z2 are clamped, unweighted.
     """
-    # First sum coordinates within each example; retain the batch dimension.
-    distortion_per_example = (mu_p_0 - images).square().flatten(1).sum(dim=1)
+    # Sum coordinates within each example, then average over the batch.
+    distortion = (mu_p_0 - images).square().flatten(1).sum(dim=1).mean()
     # Layer 1: KL(q(z1 | z2, x) || p(z1 | z2)) at the same sampled z2.
-    kl_z1_per_example = diagonal_gaussian_kl_from_logvar(
+    kl_z1 = diagonal_gaussian_kl_from_logvar(
         latents["mu_q_1"],
         latents["v_q_1"],
         latents["mu_p_1"],
         latents["v_p_1"],
-    ).sum(dim=1)
+    ).sum(dim=1).mean()
     # Layer 2: KL(q(z2 | x) || N(0, I)).
-    kl_z2_per_example = diagonal_gaussian_kl_from_logvar(
+    kl_z2 = diagonal_gaussian_kl_from_logvar(
         latents["mu_q_2"], latents["v_q_2"]
-    ).sum(dim=1)
+    ).sum(dim=1).mean()
 
-    # Batch means are the raw metrics; free bits acts on each whole layer.
-    distortion = distortion_per_example.mean()
-    kl_z1 = kl_z1_per_example.mean()
-    kl_z2 = kl_z2_per_example.mean()
+    # Free bits acts on each whole layer's batch mean.
     threshold = distortion.new_tensor(float(free_bits))
     kl_objective_z1 = torch.maximum(kl_z1, threshold)
     kl_objective_z2 = torch.maximum(kl_z2, threshold)

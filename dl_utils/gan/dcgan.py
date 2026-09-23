@@ -271,7 +271,7 @@ def train_dcgan(
                     loss_function,
                     generator_optimizer,
                 )
-                metrics.update(
+                metrics.add_batch_means(
                     (
                         discriminator_loss / batch_size,
                         generator_loss / batch_size,
@@ -280,7 +280,7 @@ def train_dcgan(
                 )
                 progress_bar.update(1)
 
-            epoch_metrics = metrics.compute()
+            epoch_metrics = metrics.compute_weighted_means()
             discriminator_loss = epoch_metrics["discriminator"]
             generator_loss = epoch_metrics["generator"]
             epochs.append(epoch)

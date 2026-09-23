@@ -187,7 +187,7 @@ def evaluate_iwae(
             particles=particles,
             particle_chunk_size=particle_chunk_size,
         )
-        accumulator.update(
+        accumulator.add_batch_means(
             (
                 metrics["loss"],
                 metrics["reconstruction_loss"],
@@ -197,7 +197,7 @@ def evaluate_iwae(
             num_examples=images.shape[0],
         )
         examples += images.shape[0]
-    return accumulator.compute()
+    return accumulator.compute_weighted_means()
 
 
 def log_mean_exp(log_weights: Tensor) -> Tensor:

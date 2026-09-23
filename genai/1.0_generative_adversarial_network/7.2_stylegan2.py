@@ -254,13 +254,13 @@ def train_epoch(
         finally:
             discriminator.requires_grad_(True)
 
-        metrics.update(
+        metrics.add_batch_means(
             (loss_d_main, loss_g_main, weighted_r1, weighted_path),
             num_examples=current_batch,
         )
         global_step += 1
 
-    return metrics.compute_finite(), path_mean, global_step
+    return metrics.compute_weighted_means(require_finite=True), path_mean, global_step
 
 
 def main(args):

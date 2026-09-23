@@ -333,7 +333,7 @@ def train_conditional_gan(
                     critic_optimizer,
                     lambda_gp=lambda_gp,
                 )
-                critic_metrics.update(
+                critic_metrics.add_batch_means(
                     (wasserstein_gap, penalty),
                     num_examples=batch_size,
                 )
@@ -349,18 +349,18 @@ def train_conditional_gan(
                         generator,
                         generator_optimizer,
                     )
-                    generator_metrics.update(
+                    generator_metrics.add_batch_means(
                         (generator_loss,),
                         num_examples=batch_size,
                     )
                     generator_updated = True
                 progress_bar.update(1)
 
-            critic_epoch_metrics = critic_metrics.compute()
+            critic_epoch_metrics = critic_metrics.compute_weighted_means()
             wasserstein_gap = critic_epoch_metrics["wasserstein_gap"]
             penalty = critic_epoch_metrics["gradient_penalty"]
             generator_loss = (
-                generator_metrics.compute()["generator_loss"]
+                generator_metrics.compute_weighted_means()["generator_loss"]
                 if generator_updated
                 else 0.0
             )

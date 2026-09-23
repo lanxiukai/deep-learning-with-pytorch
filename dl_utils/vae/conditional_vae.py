@@ -167,7 +167,7 @@ def evaluate_cvae(
             images,
             statistics,
         )
-        metrics.update(
+        metrics.add_batch_means(
             (
                 loss,
                 terms["distortion"],
@@ -175,7 +175,7 @@ def evaluate_cvae(
             ),
             num_examples=images.shape[0],
         )
-    return metrics.compute()
+    return metrics.compute_weighted_means()
 
 
 @torch.inference_mode()

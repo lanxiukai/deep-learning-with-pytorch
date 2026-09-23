@@ -243,7 +243,7 @@ def validate_tokenizer(
             break
         images = images[:remaining].to(device, non_blocking=True)
         reconstruction, indices, _, diagnostics = model(images)
-        metrics.update(
+        metrics.add_batch_means(
             (
                 F.l1_loss(reconstruction, images),
                 perceptual(reconstruction, images),
@@ -257,7 +257,7 @@ def validate_tokenizer(
         examples += images.shape[0]
     if examples == 0:
         raise ValueError("tokenizer validation observed no examples")
-    values = metrics.compute()
+    values = metrics.compute_weighted_means()
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
@@ -296,11 +296,11 @@ def validate_prior(
         indices = tokenizer.encode_indices(images)
         logits, targets = prior.teacher_forcing(indices, labels)
         loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-        metrics.update((loss,), num_examples=images.shape[0])
+        metrics.add_batch_means((loss,), num_examples=images.shape[0])
         examples += images.shape[0]
     if examples == 0:
         raise ValueError("prior validation observed no examples")
-    nll = metrics.compute()["nll"]
+    nll = metrics.compute_weighted_means()["nll"]
     return {
         "examples": float(examples),
         "nll_nats_per_token": nll,
@@ -382,7 +382,7 @@ def train_tokenizer(
                     step=global_step,
                     discriminator_start=DISCRIMINATOR_START,
                 )
-                metrics_accumulator.update(
+                metrics_accumulator.add_batch_means(
                     (
                         metrics["autoencoder"],
                         metrics["pixel_l1"],
@@ -398,7 +398,7 @@ def train_tokenizer(
                 )
                 usage.update(indices)
                 global_step += 1
-                running_metrics = metrics_accumulator.compute()
+                running_metrics = metrics_accumulator.compute_weighted_means()
                 progress.set_postfix(
                     ae=f"{running_metrics['autoencoder']:.4f}",
                     d=f"{running_metrics['discriminator']:.4f}",
@@ -411,7 +411,7 @@ def train_tokenizer(
                 )
             if preview is None:
                 raise ValueError("training loader produced no batches; reduce batch size")
-            means = metrics_accumulator.compute()
+            means = metrics_accumulator.compute_weighted_means()
             epoch_usage = usage.statistics()
             history.append(
                 means
@@ -500,15 +500,15 @@ def train_prior(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics.update((loss,), num_examples=images.shape[0])
-                nll = metrics.compute()["nll"]
+                metrics.add_batch_means((loss,), num_examples=images.shape[0])
+                nll = metrics.compute_weighted_means()["nll"]
                 progress.set_postfix(
                     nll=f"{nll:.4f}",
                     bpt=f"{nll / math.log(2):.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            nll = metrics.compute()["nll"]
+            nll = metrics.compute_weighted_means()["nll"]
             history.append({"nll": nll, "bits_per_token": nll / math.log(2)})
             if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
                 with torch.inference_mode():

@@ -172,11 +172,11 @@ def train_conditional_hinge_epoch(
         )
         discriminator_steps = result.discriminator_steps
         batch_size = real.shape[0]
-        discriminator_metrics.update((result.discriminator,), num_examples=batch_size)
+        discriminator_metrics.add_batch_means((result.discriminator,), num_examples=batch_size)
         if result.generator_total is not None:
             assert result.generator_adversarial is not None
             assert result.generator_regularization is not None
-            generator_metrics.update(
+            generator_metrics.add_batch_means(
                 (
                     result.generator_total,
                     result.generator_adversarial,
@@ -188,9 +188,9 @@ def train_conditional_hinge_epoch(
         if progress_bar is not None:
             progress_bar.update(1)
 
-    generator_losses = generator_metrics.compute()
+    generator_losses = generator_metrics.compute_weighted_means()
     return ConditionalHingeEpochResult(
-        discriminator=discriminator_metrics.compute()["loss"],
+        discriminator=discriminator_metrics.compute_weighted_means()["loss"],
         generator_total=generator_losses["total"],
         generator_adversarial=generator_losses["adversarial"],
         generator_regularization=generator_losses["regularization"],

@@ -23,10 +23,10 @@ from dl_utils.vae.hierarchical_vae import (
 from dl_utils.vae.training_artifacts import save_training_metrics
 
 
-def warmup_weight(update: int, *, warmup_updates: int) -> float:
-    if warmup_updates <= 0:
+def warmup_weight(global_step: int, *, warmup_steps: int) -> float:
+    if warmup_steps <= 0:
         return 1.0
-    return min(1.0, update / warmup_updates)
+    return min(1.0, global_step / warmup_steps)
 
 
 @torch.inference_mode()
@@ -34,13 +34,13 @@ def save_prior_samples(
     model: HierarchicalVAE,
     path: Path,
     *,
-    top_noise: torch.Tensor,
-    lower_noise: torch.Tensor,
+    noise_2: torch.Tensor,
+    noise_1: torch.Tensor,
     batch_size: int,
     columns: int,
 ) -> None:
     samples = generate_in_batches(
-        (top_noise, lower_noise), batch_size, model.generate, module=model
+        (noise_2, noise_1), batch_size, model.generate, module=model
     )
     save_image(samples, path, nrow=columns)
 
@@ -75,11 +75,11 @@ def train_hierarchy(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=minimum_learning_rate
     )
-    # Reuse both noise tensors so the grids show model changes across epochs.
-    top_noise = torch.randn(sample_count, model.z2_dim, device=device)
-    lower_noise = torch.randn(sample_count, model.z1_dim, device=device)
-    warmup_updates = round(warmup_epochs * len(train_loader))
-    update = 0
+    # Reuse noise_2 and noise_1 to compare model changes across epochs.
+    noise_2 = torch.randn(sample_count, model.z2_dim, device=device)
+    noise_1 = torch.randn(sample_count, model.z1_dim, device=device)
+    warmup_steps = round(warmup_epochs * len(train_loader))
+    global_step = 0
     with tqdm(
         total=epochs * len(train_loader),
         desc=f"{model_name} 1/{epochs}",
@@ -93,11 +93,10 @@ def train_hierarchy(
                 ("loss", "distortion", "kl_z1", "kl_z2"), device=device
             )
             for images, _ in train_loader:
-                update += 1
+                global_step += 1
                 images = images.to(device, non_blocking=True)
-                # Sections 3.3/4.4: q,2 -> p,1 and q,1 -> p,0.
                 mu_p_0, latents = model(images)
-                kl_weight = warmup_weight(update, warmup_updates=warmup_updates)
+                kl_weight = warmup_weight(global_step, warmup_steps=warmup_steps)
                 loss, terms = hierarchical_vae_loss(
                     mu_p_0,
                     images,
@@ -108,7 +107,7 @@ def train_hierarchy(
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics.update(
+                metrics.add_batch_means(
                     (
                         loss,
                         terms["distortion"],
@@ -118,15 +117,15 @@ def train_hierarchy(
                     num_examples=images.shape[0],
                 )
                 progress.set_postfix(
-                    loss=f"{metrics.compute()['loss']:.3f}",
+                    loss=f"{metrics.compute_weighted_means()['loss']:.3f}",
                     refresh=False,
                 )
                 progress.update(1)
-            values = metrics.compute_finite()
+            values = metrics.compute_weighted_means(require_finite=True)
             history.append(
                 values
                 | {
-                    "kl_weight": warmup_weight(update, warmup_updates=warmup_updates),
+                    "kl_weight": warmup_weight(global_step, warmup_steps=warmup_steps),
                     "learning_rate": optimizer.param_groups[0]["lr"],
                 }
             )
@@ -135,8 +134,8 @@ def train_hierarchy(
                 save_prior_samples(
                     model,
                     training_dir / f"epoch_{epoch:03d}.png",
-                    top_noise=top_noise,
-                    lower_noise=lower_noise,
+                    noise_2=noise_2,
+                    noise_1=noise_1,
                     batch_size=train_loader.batch_size,
                     columns=sample_grid_columns,
                 )
@@ -169,8 +168,8 @@ def train_hierarchy(
     save_prior_samples(
         model,
         out_dir / "prior_samples.png",
-        top_noise=top_noise,
-        lower_noise=lower_noise,
+        noise_2=noise_2,
+        noise_1=noise_1,
         batch_size=train_loader.batch_size,
         columns=sample_grid_columns,
     )

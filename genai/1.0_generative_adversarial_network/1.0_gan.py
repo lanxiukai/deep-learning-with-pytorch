@@ -80,7 +80,7 @@ def train(
                     loss,
                     generator_optimizer,
                 )
-                metric.update(
+                metric.add_batch_means(
                     (
                         discriminator_loss / batch_size,
                         generator_loss / batch_size,
@@ -89,7 +89,7 @@ def train(
                 )
                 progress_bar.update(1)
             # Show the losses
-            epoch_metrics = metric.compute()
+            epoch_metrics = metric.compute_weighted_means()
             discriminator_loss = epoch_metrics["discriminator"]
             generator_loss = epoch_metrics["generator"]
             epochs.append(epoch)
