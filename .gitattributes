@@ -1,0 +1,46 @@
+# .gitattributes
+# Cross-platform line ending normalization, cleaner git diffs, GitHub linguist display
+
+# Default: auto-detect text/binary, store text files as LF in the repo
+* text=auto eol=lf
+
+# Explicit text types + smarter git diffs
+*.py text diff=python
+*.md text
+*.json text
+*.jsonc text linguist-language=JSON-with-Comments
+*.toml text
+*.yaml text
+*.yml text
+*.txt text
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows scripts must be CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary (no diff, no line ending normalization)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.whl binary
+*.so binary
+
+# GitHub linguist: mark agent and project documentation
+agent-prompts/** linguist-documentation
+docs/** linguist-documentation
+AGENTS.md linguist-documentation
+projects/*/learning-notes/** linguist-documentation
+
+# Repo meta-files excluded from git archive
+.gitattributes export-ignore
+.gitignore export-ignore
+.editorconfig export-ignore

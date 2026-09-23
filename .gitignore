@@ -1,0 +1,76 @@
+# Operating-system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+.codegraph
+*.swp
+*.swo
+*~
+
+# Local AI-agent configuration
+/.agents/
+/.codex/
+
+# Secrets and local environment variables
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Logs, caches, and temporary files
+*.bak
+*.log
+.cache/
+.tmp/
+tmp/
+
+# Python bytecode and interpreter caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python environments and version managers
+.conda/
+.venv/
+venv/
+env/
+ENV/
+
+# Python build and packaging artifacts
+/build/
+/dist/
+.eggs/
+*.egg
+*.egg-info/
+
+# Test, type-checking, lint, and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project datasets, reference repositories, and experiment outputs
+# Keep the leading slash: dl_utils/data/ contains tracked source code.
+/data/
+/book_repos/
+/output/
+/output-vast-dl/
+/supplementary-materials
+
+# Local documentation, tests, and reference attachments
+/docs/
+/tests/
+*.pdf

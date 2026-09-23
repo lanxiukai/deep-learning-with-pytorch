@@ -1,0 +1,46 @@
+# EditorConfig: https://editorconfig.org
+# Cross-editor code style unification
+
+root = true
+
+# Global defaults
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Python (PEP 8 + black/ruff default 88 cols)
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+# Markdown: keep trailing whitespace (some impls use 2 trailing spaces for hard line breaks)
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2
+
+# JSON / JSONC / YAML
+[*.{json,jsonc}]
+indent_size = 2
+
+[*.{yaml,yml}]
+indent_size = 2
+
+# TOML (pyproject.toml, etc.)
+[*.toml]
+indent_size = 4
+
+# Makefile must use tabs
+[Makefile]
+indent_style = tab
+
+# Shell scripts
+[*.{sh,bash}]
+indent_size = 2
+
+# Windows scripts must be CRLF
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
