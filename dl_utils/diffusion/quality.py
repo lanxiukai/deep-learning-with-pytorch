@@ -20,7 +20,25 @@ from dl_utils.diffusion.image_quality import (
     frechet_distance,
 )
 from dl_utils.diffusion.lesson_utils import append_record
-from dl_utils.gan.quality import polynomial_mmd
+
+
+def polynomial_mmd(first: torch.Tensor, second: torch.Tensor) -> float:
+    """Unbiased squared MMD with the degree-three KID polynomial kernel."""
+    if first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]:
+        raise ValueError("Expected feature matrices with matching dimensions.")
+    first_count, second_count = len(first), len(second)
+    if min(first_count, second_count) < 2:
+        raise ValueError("MMD requires at least two samples per distribution.")
+    first, second = first.double(), second.double()
+    dim = first.shape[1]
+    first_kernel = (first @ first.T / dim + 1).pow(3)
+    second_kernel = (second @ second.T / dim + 1).pow(3)
+    cross_kernel = (first @ second.T / dim + 1).pow(3)
+    return float(
+        (first_kernel.sum() - first_kernel.diagonal().sum()) / (first_count * (first_count - 1))
+        + (second_kernel.sum() - second_kernel.diagonal().sum()) / (second_count * (second_count - 1))
+        - 2 * cross_kernel.mean()
+    )
 
 
 def feature_precision_recall(real, fake, *, neighbors=3, chunk_size=256):

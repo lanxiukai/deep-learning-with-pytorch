@@ -25,7 +25,6 @@ PROFILES = {
     "stylegan": [(1e-3, 10.0), (1e-3, 2.0), (5e-4, 2.0)],
     "stylegan2": [(1e-3, 10.0), (1e-3, 2.0), (5e-4, 2.0)],
 }
-KID = "torchvision_inception_kid_mean"
 FRECHET = "projected_inception_frechet_256"
 VARIANCE = "generated_feature_variance"
 
@@ -36,33 +35,33 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def assess_round(baseline, candidate, *, target_kid, target_frechet, reference=None):
+def assess_round(baseline, candidate, *, target_frechet, reference=None):
     """Screen candidates; these metric thresholds do not certify visual quality."""
     reference = baseline if reference is None else reference
     diverse = candidate[VARIANCE] >= reference[VARIANCE] * 0.8
     consistent = candidate[FRECHET] <= min(baseline[FRECHET], reference[FRECHET]) * 1.03
-    gain = (baseline[KID] - candidate[KID]) / max(abs(baseline[KID]), 1e-8)
+    gain = (baseline[FRECHET] - candidate[FRECHET]) / max(abs(baseline[FRECHET]), 1e-8)
     if not diverse or not consistent:
         return {
             "action": "change_profile",
-            "relative_kid_gain": gain,
+            "relative_frechet_gain": gain,
             "reason": "diversity_or_frechet_regression",
         }
-    if candidate[KID] <= target_kid and candidate[FRECHET] <= target_frechet:
+    if candidate[FRECHET] <= target_frechet:
         return {
             "action": "stop",
-            "relative_kid_gain": gain,
+            "relative_frechet_gain": gain,
             "reason": "teaching_metric_target",
         }
     if gain >= 0.05:
         return {
             "action": "continue",
-            "relative_kid_gain": gain,
+            "relative_frechet_gain": gain,
             "reason": "material_validation_gain",
         }
     return {
         "action": "change_profile",
-        "relative_kid_gain": gain,
+        "relative_frechet_gain": gain,
         "reason": "validation_plateau",
     }
 
@@ -148,7 +147,6 @@ def tune_model(args, model, output, suite):
             decision = assess_round(
                 summary["baseline"],
                 candidate,
-                target_kid=args.target_kid,
                 target_frechet=args.target_frechet,
                 reference=result["baseline_validation"],
             )
@@ -308,7 +306,6 @@ def parse_args():
     parser.add_argument("--rounds-per-profile", type=int, default=2)
     parser.add_argument("--validation-samples", type=int, default=2048)
     parser.add_argument("--review-samples", type=int, default=4096)
-    parser.add_argument("--target-kid", type=float, default=0.035)
     parser.add_argument("--target-frechet", type=float, default=45.0)
     return parser.parse_args()
 

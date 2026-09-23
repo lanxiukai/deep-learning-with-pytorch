@@ -1,7 +1,7 @@
 """Repeatable within-project GAN comparisons using ImageNet features.
 
 These torchvision Inception metrics are not interchangeable with published
-TensorFlow FID or KID scores. Real and generated images share preprocessing;
+TensorFlow FID scores. Real and generated images share preprocessing;
 reference images and latent seeds stay fixed across compared checkpoints.
 """
 
@@ -21,19 +21,13 @@ class TorchvisionInceptionFeatures(nn.Module):
 
     This is not the TensorFlow FID implementation.  Results are comparable
     only when every model uses this exact preprocessing and feature extractor.
-    Set projection_dim=None to retain all 2048 pool features.
+    Returns all 2048 pool features; the evaluator owns the Fréchet projection.
     """
 
     mean: Tensor
     std: Tensor
-    projection: Tensor | None
 
-    def __init__(
-        self,
-        *,
-        projection_dim: int | None = 256,
-        projection_seed: int = 2026,
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__()
         model = inception_v3(
             weights=Inception_V3_Weights.DEFAULT,
@@ -47,17 +41,6 @@ class TorchvisionInceptionFeatures(nn.Module):
         self.register_buffer(
             "std", torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
         )
-        generator = torch.Generator().manual_seed(projection_seed)
-        projection = (
-            None
-            if projection_dim is None
-            else (
-                torch.randn(2048, projection_dim, generator=generator)
-                / projection_dim**0.5
-            )
-        )
-        self.feature_dim = 2048 if projection_dim is None else projection_dim
-        self.register_buffer("projection", projection)
 
     def forward(self, images: Tensor) -> Tensor:
         if images.ndim != 4 or images.shape[1] != 3:
@@ -70,8 +53,7 @@ class TorchvisionInceptionFeatures(nn.Module):
             align_corners=False,
             antialias=True,
         )
-        features = self.model((images - self.mean) / self.std)
-        return features if self.projection is None else features @ self.projection
+        return self.model((images - self.mean) / self.std)
 
 
 class FeatureMoments:
@@ -143,25 +125,6 @@ def frechet_distance(
     return float(distance.clamp_min(0))
 
 
-def polynomial_mmd(first: torch.Tensor, second: torch.Tensor) -> float:
-    """Unbiased squared MMD with the degree-three KID polynomial kernel."""
-    if first.ndim != 2 or second.ndim != 2 or first.shape[1] != second.shape[1]:
-        raise ValueError("Expected feature matrices with matching dimensions.")
-    first_count, second_count = len(first), len(second)
-    if min(first_count, second_count) < 2:
-        raise ValueError("MMD requires at least two samples per distribution.")
-    first, second = first.double(), second.double()
-    dim = first.shape[1]
-    first_kernel = (first @ first.T / dim + 1).pow(3)
-    second_kernel = (second @ second.T / dim + 1).pow(3)
-    cross_kernel = (first @ second.T / dim + 1).pow(3)
-    return float(
-        (first_kernel.sum() - first_kernel.diagonal().sum()) / (first_count * (first_count - 1))
-        + (second_kernel.sum() - second_kernel.diagonal().sum()) / (second_count * (second_count - 1))
-        - 2 * cross_kernel.mean()
-    )
-
-
 class GenerationQualityEvaluator:
     """Evaluate EMA generators against a fixed, unaugmented CelebA split."""
 
@@ -190,7 +153,7 @@ class GenerationQualityEvaluator:
         if feature_extractor is None:
             # Model construction must not perturb the GAN training RNG stream.
             with torch.random.fork_rng(devices=[device]):
-                feature_extractor = TorchvisionInceptionFeatures(projection_dim=None)
+                feature_extractor = TorchvisionInceptionFeatures()
         self.features = feature_extractor.to(device).eval()
         rng = torch.Generator().manual_seed(seed)
         self.projection = torch.randn(2048, 256, generator=rng) / 256**0.5
@@ -209,10 +172,10 @@ class GenerationQualityEvaluator:
             generator=torch.Generator().manual_seed(seed),
         )
         with torch.inference_mode():
-            self.real = torch.cat(
+            real_features = torch.cat(
                 [self.features(images.to(device)).cpu() for images, _ in loader]
             )
-        self.real_moments = self.moments(self.real)
+        self.real_moments = self.moments(real_features)
 
     def moments(self, features):
         moments = FeatureMoments(256)
@@ -238,18 +201,7 @@ class GenerationQualityEvaluator:
         finally:
             generator.train(was_training)
         generated = torch.cat(batches)
-        subset_size = min(512, self.examples)
-        estimates = []
-        for _ in range(20):
-            real_indices = torch.randperm(self.examples, generator=rng)[:subset_size]
-            fake_indices = torch.randperm(self.examples, generator=rng)[:subset_size]
-            estimates.append(
-                polynomial_mmd(self.real[real_indices], generated[fake_indices])
-            )
-        estimates = torch.tensor(estimates, dtype=torch.float64)
         result = {
-            "torchvision_inception_kid_mean": estimates.mean().item(),
-            "torchvision_inception_kid_subset_std": estimates.std().item(),
             "projected_inception_frechet_256": frechet_distance(
                 self.real_moments,
                 self.moments(generated),
@@ -258,17 +210,14 @@ class GenerationQualityEvaluator:
             "examples": self.examples,
             "seed": self.seed,
             "split": self.split,
-            "kid_subsets": 20,
-            "kid_subset_size": subset_size,
             "feature_extractor": "torchvision Inception_V3_Weights.IMAGENET1K_V1 pool3",
             "preprocessing": "178px center crop to 128px; clamp to [0,1]; bilinear antialiased 299px; ImageNet normalization",
-            "scope": "within-project comparison; not published TensorFlow FID/KID",
+            "scope": "within-project comparison; not published TensorFlow FID",
             "generator_kwargs": self.generator_kwargs,
         }
         if not all(
             torch.isfinite(torch.tensor(result[key]))
             for key in (
-                "torchvision_inception_kid_mean",
                 "projected_inception_frechet_256",
                 "generated_feature_variance",
             )

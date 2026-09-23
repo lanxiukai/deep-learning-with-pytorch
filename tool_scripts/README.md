@@ -94,19 +94,19 @@ Without an explicit source, the tool prefers the accepted checkpoint when it
 exists and otherwise uses the completed initial training checkpoint.
 The sequence trains ProGAN, StyleGAN, then StyleGAN2. Each attempt adds
 500 kimg and evaluates approximately every 50 kimg. Learning rates and
-regularization weights are tried in a short predefined sequence. A KID
-improvement of at least 5% permits more training; a plateau changes the
-parameter profile. The final profile can continue while gains remain
+regularization weights are tried in a short predefined sequence. A projected
+Inception Frechet improvement of at least 5% permits more training; a plateau
+changes the parameter profile. The final profile can continue while gains remain
 material. Numerical failure abandons that profile without replacing the
 retained candidate. Other execution failures stop with diagnostics and can
 be resumed using the original command.
 
-The default screening target is torchvision Inception KID <= 0.035 and
-256-dimensional projected Inception Frechet distance <= 45. These are
-practical within-project thresholds, not paper scores or a visual-quality
-guarantee. Candidate selection also guards against reduced feature variance
-and contradictory Frechet regression. Fixed latents, fixed synthesis noise,
-and untruncated sampling keep validation comparisons consistent. Parameter
+The default screening target is a 256-dimensional projected Inception
+Frechet distance <= 45. This is a practical within-project threshold, not a
+paper score or a visual-quality guarantee. Checkpoint selection requires a
+lower Frechet distance and guards against reduced feature variance. Fixed
+latents, fixed synthesis noise, and untruncated sampling keep validation
+comparisons consistent. Parameter
 selection uses only the validation split; a different seed and test split
 are used after all three searches finish.
 

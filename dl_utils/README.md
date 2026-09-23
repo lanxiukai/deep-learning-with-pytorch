@@ -36,11 +36,10 @@ environment or dependency workflow.
   handling while objectives and optimization remain in scripts;
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
   using Inception/Fréchet primitives in
-  [diffusion/image_quality.py](diffusion/image_quality.py) and the MMD helper
-  in `gan/quality.py`. The image-quality module belongs to diffusion and
-  flow matching, including SSIM for the latent-diffusion first stage.
-  GAN evaluation keeps its own Inception/Fréchet implementation in
-  `gan/quality.py`.
+  [diffusion/image_quality.py](diffusion/image_quality.py) and its own MMD
+  helper. The image-quality module belongs to diffusion and flow matching,
+  including SSIM for the latent-diffusion first stage. GAN evaluation keeps
+  its own Inception/Fréchet implementation in `gan/quality.py`.
 - [gan/training.py](gan/training.py) owns shared BF16 runtime selection, data
   access, output paths, EMA setup, checkpoints, and sample artifacts for the
   ProGAN-to-StyleGAN2 sequence. Those lesson scripts retain model schedules,

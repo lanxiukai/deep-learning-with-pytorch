@@ -341,10 +341,8 @@ def refine_gan(args, *, model_name, lesson):
         }
         state["history"].append(record)
         improved = (
-            quality["torchvision_inception_kid_mean"]
-            < state["best"]["quality"]["torchvision_inception_kid_mean"]
-            and quality["projected_inception_frechet_256"]
-            <= state["best"]["quality"]["projected_inception_frechet_256"] * 1.03
+            quality["projected_inception_frechet_256"]
+            < state["best"]["quality"]["projected_inception_frechet_256"]
             and quality["projected_inception_frechet_256"]
             <= state["baseline"]["projected_inception_frechet_256"] * 1.03
             and quality["generated_feature_variance"]
