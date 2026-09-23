@@ -42,25 +42,25 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from dl_utils.gan.artifacts import save_gan_samples
-from dl_utils.gan.celeba_runtime import (
-    append_gan_metrics,
-    initialize_gan_models,
-    prepare_gan_run,
-    start_gan_checkpoint,
-)
 from dl_utils.gan.continuation import continue_gan
-from dl_utils.gan.progressive import (
-    build_progressive_schedule,
-    phase_alpha,
-    resolve_progressive_gan_options,
-)
-from dl_utils.gan.stylegan import StyleGANDiscriminator, StyleGANGenerator
-from dl_utils.gan.stylegan.continuation import (
+from dl_utils.gan.stylegan import (
+    StyleGANDiscriminator,
+    StyleGANGenerator,
     add_refinement_arguments,
     make_continuation_plan,
 )
 from dl_utils.gan.stylegan_layers import RESOLUTIONS
-from dl_utils.gan.stylegan_training import r1_penalty, sample_mixing_latents
+from dl_utils.gan.training import (
+    append_gan_metrics,
+    build_progressive_schedule,
+    initialize_gan_models,
+    phase_alpha,
+    prepare_gan_run,
+    r1_penalty,
+    resolve_progressive_gan_options,
+    sample_mixing_latents,
+    start_gan_checkpoint,
+)
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import save_model_weights
 from dl_utils.training.ema import update_ema_by_images

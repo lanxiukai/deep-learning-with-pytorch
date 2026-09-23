@@ -72,40 +72,34 @@ environment or dependency workflow.
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
   using shared [image features](evaluation/image_features.py) and
   [distribution metrics](evaluation/distribution_metrics.py).
-  [gan/celeba_evaluation.py](gan/celeba_evaluation.py) retains its CelebA generator evaluation
+  [gan/continuation.py](gan/continuation.py) retains its CelebA generator evaluation
   protocol and seeded 256D projection; diffusion monitoring retains full
   2048D features, sampling callbacks, and NFE accounting. Sharing primitives
   does not make these evaluation protocols interchangeable.
   [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
   SSIM, including for the latent-diffusion first stage.
-- [gan/celeba_runtime.py](gan/celeba_runtime.py) owns BF16 runtime selection,
-  CelebA access, output paths, model/EMA setup, checkpoint restoration, and
-  kimg metric-history contracts for the ProGAN-to-StyleGAN2 sequence.
-  [gan/artifacts.py](gan/artifacts.py) renders fixed-latent grids and GAN loss
-  layouts.
-- [gan/progan/](gan/progan/), [gan/stylegan/](gan/stylegan/), and
-  [gan/stylegan2/](gan/stylegan2/) keep models and continuation adapters in
-  their named packages. Their package exports retain the model import API.
-  [gan/progressive.py](gan/progressive.py) owns shared progressive schedules
-  and options; [StyleGAN2 training.py](gan/stylegan2/training.py)
-  owns its fixed-resolution epochs and options. Lesson scripts still own
-  experiment budgets, objectives, regularization timing, and update order.
+- GANs use one module per algorithm. [progan.py](gan/progan.py),
+  [stylegan.py](gan/stylegan.py), and [stylegan2.py](gan/stylegan2.py) keep their
+  model definitions and continuation adapters together; StyleGAN2 also keeps
+  its fixed-resolution options, epoch schedules, and path-length penalty there.
+  Existing model imports such as `from dl_utils.gan.progan import ProGANGenerator`
+  retain their meaning. Lesson scripts still own experiment budgets,
+  objectives, regularization timing, and update order.
+- [gan/training.py](gan/training.py) groups shared GAN objectives and update
+  steps, progressive schedules, conditional hinge epochs, EMA buffer calibration,
+  latent mixing, and R1. It also owns CelebA run setup, model/EMA initialization,
+  checkpoint restoration, and kimg histories. It depends on shared utilities,
+  without importing concrete GAN model modules.
 - [gan/continuation.py](gan/continuation.py) owns bounded continuation,
-  checkpoint recovery, evaluation, and candidate selection. Each model's
-  `continuation.py` supplies explicit constructors, configuration, checkpoint
-  compatibility, sampling settings, and a callback to the lesson trainer.
-  StyleGAN2's adapter also owns lazy-regularization optimizer ratios and
-  running path-mean updates. Existing `--refine-*` flags and checkpoint keys,
-  including the historical `path_mean` field, retain their meaning.
+  checkpoint recovery, the CelebA generator evaluation protocol, and candidate
+  selection. Each algorithm module supplies explicit constructors, configuration,
+  checkpoint compatibility, sampling settings, and a callback to the lesson
+  trainer. Existing `--refine-*` flags and checkpoint keys, including StyleGAN2's
+  historical `path_mean` field, retain their meaning.
 - [gan/stylegan_layers.py](gan/stylegan_layers.py) shares numerical layers;
-  [gan/stylegan_training.py](gan/stylegan_training.py) shares latent mixing
-  and R1. StyleGAN2 keeps path-length
-  regularization alongside its fixed-resolution setup in `stylegan2/training.py`.
-- [gan/conditional_training.py](gan/conditional_training.py) groups the
-  conditional hinge epoch, discriminator-to-generator update schedules, and
-  EMA normalization-buffer calibration used by SN-GAN, SAGAN, and BigGAN.
-  Their lesson scripts retain hyperparameters, update ratios, regularization,
-  EMA updates, checkpoints, and artifact timing.
+  [gan/artifacts.py](gan/artifacts.py) renders GAN loss layouts and fixed-latent
+  sample grids. These, `training.py`, and `continuation.py` are the four shared
+  support modules alongside the algorithm files.
 - [inference/](inference/) shares bounded tensor inference and paired
   class-latent grids across GANs, VAEs, and plotting helpers without depending
   on a model family.

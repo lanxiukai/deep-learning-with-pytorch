@@ -33,11 +33,8 @@ from dl_utils.data.datasets.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.conditional_training import (
-    UpdateRatioSchedule,
-    train_conditional_hinge_epoch,
-)
 from dl_utils.gan.sn_gan import SNDiscriminator, SNGenerator
+from dl_utils.gan.training import UpdateRatioSchedule, train_conditional_hinge_epoch
 from dl_utils.inference.latent_sampling import make_fixed_class_latent_grid
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.runtime.devices import configure_device, try_gpu

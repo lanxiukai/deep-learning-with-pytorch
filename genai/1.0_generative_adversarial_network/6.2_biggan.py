@@ -39,7 +39,7 @@ from dl_utils.gan.biggan import (
     initialize_orthogonal_weights,
     modified_orthogonal_regularization,
 )
-from dl_utils.gan.conditional_training import (
+from dl_utils.gan.training import (
     UpdateRatioSchedule,
     refresh_generator_statistics,
     train_conditional_hinge_epoch,

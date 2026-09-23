@@ -225,7 +225,7 @@ def final_review(args, output, suite):
     import torch
     from torchvision.utils import save_image
 
-    from dl_utils.gan.celeba_evaluation import CelebAGeneratorEvaluator
+    from dl_utils.gan.continuation import CelebAGeneratorEvaluator
     from dl_utils.gan.progan import ProGANGenerator
     from dl_utils.gan.stylegan import StyleGANGenerator
     from dl_utils.gan.stylegan2 import StyleGenerator

@@ -76,10 +76,7 @@ from dl_utils.data.datasets.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.sn_gan import (
-    discriminator_hinge_loss,
-    generator_hinge_loss,
-)
+from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics

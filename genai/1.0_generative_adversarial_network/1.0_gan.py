@@ -9,7 +9,7 @@ from tqdm import tqdm
 from dl_utils.data.loading import load_array
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
-from dl_utils.gan.gan import update_discriminator, update_generator
+from dl_utils.gan.training import update_discriminator, update_generator
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.plot.figures import set_figsize

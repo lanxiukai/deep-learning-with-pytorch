@@ -301,16 +301,6 @@ class SNDiscriminator(nn.Module):
         return unconditional + projection
 
 
-def discriminator_hinge_loss(real_scores, fake_scores):
-    """Return the discriminator hinge loss."""
-    return F.relu(1 - real_scores).mean() + F.relu(1 + fake_scores).mean()
-
-
-def generator_hinge_loss(fake_scores):
-    """Return the generator hinge objective."""
-    return -fake_scores.mean()
-
-
 __all__ = [
     "CategoricalConditionalBatchNorm2d",
     "SNDiscriminator",
@@ -319,9 +309,7 @@ __all__ = [
     "SNGeneratorResidualBlock",
     "discriminator_block_resolutions",
     "discriminator_channels",
-    "discriminator_hinge_loss",
     "generator_block_resolutions",
     "generator_channels",
-    "generator_hinge_loss",
     "validate_class_labels",
 ]
