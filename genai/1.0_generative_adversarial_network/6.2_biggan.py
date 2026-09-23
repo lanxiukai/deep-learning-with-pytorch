@@ -39,9 +39,11 @@ from dl_utils.gan.biggan import (
     initialize_orthogonal_weights,
     modified_orthogonal_regularization,
 )
-from dl_utils.gan.conditional_hinge import train_conditional_hinge_epoch
-from dl_utils.gan.normalization import refresh_generator_statistics
-from dl_utils.gan.update_schedule import UpdateRatioSchedule
+from dl_utils.gan.conditional_training import (
+    UpdateRatioSchedule,
+    refresh_generator_statistics,
+    train_conditional_hinge_epoch,
+)
 from dl_utils.inference.latent_sampling import make_fixed_class_latent_grid
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.runtime.devices import configure_device, try_gpu

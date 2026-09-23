@@ -11,7 +11,7 @@ from dl_utils.gan.continuation import (
 )
 
 from .model import StyleDiscriminator, StyleGenerator
-from .training_config import TrainingEpoch
+from .training import TrainingEpoch
 
 
 def add_refinement_arguments(parser):

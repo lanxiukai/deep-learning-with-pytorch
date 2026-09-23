@@ -55,7 +55,7 @@ environment or dependency workflow.
   prepared data. [training/artifacts.py](training/artifacts.py) composes
   history records, inference, and plotting for training outputs, including
   conditional sample grids and optional metric curves. GAN-specific loss
-  layouts belong to [gan/artifacts.py](gan/artifacts.py).
+  layouts and BF16 sample grids belong to [gan/artifacts.py](gan/artifacts.py).
   Existing D2L and EBM imports through `training.metrics` and `plot.figures`
   remain available; new callers use the focused modules above.
 
@@ -79,15 +79,15 @@ environment or dependency workflow.
   [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
   SSIM, including for the latent-diffusion first stage.
 - [gan/celeba_runtime.py](gan/celeba_runtime.py) owns BF16 runtime selection,
-  CelebA access, output paths, and model/EMA setup for the ProGAN-to-StyleGAN2
-  sequence. [gan/training_state.py](gan/training_state.py) owns their checkpoint
-  and kimg metric-history contracts; [gan/sample_artifacts.py](gan/sample_artifacts.py)
-  renders fixed-latent grids.
+  CelebA access, output paths, model/EMA setup, checkpoint restoration, and
+  kimg metric-history contracts for the ProGAN-to-StyleGAN2 sequence.
+  [gan/artifacts.py](gan/artifacts.py) renders fixed-latent grids and GAN loss
+  layouts.
 - [gan/progan/](gan/progan/), [gan/stylegan/](gan/stylegan/), and
   [gan/stylegan2/](gan/stylegan2/) keep models and continuation adapters in
   their named packages. Their package exports retain the model import API.
   [gan/progressive.py](gan/progressive.py) owns shared progressive schedules
-  and options; [StyleGAN2 training_config.py](gan/stylegan2/training_config.py)
+  and options; [StyleGAN2 training.py](gan/stylegan2/training.py)
   owns its fixed-resolution epochs and options. Lesson scripts still own
   experiment budgets, objectives, regularization timing, and update order.
 - [gan/continuation.py](gan/continuation.py) owns bounded continuation,
@@ -99,17 +99,16 @@ environment or dependency workflow.
   including the historical `path_mean` field, retain their meaning.
 - [gan/stylegan_layers.py](gan/stylegan_layers.py) shares numerical layers;
   [gan/stylegan_training.py](gan/stylegan_training.py) shares latent mixing
-  and R1. [StyleGAN2 regularization.py](gan/stylegan2/regularization.py) owns
-  path-length regularization.
-- [gan/conditional_hinge.py](gan/conditional_hinge.py) owns the repeated
-  conditional hinge epoch used by SN-GAN, SAGAN, and BigGAN. Their lesson
-  scripts retain lesson-specific hyperparameters, update ratios, regularization,
-  EMA, checkpoints, and artifacts. [gan/update_schedule.py](gan/update_schedule.py)
-  owns discriminator-to-generator update schedules.
+  and R1. StyleGAN2 keeps path-length
+  regularization alongside its fixed-resolution setup in `stylegan2/training.py`.
+- [gan/conditional_training.py](gan/conditional_training.py) groups the
+  conditional hinge epoch, discriminator-to-generator update schedules, and
+  EMA normalization-buffer calibration used by SN-GAN, SAGAN, and BigGAN.
+  Their lesson scripts retain hyperparameters, update ratios, regularization,
+  EMA updates, checkpoints, and artifact timing.
 - [inference/](inference/) shares bounded tensor inference and paired
   class-latent grids across GANs, VAEs, and plotting helpers without depending
-  on a model family. [gan/normalization.py](gan/normalization.py) retains
-  EMA normalization-buffer calibration for conditional GAN generators.
+  on a model family.
 - [data/datasets/celeba/](data/datasets/celeba/) loads aligned faces using the official
   partitions and optional binary attributes. Conditional GANs use Smiling
   labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images

@@ -1,4 +1,4 @@
-"""Shared optimization loop for the class-conditional hinge-GAN lessons."""
+"""Conditional hinge-GAN updates, schedules, and EMA buffer calibration."""
 
 from __future__ import annotations
 
@@ -12,9 +12,52 @@ from dl_utils.gan.sn_gan import (
     discriminator_hinge_loss,
     generator_hinge_loss,
 )
-from dl_utils.gan.update_schedule import UpdateRatioSchedule
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.training.precision import BF16Precision, FP32Precision
+
+
+@dataclass(frozen=True)
+class UpdateRatioSchedule:
+    """Plan an exact number of discriminator updates per generator update."""
+
+    discriminator_updates_per_generator: int
+    batches_per_epoch: int
+    num_epochs: int
+
+    def __post_init__(self):
+        if self.discriminator_updates_per_generator < 1:
+            raise ValueError("discriminator_updates_per_generator must be positive.")
+        if self.batches_per_epoch < 1 or self.num_epochs < 1:
+            raise ValueError("batches_per_epoch and num_epochs must be positive.")
+        if self.discriminator_updates_per_generator > self.batches_per_epoch:
+            raise ValueError(
+                "discriminator_updates_per_generator must not exceed batches_per_epoch."
+            )
+        _, incomplete_cycle = divmod(
+            self.total_discriminator_updates,
+            self.discriminator_updates_per_generator,
+        )
+        if incomplete_cycle:
+            raise ValueError(
+                "the training plan does not end on a complete "
+                "discriminator-to-generator update cycle."
+            )
+
+    @property
+    def total_discriminator_updates(self) -> int:
+        return self.num_epochs * self.batches_per_epoch
+
+    @property
+    def total_generator_updates(self) -> int:
+        return (
+            self.total_discriminator_updates // self.discriminator_updates_per_generator
+        )
+
+    def completed_discriminator_updates(self, completed_epochs: int) -> int:
+        """Return the expected D step count after complete epochs."""
+        if not 0 <= completed_epochs <= self.num_epochs:
+            raise ValueError(f"completed_epochs must be within [0, {self.num_epochs}].")
+        return completed_epochs * self.batches_per_epoch
 
 
 @dataclass(frozen=True)
@@ -200,9 +243,46 @@ def train_conditional_hinge_epoch(
     )
 
 
+@torch.no_grad()
+def refresh_generator_statistics(
+    generator: nn.Module,
+    *,
+    z_dim: int,
+    num_classes: int,
+    device: torch.device,
+    batch_size: int = 64,
+    num_batches: int = 32,
+) -> None:
+    """Refresh an EMA generator's BatchNorm and spectral-norm buffers.
+
+    Averaged parameters can disagree with buffers copied from the live model.
+    Forward-only calibration updates those buffers without changing parameters
+    or consuming the training loop's random-number stream.
+    """
+    random_generator = torch.Generator(device=device).manual_seed(771)
+    was_training = generator.training
+    generator.train()
+    try:
+        for _ in range(num_batches):
+            noise = torch.randn(
+                batch_size, z_dim, device=device, generator=random_generator
+            )
+            labels = torch.randint(
+                num_classes,
+                (batch_size,),
+                device=device,
+                generator=random_generator,
+            )
+            generator(noise, labels)
+    finally:
+        generator.train(was_training)
+
+
 __all__ = [
     "ConditionalHingeEpochResult",
     "ConditionalHingeStepResult",
+    "UpdateRatioSchedule",
+    "refresh_generator_statistics",
     "train_conditional_hinge_epoch",
     "train_conditional_hinge_step",
 ]
