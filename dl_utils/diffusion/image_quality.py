@@ -1,27 +1,11 @@
-"""Small feature-distribution metrics shared by tokenizer evaluations."""
+"""Image quality metrics for diffusion and flow-matching models."""
 
 from __future__ import annotations
-
-from collections.abc import Iterable
-from typing import Protocol
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torchvision.models import Inception_V3_Weights, inception_v3
-
-
-class ConditionalImageSampler(Protocol):
-    """Interface shared by evaluated discrete generative systems."""
-
-    def sample(
-        self,
-        count: int,
-        *,
-        device: torch.device,
-        labels: Tensor,
-        temperature: float,
-    ) -> Tensor: ...
 
 
 def structural_similarity_index(
@@ -161,36 +145,6 @@ class FeatureMoments:
         return mean, covariance
 
 
-@torch.inference_mode()
-def collect_reference_feature_moments(
-    loader: Iterable[tuple[Tensor, Tensor]],
-    feature_extractor: nn.Module,
-    *,
-    feature_dim: int,
-    reconstruction_examples: int,
-    generation_examples: int,
-    device: torch.device,
-) -> tuple[FeatureMoments, FeatureMoments]:
-    """Collect the two real-image references shared by tokenizer evaluations."""
-    reconstruction_reference = FeatureMoments(feature_dim)
-    generation_reference = FeatureMoments(feature_dim)
-    examples = 0
-    generation_count = 0
-    for images, _ in loader:
-        remaining = reconstruction_examples - examples
-        if remaining <= 0:
-            break
-        images = images[:remaining].to(device, non_blocking=True)
-        features = feature_extractor(images)
-        reconstruction_reference.update(features)
-        if generation_count < generation_examples:
-            count = min(images.shape[0], generation_examples - generation_count)
-            generation_reference.update(features[:count])
-            generation_count += count
-        examples += images.shape[0]
-    return reconstruction_reference, generation_reference
-
-
 def _symmetric_matrix_square_root(matrix: Tensor) -> Tensor:
     matrix = 0.5 * (matrix + matrix.transpose(0, 1))
     eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
@@ -231,59 +185,9 @@ def frechet_distance(
     return float(distance.clamp_min(0))
 
 
-@torch.inference_mode()
-def evaluate_conditional_generation(
-    system: ConditionalImageSampler,
-    feature_extractor: nn.Module,
-    real_moments: FeatureMoments,
-    *,
-    examples: int,
-    batch_size: int,
-    num_classes: int,
-    temperature: float,
-    device: torch.device,
-    saved_examples: int = 64,
-) -> tuple[dict[str, float], Tensor]:
-    """Sample balanced classes and compare their feature distribution."""
-    if min(examples, batch_size, num_classes, saved_examples) < 1:
-        raise ValueError("sample counts, batch size, and num_classes must be positive")
-    generated_moments = FeatureMoments(real_moments.feature_dim)
-    sample_batches: list[Tensor] = []
-    saved = 0
-    generated = 0
-    while generated < examples:
-        count = min(batch_size, examples - generated)
-        labels = torch.arange(
-            generated,
-            generated + count,
-            device=device,
-        ).remainder(num_classes)
-        images = system.sample(
-            count,
-            device=device,
-            labels=labels,
-            temperature=temperature,
-        )
-        generated_moments.update(feature_extractor(images))
-        if saved < saved_examples:
-            save_count = min(saved_examples - saved, images.shape[0])
-            sample_batches.append(images[:save_count].cpu())
-            saved += save_count
-        generated += count
-    return {
-        "projected_inception_frechet": frechet_distance(
-            real_moments, generated_moments
-        ),
-        "temperature": temperature,
-    }, torch.cat(sample_batches)
-
-
 __all__ = [
-    "ConditionalImageSampler",
     "FeatureMoments",
     "TorchvisionInceptionFeatures",
-    "collect_reference_feature_moments",
-    "evaluate_conditional_generation",
     "frechet_distance",
     "structural_similarity_index",
 ]

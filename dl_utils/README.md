@@ -35,7 +35,12 @@ environment or dependency workflow.
   `diffusion/lesson_utils.py` shares data, binned losses, and checkpoint
   handling while objectives and optimization remain in scripts;
   `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
-  using the existing Inception/MMD/Fréchet primitives.
+  using Inception/Fréchet primitives in
+  [diffusion/image_quality.py](diffusion/image_quality.py) and the MMD helper
+  in `gan/quality.py`. The image-quality module belongs to diffusion and
+  flow matching, including SSIM for the latent-diffusion first stage.
+  GAN evaluation keeps its own Inception/Fréchet implementation in
+  `gan/quality.py`.
 - [gan/training.py](gan/training.py) owns shared BF16 runtime selection, data
   access, output paths, EMA setup, checkpoints, and sample artifacts for the
   ProGAN-to-StyleGAN2 sequence. Those lesson scripts retain model schedules,
@@ -57,8 +62,7 @@ environment or dependency workflow.
   perceptual-autoencoder blocks for the 128x128 CelebA lessons.
   The KL perceptual autoencoder also supports an f=8, 128px continuous first
   stage for latent diffusion; its 16x16 latent resolution is distinct from the
-  decoded RGB image size. The Inception extractor supports both its existing
-  projected features and unprojected 2048D features.
+  decoded RGB image size.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through

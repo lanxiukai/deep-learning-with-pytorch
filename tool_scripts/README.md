@@ -125,9 +125,9 @@ for the local Python/CUDA JPEG runtime. This applies to both fresh training
 and refinement, without changing the parent process's sharing strategy.
 
 The evaluation and tuning code is retained for future VAE adaptation. The GAN
-quality evaluator already uses feature extraction and moment calculations from
-`dl_utils.vae.image_quality`; VAE sampling, objectives, and acceptance criteria
-still need model-specific adaptation. Smoke runs, temporary benchmarks, logs,
+quality evaluator owns its feature extraction and moment calculations in
+`dl_utils.gan.quality`; VAE sampling, objectives, and acceptance criteria still
+need model-specific adaptation. Smoke runs, temporary benchmarks, logs,
 and superseded experiment checkpoints are disposable after accepted artifacts
 have been copied and checked.
 

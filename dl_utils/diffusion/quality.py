@@ -14,13 +14,13 @@ from torch.utils.data import DataLoader, Subset
 from torchvision.utils import save_image
 
 from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
-from dl_utils.diffusion.lesson_utils import append_record
-from dl_utils.gan.quality import polynomial_mmd
-from dl_utils.vae.image_quality import (
+from dl_utils.diffusion.image_quality import (
     FeatureMoments,
     TorchvisionInceptionFeatures,
     frechet_distance,
 )
+from dl_utils.diffusion.lesson_utils import append_record
+from dl_utils.gan.quality import polynomial_mmd
 
 
 def feature_precision_recall(real, fake, *, neighbors=3, chunk_size=256):

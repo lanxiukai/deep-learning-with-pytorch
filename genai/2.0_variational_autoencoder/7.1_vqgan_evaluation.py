@@ -1,9 +1,8 @@
 """Evaluate the default VQGAN tokenizer, PatchGAN, and Transformer prior.
 
 Load the final weights from 7.0 and evaluate on aligned CelebA-128 validation
-images. Report paired reconstruction fidelity (L1, PSNR, SSIM, LPIPS), token
+images. Report paired reconstruction fidelity (L1, PSNR, LPIPS), token
 usage and entropy, prior cross-entropy, PatchGAN scores, and generated images.
-The projected Inception distance is a teaching proxy, not canonical FID.
 
 Inputs:
     data/celeba: official validation split.
@@ -16,8 +15,8 @@ Outputs:
     output/vae/vqgan/evaluation/vqgan_prior_samples.png
     output/vae/vqgan/evaluation/metric_summary.png
 
-Defaults: 1,024 reconstruction examples, 100 generated images, batch size 16,
-256 projected Inception features, and an 8x8 latent token grid.
+Defaults: 1,024 reconstruction examples, 64 generated images, batch size 16,
+and an 8x8 latent token grid.
 """
 
 from __future__ import annotations
@@ -40,17 +39,10 @@ from dl_utils.data.celeba import (
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
+from dl_utils.gan.inference import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.image_quality import (
-    FeatureMoments,
-    TorchvisionInceptionFeatures,
-    collect_reference_feature_moments,
-    evaluate_conditional_generation,
-    frechet_distance,
-    structural_similarity_index,
-)
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,
@@ -70,11 +62,8 @@ NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
 DATA_DIR = DEFAULT_DATA_DIR
 BATCH_SIZE = 16
 MAX_EXAMPLES = 1_024
-GENERATION_EXAMPLES = 100
 GENERATION_BATCH_SIZE = 10
 TEMPERATURE = 1.0
-INCEPTION_PROJECTION_DIM = 256
-FEATURE_SEED = 2026
 WORKERS = 4
 SEED = 123
 VQGAN_TOKENIZER = OUTPUT_ROOT / "vqgan" / "vqgan.pth"
@@ -163,17 +152,13 @@ def load_vqgan_system(tokenizer_path: Path, device: torch.device) -> EvaluatedSy
 def evaluate_reconstruction(
     system: EvaluatedSystem,
     loader: DataLoader,
-    feature_extractor: nn.Module,
     perceptual: nn.Module,
-    real_moments: FeatureMoments,
     *,
-    feature_dim: int,
     max_examples: int,
     device: torch.device,
 ) -> tuple[dict[str, object], Tensor]:
-    reconstruction_moments = FeatureMoments(feature_dim)
     usage = TokenUsageAccumulator(system.vocabulary_size)
-    paired_totals = torch.zeros(4, device=device)
+    paired_totals = torch.zeros(3, device=device)
     discriminator_totals = torch.zeros(2, device=device)
     squared_error = 0.0
     element_count = 0
@@ -197,7 +182,6 @@ def evaluate_reconstruction(
                 )
             ).cpu()
         positions = indices.shape[1] * indices.shape[2]
-        reconstruction_moments.update(feature_extractor(reconstruction))
         squared_error += (reconstruction - images).square().sum().item()
         element_count += images.numel()
         paired_totals += (
@@ -205,7 +189,6 @@ def evaluate_reconstruction(
                 [
                     F.l1_loss(reconstruction, images),
                     perceptual(reconstruction, images),
-                    structural_similarity_index(reconstruction, images),
                     diagnostics["quantization_mse"],
                 ]
             )
@@ -253,16 +236,10 @@ def evaluate_reconstruction(
             "pixel_l1": paired[0],
             "mse": mse,
             "psnr_for_minus_one_to_one_range": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
-            "ssim": paired[2],
             "lpips_v0_1_vgg": paired[1],
         },
-        "reconstruction_distribution": {
-            "projected_inception_frechet": frechet_distance(
-                real_moments, reconstruction_moments
-            )
-        },
         "quantization": {
-            "mse": paired[3],
+            "mse": paired[2],
             "vocabulary_size": system.vocabulary_size,
             "positions": positions,
             "active_codes": int(token_statistics["active_codes"]),
@@ -289,13 +266,12 @@ def save_metric_summary(metrics: dict[str, object], output_path) -> None:
     with plt.ioff():
         figure, axes = plt.subplots(1, 3, figsize=(13, 4))
         axes[0].bar(
-            ("L1", "LPIPS", "1 - SSIM"),
+            ("L1", "LPIPS"),
             (
                 fidelity["pixel_l1"],
                 fidelity["lpips_v0_1_vgg"],
-                1.0 - fidelity["ssim"],
             ),
-            color=("#4c78a8", "#f58518", "#54a24b"),
+            color=("#4c78a8", "#f58518"),
         )
         axes[0].set_title("Paired reconstruction error")
         axes[1].bar(
@@ -322,48 +298,27 @@ def evaluate() -> None:
     device = try_gpu()
     system = load_vqgan_system(VQGAN_TOKENIZER, device)
     loader = make_validation_loader(device)
-    feature_extractor = TorchvisionInceptionFeatures(
-        projection_dim=INCEPTION_PROJECTION_DIM,
-        projection_seed=FEATURE_SEED,
-    ).to(device)
     perceptual = LPIPSPerceptualLoss().to(device)
-    feature_dim = feature_extractor.feature_dim
-    real_reconstruction, real_generation = collect_reference_feature_moments(
-        loader,
-        feature_extractor,
-        feature_dim=feature_dim,
-        reconstruction_examples=MAX_EXAMPLES,
-        generation_examples=GENERATION_EXAMPLES,
-        device=device,
-    )
     metrics, comparison = evaluate_reconstruction(
         system,
         loader,
-        feature_extractor,
         perceptual,
-        real_reconstruction,
-        feature_dim=feature_dim,
         max_examples=MAX_EXAMPLES,
         device=device,
     )
-    generation, images = evaluate_conditional_generation(
-        system,
-        feature_extractor,
-        real_generation,
-        examples=GENERATION_EXAMPLES,
-        batch_size=GENERATION_BATCH_SIZE,
-        num_classes=NUM_CLASSES,
-        temperature=TEMPERATURE,
-        device=device,
-        saved_examples=SAVED_GENERATION_SAMPLES,
+    images = generate_in_batches(
+        torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(NUM_CLASSES),
+        GENERATION_BATCH_SIZE,
+        lambda labels: system.sample(
+            len(labels), device=device, labels=labels, temperature=TEMPERATURE
+        ),
     )
-    metrics["generation"] = generation
     metrics["protocol"] = {
         "dataset": "CelebA validation",
         "image_size": IMAGE_SIZE,
         "class_names": list(CELEBA_SMILING_CLASSES),
-        "feature_projection_dimension": INCEPTION_PROJECTION_DIM,
-        "fid_warning": "Projected torchvision features give a teaching proxy, not canonical FID.",
+        "saved_generation_examples": SAVED_GENERATION_SAMPLES,
+        "sampling_temperature": TEMPERATURE,
     }
     reset_dir(str(OUTPUT_DIR))
     save_image(

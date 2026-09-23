@@ -13,7 +13,7 @@ is saved alongside it for the evaluation lesson.
 
 This entry keeps only training and bounded training-time validation. Run
 ``7.1_vqgan_evaluation.py`` to reload artifacts independently and compare
-paired fidelity, reconstruction distributions, token rates, prior likelihood,
+paired fidelity, token rates, prior likelihood,
 and complete generation under one held-out protocol.
 
 Data:

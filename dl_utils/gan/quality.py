@@ -8,14 +8,139 @@ reference images and latent seeds stay fixed across compared checkpoints.
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
 from torch.utils.data import DataLoader, Subset
+from torchvision.models import Inception_V3_Weights, inception_v3
 
 from dl_utils.data.celeba import CelebAAlignedDataset, aligned_celeba_transform
-from dl_utils.vae.image_quality import (
-    FeatureMoments,
-    TorchvisionInceptionFeatures,
-    frechet_distance,
-)
+
+
+class TorchvisionInceptionFeatures(nn.Module):
+    """ImageNet Inception-v3 pool features for transparent Fréchet proxies.
+
+    This is not the TensorFlow FID implementation.  Results are comparable
+    only when every model uses this exact preprocessing and feature extractor.
+    Set projection_dim=None to retain all 2048 pool features.
+    """
+
+    mean: Tensor
+    std: Tensor
+    projection: Tensor | None
+
+    def __init__(
+        self,
+        *,
+        projection_dim: int | None = 256,
+        projection_seed: int = 2026,
+    ) -> None:
+        super().__init__()
+        model = inception_v3(
+            weights=Inception_V3_Weights.DEFAULT,
+            transform_input=False,
+        )
+        model.add_module("fc", nn.Identity())
+        self.model = model.eval().requires_grad_(False)
+        self.register_buffer(
+            "mean", torch.tensor([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
+        )
+        self.register_buffer(
+            "std", torch.tensor([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
+        )
+        generator = torch.Generator().manual_seed(projection_seed)
+        projection = (
+            None
+            if projection_dim is None
+            else (
+                torch.randn(2048, projection_dim, generator=generator)
+                / projection_dim**0.5
+            )
+        )
+        self.feature_dim = 2048 if projection_dim is None else projection_dim
+        self.register_buffer("projection", projection)
+
+    def forward(self, images: Tensor) -> Tensor:
+        if images.ndim != 4 or images.shape[1] != 3:
+            raise ValueError("Inception input must have shape [B, 3, H, W]")
+        images = images.mul(0.5).add(0.5).clamp(0, 1)
+        images = F.interpolate(
+            images,
+            size=(299, 299),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+        features = self.model((images - self.mean) / self.std)
+        return features if self.projection is None else features @ self.projection
+
+
+class FeatureMoments:
+    """Streaming mean and unbiased covariance without storing all features."""
+
+    def __init__(self, feature_dim: int) -> None:
+        if feature_dim < 1:
+            raise ValueError("feature_dim must be positive")
+        self.feature_dim = feature_dim
+        self.count = 0
+        self.total = torch.zeros(feature_dim, dtype=torch.float64)
+        self.outer_total = torch.zeros(feature_dim, feature_dim, dtype=torch.float64)
+
+    def update(self, features: Tensor) -> None:
+        if features.ndim != 2 or features.shape[1] != self.feature_dim:
+            raise ValueError("features have the wrong shape")
+        features = features.detach().to(device="cpu", dtype=torch.float64)
+        self.count += features.shape[0]
+        self.total += features.sum(dim=0)
+        self.outer_total += features.transpose(0, 1) @ features
+
+    def statistics(self) -> tuple[Tensor, Tensor]:
+        if self.count < 2:
+            raise ValueError("at least two feature vectors are required")
+        mean = self.total / self.count
+        covariance = (self.outer_total - self.count * torch.outer(mean, mean)) / (
+            self.count - 1
+        )
+        return mean, covariance
+
+
+def _symmetric_matrix_square_root(matrix: Tensor) -> Tensor:
+    matrix = 0.5 * (matrix + matrix.transpose(0, 1))
+    eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
+    return (
+        eigenvectors * eigenvalues.clamp_min(0).sqrt().unsqueeze(0)
+    ) @ eigenvectors.transpose(0, 1)
+
+
+def frechet_distance(
+    first: FeatureMoments,
+    second: FeatureMoments,
+    *,
+    covariance_epsilon: float = 1e-6,
+) -> float:
+    """Fréchet distance between two empirical Gaussian feature fits."""
+    if first.feature_dim != second.feature_dim:
+        raise ValueError("feature dimensions must match")
+    mean_a, covariance_a = first.statistics()
+    mean_b, covariance_b = second.statistics()
+    identity = torch.eye(first.feature_dim, dtype=torch.float64)
+    covariance_a = covariance_a + covariance_epsilon * identity
+    covariance_b = covariance_b + covariance_epsilon * identity
+    root_a = _symmetric_matrix_square_root(covariance_a)
+    middle = root_a @ covariance_b @ root_a
+    trace_root = (
+        torch.linalg.eigvalsh(0.5 * (middle + middle.transpose(0, 1)))
+        .clamp_min(0)
+        .sqrt()
+        .sum()
+    )
+    difference = mean_a - mean_b
+    distance = (
+        difference.dot(difference)
+        + torch.trace(covariance_a)
+        + torch.trace(covariance_b)
+        - 2.0 * trace_root
+    )
+    return float(distance.clamp_min(0))
 
 
 def polynomial_mmd(first: torch.Tensor, second: torch.Tensor) -> float:

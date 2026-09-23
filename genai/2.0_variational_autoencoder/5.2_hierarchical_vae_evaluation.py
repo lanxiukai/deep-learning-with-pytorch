@@ -1,16 +1,16 @@
 """Test whether each stochastic VAE layer adds information beyond its prior.
 
 For both the ordinary HVAE and Ladder posterior, this script reports per-layer
-rate and active units, then performs three sampled reconstruction
-counterfactuals:
+KL and reconstruction distortion increases from two sampled interventions:
 
 * replace only q(z1 | z2, x) with p(z1 | z2);
-* replace only q(z2 | x) with p(z2), retaining lower data evidence;
-* replace both posterior layers with their matching priors.
+* replace only q(z2 | x) with p(z2), retaining lower data evidence.
 
-It also saves two controlled resampling grids.  Any apparent global/local
-division remains an empirical observation, not a property implied by the
-hierarchical ELBO.
+It also saves a four-row mean-path reconstruction comparison and two controlled
+resampling grids. The mean-path comparison uses z2=0 for top replacement;
+the numerical interventions sample from the corresponding distributions.
+Any apparent global/local division remains an empirical observation, not a
+property implied by the hierarchical ELBO.
 
 Data:
     data/glasses-256, read directly as 256x256 RGB in [0, 1].
@@ -21,22 +21,21 @@ Data:
     it is not a Monte Carlo estimate of the hierarchical ELBO.
 
 Checkpoints:
-    output/vae/hierarchical_vae/baseline/hierarchical_vae.pth: default HVAE
-    output/vae/ladder_vae/baseline/ladder_vae.pth: default Ladder VAE
+    output/vae/hierarchical_vae/hierarchical_vae.pth: default HVAE
+    output/vae/ladder_vae/ladder_vae.pth: default Ladder VAE
     Run both 5.0 and 5.1 first to produce the compared checkpoints.
 
 Outputs:
-    output/vae/hierarchical_vae/evaluation/metrics.json: comparison report
-    output/vae/hierarchical_vae/evaluation/<model>/posterior_and_prior_replacements.png
-    output/vae/hierarchical_vae/evaluation/<model>/fixed_top_resampled_lower_prior.png
-    output/vae/hierarchical_vae/evaluation/<model>/fixed_evidence_changed_top.png
-    output/vae/hierarchical_vae/evaluation/metric_comparison.png
+    output/vae/ladder_vae/evaluation/metrics.json: comparison report
+    output/vae/ladder_vae/evaluation/<model>/posterior_and_prior_replacements.png
+    output/vae/ladder_vae/evaluation/<model>/fixed_top_resampled_lower_prior.png
+    output/vae/ladder_vae/evaluation/<model>/fixed_evidence_changed_top.png
+    output/vae/ladder_vae/evaluation/metric_comparison.png
 
 Evaluation defaults:
     Training-set diagnostic images: all 4,500; batch size: 16.
     Intervention samples per image: 8; visual variants per input: 6.
     Decode batch size: 16, including interventions and visual grids.
-    Active-variance threshold: 0.01.
     Model dimensions are loaded from the checkpoint (z1=96 / z2=32 by default).
     Old FactorShapes32 checkpoints must be replaced by rerunning 5.0 and 5.1.
 """
@@ -64,7 +63,6 @@ from dl_utils.vae.hierarchical_vae import (
     LadderVAE,
 )
 from dl_utils.vae.vae_common import (
-    ActiveUnitAccumulator,
     diagonal_gaussian_kl_from_logvar,
     reparameterize_logvar,
 )
@@ -72,7 +70,7 @@ from dl_utils.vae.vae_common import (
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
-OUTPUT_DIR = OUTPUT_ROOT / "hierarchical_vae" / "evaluation"
+OUTPUT_DIR = OUTPUT_ROOT / "ladder_vae" / "evaluation"
 DISPLAY_SAMPLES = 8
 
 
@@ -81,11 +79,10 @@ BATCH_SIZE = 16
 DECODE_BATCH_SIZE = 16
 INTERVENTION_SAMPLES = 8
 VISUAL_VARIANTS = 6
-ACTIVE_VARIANCE_THRESHOLD = 1e-2
 WORKERS = 4
 SEED = 123
-HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "baseline" / "hierarchical_vae.pth"
-LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "baseline" / "ladder_vae.pth"
+HVAE_CHECKPOINT = OUTPUT_ROOT / "hierarchical_vae" / "hierarchical_vae.pth"
+LADDER_CHECKPOINT = OUTPUT_ROOT / "ladder_vae" / "ladder_vae.pth"
 
 
 def load_model(
@@ -184,14 +181,10 @@ def sampled_counterfactual_distortions(
     top_replaced_z1 = reparameterize_logvar(
         replaced_parameters_1["mu_q_1"], replaced_parameters_1["v_q_1"]
     ).reshape(batch_size, samples, model.z1_dim)
-    both_replaced_z1 = reparameterize_logvar(
-        replaced_parameters_1["mu_p_1"], replaced_parameters_1["v_p_1"]
-    ).reshape(batch_size, samples, model.z1_dim)
     return {
         "posterior": _decode_distortion(model, posterior_z1, images),
         "lower_prior": _decode_distortion(model, lower_prior_z1, images),
         "top_prior": _decode_distortion(model, top_replaced_z1, images),
-        "both_priors": _decode_distortion(model, both_replaced_z1, images),
     }
 
 
@@ -201,26 +194,19 @@ def evaluate_model(
     loader: DataLoader,
     *,
     intervention_samples: int,
-    active_variance_threshold: float,
     device: torch.device,
 ) -> dict[str, float]:
     totals = {
         "posterior": 0.0,
         "lower_prior": 0.0,
         "top_prior": 0.0,
-        "both_priors": 0.0,
     }
-    deterministic_distortion = 0.0
     kl_z1 = 0.0
     kl_z2 = 0.0
     examples = 0
-    active_z1 = ActiveUnitAccumulator()
-    active_z2 = ActiveUnitAccumulator()
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
         latents = model.infer(images, sample=False)
-        reconstruction = model.decode(latents["z1"])
-        deterministic_distortion += (reconstruction - images).square().sum().item()
         kl_z1 += (
             diagonal_gaussian_kl_from_logvar(
                 latents["mu_q_1"],
@@ -238,9 +224,6 @@ def evaluate_model(
             .sum()
             .item()
         )
-        # Lower-layer corrections and top-layer means have distinct meanings.
-        active_z1.update(latents["mu_q_1"] - latents["mu_p_1"])
-        active_z2.update(latents["mu_q_2"])
         counterfactuals = sampled_counterfactual_distortions(
             model, images, samples=intervention_samples
         )
@@ -249,27 +232,13 @@ def evaluate_model(
         examples += images.shape[0]
     sampled_posterior = totals["posterior"] / examples
     return {
-        "posterior_mean_distortion": (deterministic_distortion / examples),
         "sampled_posterior_distortion": sampled_posterior,
-        "lower_prior_replacement_distortion": (totals["lower_prior"] / examples),
-        "top_prior_replacement_distortion": (totals["top_prior"] / examples),
-        "both_priors_replacement_distortion": (totals["both_priors"] / examples),
         "lower_replacement_delta": (
             totals["lower_prior"] / examples - sampled_posterior
         ),
         "top_replacement_delta": (totals["top_prior"] / examples - sampled_posterior),
-        "both_replacement_delta": (
-            totals["both_priors"] / examples - sampled_posterior
-        ),
         "kl_z1": kl_z1 / examples,
         "kl_z2": kl_z2 / examples,
-        "total_rate": (kl_z1 + kl_z2) / examples,
-        "active_z1_corrections": float(
-            active_z1.count(variance_threshold=active_variance_threshold)
-        ),
-        "active_z2_units": float(
-            active_z2.count(variance_threshold=active_variance_threshold)
-        ),
     }
 
 
@@ -281,7 +250,7 @@ def save_counterfactual_grids(
     *,
     variants: int,
     device: torch.device,
-) -> dict[str, float]:
+) -> None:
     images, _ = next(iter(loader))
     images = images[:DISPLAY_SAMPLES].to(device)
     h_1, mu_q_2, v_q_2 = model.q_2(images)
@@ -294,7 +263,6 @@ def save_counterfactual_grids(
             _decode_grid(model, posterior["mu_q_1"]),
             _decode_grid(model, posterior["mu_p_1"]),
             _decode_grid(model, top_replaced["mu_q_1"]),
-            _decode_grid(model, top_replaced["mu_p_1"]),
         )
     )
     save_image(
@@ -332,14 +300,6 @@ def save_counterfactual_grids(
         out_dir / "fixed_evidence_changed_top.png",
         nrow=variants,
     )
-    return {
-        "fixed_top_lower_pixel_standard_deviation": lower_images.std(dim=1)
-        .mean()
-        .item(),
-        "fixed_evidence_top_pixel_standard_deviation": upper_images.std(dim=1)
-        .mean()
-        .item(),
-    }
 
 
 def checkpoint_paths() -> dict[str, Path]:
@@ -352,7 +312,7 @@ def checkpoint_paths() -> dict[str, Path]:
 def save_metric_comparison(
     model_metrics: dict[str, dict[str, float]], output_path: Path
 ) -> None:
-    """Compare rate, intervention impact, and active units across models."""
+    """Compare per-layer KL and single-layer intervention impact."""
     names = list(model_metrics)
     positions = list(range(len(names)))
     panels = (
@@ -362,13 +322,11 @@ def save_metric_comparison(
             (
                 "lower_replacement_delta",
                 "top_replacement_delta",
-                "both_replacement_delta",
             ),
         ),
-        ("Active latent units", ("active_z1_corrections", "active_z2_units")),
     )
     with plt.ioff():
-        figure, axes = plt.subplots(1, len(panels), figsize=(14, 4))
+        figure, axes = plt.subplots(1, len(panels), figsize=(10, 4))
         for axis, (title, metric_names) in zip(axes, panels):
             width = 0.8 / len(metric_names)
             for index, metric_name in enumerate(metric_names):
@@ -406,11 +364,9 @@ def evaluate() -> None:
                 "original",
                 "posterior means",
                 "lower prior mean",
-                "top prior mean with lower evidence",
-                "both prior means",
+                "top prior mean (z2=0) with lower evidence",
             ],
             "intervention_samples": INTERVENTION_SAMPLES,
-            "active_variance_threshold": ACTIVE_VARIANCE_THRESHOLD,
             "interpretation": (
                 "Layer interventions test incremental information; they do "
                 "not prove a semantic global/local hierarchy."
@@ -425,19 +381,16 @@ def evaluate() -> None:
             model,
             loader,
             intervention_samples=INTERVENTION_SAMPLES,
-            active_variance_threshold=ACTIVE_VARIANCE_THRESHOLD,
             device=device,
         )
         model_out_dir = out_root / name
         reset_dir(str(model_out_dir))
-        metrics.update(
-            save_counterfactual_grids(
-                model,
-                loader,
-                model_out_dir,
-                variants=VISUAL_VARIANTS,
-                device=device,
-            )
+        save_counterfactual_grids(
+            model,
+            loader,
+            model_out_dir,
+            variants=VISUAL_VARIANTS,
+            device=device,
         )
         metrics["checkpoint"] = str(path.relative_to(PROJECT_ROOT))
         metrics["posterior_family"] = checkpoint["posterior_family"]

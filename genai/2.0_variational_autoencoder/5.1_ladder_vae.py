@@ -29,11 +29,11 @@ Data:
     Use all 4,500 images, matching VAE/CVAE; class labels are ignored.
 
 Outputs:
-    output/vae/ladder_vae/baseline/ladder_vae.pth: final checkpoint
-    output/vae/ladder_vae/baseline/prior_samples.png: fixed-noise sample grid
-    output/vae/ladder_vae/baseline/training/epoch_*.png: selected epochs
-    output/vae/ladder_vae/baseline/ladder_vae_metrics.csv: epoch metrics
-    output/vae/ladder_vae/baseline/ladder_vae_metrics_*.png: metric curves
+    output/vae/ladder_vae/ladder_vae.pth: final checkpoint
+    output/vae/ladder_vae/prior_samples.png: fixed-noise sample grid
+    output/vae/ladder_vae/training/epoch_*.png: selected epochs
+    output/vae/ladder_vae/ladder_vae_metrics.csv: epoch metrics
+    output/vae/ladder_vae/ladder_vae_metrics_*.png: metric curves
 
 Training data -- glasses-256:
 Training images:          4,500
@@ -72,7 +72,7 @@ from dl_utils.vae.hierarchical_vae import LadderVAE
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "vae"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "ladder_vae"
 MODEL_NAME = "ladder_vae"
 SAMPLE_COUNT = 16
 SAMPLE_GRID_COLUMNS = 8

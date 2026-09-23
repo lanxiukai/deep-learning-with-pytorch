@@ -25,6 +25,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
+from dl_utils.diffusion.image_quality import structural_similarity_index
 from dl_utils.diffusion.lesson_utils import (
     OUTPUT_ROOT,
     add_data_arguments,
@@ -37,7 +38,6 @@ from dl_utils.gan.sn_gan import (
 )
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.vae.image_quality import structural_similarity_index
 from dl_utils.vae.perceptual_autoencoder import (
     KLPerceptualAutoencoder,
     PatchDiscriminator,

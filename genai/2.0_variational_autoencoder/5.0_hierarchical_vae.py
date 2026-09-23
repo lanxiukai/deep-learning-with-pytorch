@@ -33,11 +33,11 @@ Data:
     Use all 4,500 images, matching VAE/CVAE; class labels are ignored.
 
 Outputs:
-    output/vae/hierarchical_vae/baseline/hierarchical_vae.pth: final checkpoint
-    output/vae/hierarchical_vae/baseline/prior_samples.png: fixed-noise sample grid
-    output/vae/hierarchical_vae/baseline/training/epoch_*.png: selected epochs
-    output/vae/hierarchical_vae/baseline/hierarchical_vae_metrics.csv: epoch metrics
-    output/vae/hierarchical_vae/baseline/hierarchical_vae_metrics_*.png: metric curves
+    output/vae/hierarchical_vae/hierarchical_vae.pth: final checkpoint
+    output/vae/hierarchical_vae/prior_samples.png: fixed-noise sample grid
+    output/vae/hierarchical_vae/training/epoch_*.png: selected epochs
+    output/vae/hierarchical_vae/hierarchical_vae_metrics.csv: epoch metrics
+    output/vae/hierarchical_vae/hierarchical_vae_metrics_*.png: metric curves
 
 Training data -- glasses-256:
 Training images:          4,500
@@ -76,7 +76,7 @@ from dl_utils.vae.hierarchical_vae import HierarchicalVAE
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "hierarchical_vae" / "baseline"
+OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "hierarchical_vae"
 MODEL_NAME = "hierarchical_vae"
 SAMPLE_COUNT = 16
 SAMPLE_GRID_COLUMNS = 8
