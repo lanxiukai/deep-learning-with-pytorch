@@ -44,6 +44,8 @@ class TokenUsageAccumulator:
         self.counts += counts
 
     def statistics(self) -> dict[str, Tensor]:
+        if self.counts is None:
+            raise ValueError("Token usage requires at least one observed batch.")
         return _token_usage_from_counts(self.counts.float())
 
 
@@ -97,11 +99,20 @@ class VectorQuantizer(nn.Module):
 
 
 class FiniteScalarQuantizer(nn.Module):
-    """FSQ with fixed scalar levels and reversible mixed-radix indices."""
+    """FSQ with centered integer levels and reversible mixed-radix indices.
 
-    def __init__(self, levels: Sequence[int] = (8, 8, 5, 5)) -> None:
+    Even counts use an offset: eight levels give [-4, -3, ..., 3] / 4.
+    See the FSQ paper, Appendix A.1, for the bounded-rounding construction.
+    """
+
+    levels: Tensor
+    basis: Tensor
+
+    def __init__(self, levels: Sequence[int] = (8, 8, 8)) -> None:
         super().__init__()
         levels = tuple(int(level) for level in levels)
+        if not levels or any(level < 2 for level in levels):
+            raise ValueError("FSQ needs nonempty levels, each at least two.")
         levels_tensor = torch.tensor(levels, dtype=torch.long)
         basis = torch.ones_like(levels_tensor)
         if len(levels) > 1:
@@ -112,12 +123,20 @@ class FiniteScalarQuantizer(nn.Module):
         self.codebook_size = math.prod(levels)
 
     def _digits_to_values(self, digits: Tensor) -> Tensor:
-        levels = self.levels.to(dtype=digits.dtype)
-        return 2.0 * digits / (levels - 1.0) - 1.0
+        half_width = (self.levels // 2).to(dtype=digits.dtype)
+        return (digits - half_width) / half_width
 
-    def _values_to_digits(self, bounded: Tensor) -> Tensor:
-        levels = self.levels.to(dtype=bounded.dtype)
-        return torch.round((bounded + 1.0) * (levels - 1.0) / 2.0)
+    def _values_to_digits(self, values: Tensor) -> Tensor:
+        half_width = (self.levels // 2).to(dtype=values.dtype)
+        return torch.round(values * half_width + half_width)
+
+    def bound(self, values: Tensor) -> Tensor:
+        """Bound channels before rounding, with zero inside the center bin."""
+        levels = self.levels.to(dtype=values.dtype)
+        half_range = (levels - 1.0) * (1.0 + 1e-3) / 2.0
+        offset = torch.where(self.levels % 2 == 0, 0.5, 0.0)
+        shift = torch.atanh(offset / half_range)
+        return torch.tanh(values + shift) * half_range - offset
 
     def pack(self, digits: Tensor) -> Tensor:
         return (digits.long() * self.basis).sum(dim=-1)
@@ -126,13 +145,16 @@ class FiniteScalarQuantizer(nn.Module):
         return (indices[..., None] // self.basis % self.levels).long()
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        bounded = torch.tanh(z_e).permute(0, 2, 3, 1).contiguous()
-        digits = self._values_to_digits(bounded)
-        quantized = self._digits_to_values(digits)
-        z_st = bounded + (quantized - bounded).detach()
-        indices = self.pack(digits)
+        bounded = self.bound(z_e.permute(0, 2, 3, 1).contiguous())
+        rounded = bounded.round()
+        half_width = (self.levels // 2).to(dtype=bounded.dtype)
+        z_st = (bounded + (rounded - bounded).detach()) / half_width
+        indices = self.pack(rounded + half_width)
         diagnostics = token_usage(indices, self.codebook_size)
-        diagnostics["quantization_mse"] = F.mse_loss(bounded, quantized).detach()
+        # FSQ latent MSE is not directly comparable with VQ latent MSE.
+        diagnostics["quantization_mse"] = F.mse_loss(
+            bounded / half_width, rounded / half_width
+        ).detach()
         return z_st.permute(0, 3, 1, 2).contiguous(), indices, diagnostics
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
@@ -145,9 +167,9 @@ class ResidualBlock(nn.Module):
     def __init__(self, channels: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(channels, channels, 3, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(channels, channels, 1),
         )
 
@@ -260,7 +282,9 @@ class VQVAE(nn.Module):
             downsample_steps=downsample_steps,
         )
 
-    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def encode(
+        self, images: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
         return self.quantizer(self.encoder(images))
 
     def encode_indices(self, images: Tensor) -> Tensor:
@@ -270,7 +294,9 @@ class VQVAE(nn.Module):
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.lookup(indices))
 
-    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def forward(
+        self, images: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
         z_st, indices, quantizer_loss, diagnostics = self.encode(images)
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
@@ -280,7 +306,7 @@ class FSQAutoencoder(nn.Module):
 
     def __init__(
         self,
-        levels: Sequence[int] = (8, 8, 5, 5),
+        levels: Sequence[int] = (8, 8, 8),
         *,
         image_channels: int = 3,
         hidden_channels: int = 128,

@@ -1,22 +1,15 @@
-"""Evaluate the default VQGAN tokenizer, PatchGAN, and Transformer prior.
+"""Evaluate selected VQGAN, PatchGAN, and Transformer weights on CelebA test.
 
-Load the final weights from 7.0 and evaluate on aligned CelebA-128 validation
-images. Report paired reconstruction fidelity (L1, PSNR, LPIPS), token
-usage and entropy, prior cross-entropy, PatchGAN scores, and generated images.
+The complete 19,962-image test split is the default. MAX_EXAMPLES selects
+and records a seeded random subset for a shorter check. Report paired L1,
+MSE, both PSNR aggregations, LPIPS, token rates, conditional prior NLL,
+and PatchGAN diagnostics. The 64 generated images remain a visual preview.
 
-Inputs:
-    data/celeba: official validation split.
-    output/vae/vqgan/vqgan.pth: tokenizer and discriminator weights.
-    output/vae/vqgan/transformer_prior.pth: frozen-token prior weights.
-
-Outputs:
-    output/vae/vqgan/evaluation/metrics.json
-    output/vae/vqgan/evaluation/vqgan_real_and_reconstruction.png
-    output/vae/vqgan/evaluation/vqgan_prior_samples.png
-    output/vae/vqgan/evaluation/metric_summary.png
-
-Defaults: 1,024 reconstruction examples, 64 generated images, batch size 16,
-and an 8x8 latent token grid.
+Loading requires matching tokenizer/prior snapshot IDs, image preprocessing,
+labels and the current lesson architecture version. Run 7.0 first.
+The 8x8 VQGAN recipe has a different rate and training budget from 6.0/6.1;
+its companion report does not constitute a controlled algorithm ranking.
+Outputs remain in output/vae/vqgan/evaluation/.
 """
 
 from __future__ import annotations
@@ -33,9 +26,7 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_ATTRIBUTE,
     CELEBA_SMILING_CLASSES,
-    make_aligned_celeba_loader,
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -50,6 +41,11 @@ from dl_utils.vae.perceptual_autoencoder import (
 )
 from dl_utils.vae.quantization import TokenUsageAccumulator
 from dl_utils.vae.token_prior import CausalTransformerPrior
+from dl_utils.vae.tokenizer_workflow import (
+    heldout_loader,
+    load_prior_weights,
+    load_tokenizer_weights,
+)
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
@@ -61,7 +57,8 @@ NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
 # Edit these defaults to explore the lesson.
 DATA_DIR = DEFAULT_DATA_DIR
 BATCH_SIZE = 16
-MAX_EXAMPLES = 1_024
+EVALUATION_SPLIT = "test"
+MAX_EXAMPLES: int | None = None
 GENERATION_BATCH_SIZE = 10
 TEMPERATURE = 1.0
 WORKERS = 4
@@ -113,39 +110,39 @@ class EvaluatedSystem:
         return self.tokenizer.decode_indices(indices)
 
 
-def make_validation_loader(device: torch.device) -> DataLoader:
-    return make_aligned_celeba_loader(
+def make_evaluation_loader(device: torch.device):
+    return heldout_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split="validation",
-        attribute=CELEBA_SMILING_ATTRIBUTE,
-        horizontal_flip=False,
+        split=EVALUATION_SPLIT,
+        max_examples=MAX_EXAMPLES,
+        seed=SEED,
         num_workers=WORKERS,
-        shuffle=False,
-        drop_last=False,
     )
 
 
 def load_vqgan_system(tokenizer_path: Path, device: torch.device) -> EvaluatedSystem:
-    checkpoint = torch.load(tokenizer_path, map_location=device, weights_only=True)
-    tokenizer = VQPerceptualAutoencoder(**checkpoint["model_config"]).to(device)
-    tokenizer.load_state_dict(checkpoint["state_dict"])
-    discriminator = PatchDiscriminator(**checkpoint["discriminator_config"]).to(device)
-    discriminator.load_state_dict(checkpoint["discriminator_state_dict"])
-    checkpoint = torch.load(
+    tokenizer, payload = load_tokenizer_weights(
+        tokenizer_path,
+        VQPerceptualAutoencoder,
+        name="vqgan_tokenizer",
+        image_size=IMAGE_SIZE,
+        device=device,
+    )
+    discriminator = PatchDiscriminator(**payload["discriminator_config"]).to(device)
+    discriminator.load_state_dict(payload["discriminator_state_dict"])
+    prior = load_prior_weights(
         tokenizer_path.with_name(PRIOR_CHECKPOINT_NAME),
-        map_location=device,
-        weights_only=True,
+        CausalTransformerPrior,
+        name="vqgan_transformer_prior",
+        image_size=IMAGE_SIZE,
+        tokenizer=tokenizer,
+        tokenizer_payload=payload,
+        device=device,
     )
-    prior = CausalTransformerPrior(**checkpoint["model_config"]).to(device)
-    prior.load_state_dict(checkpoint["state_dict"])
-    return EvaluatedSystem(
-        tokenizer.eval().requires_grad_(False),
-        prior.eval().requires_grad_(False),
-        discriminator.eval().requires_grad_(False),
-    )
+    return EvaluatedSystem(tokenizer, prior, discriminator.eval().requires_grad_(False))
 
 
 @torch.inference_mode()
@@ -154,13 +151,14 @@ def evaluate_reconstruction(
     loader: DataLoader,
     perceptual: nn.Module,
     *,
-    max_examples: int,
+    max_examples: int | None,
     device: torch.device,
 ) -> tuple[dict[str, object], Tensor]:
     usage = TokenUsageAccumulator(system.vocabulary_size)
     paired_totals = torch.zeros(3, device=device)
     discriminator_totals = torch.zeros(2, device=device)
     squared_error = 0.0
+    psnr_sum = 0.0
     element_count = 0
     prior_nll = 0.0
     prior_examples = 0
@@ -168,7 +166,7 @@ def evaluate_reconstruction(
     positions = 0
     comparison: Tensor | None = None
     for images, labels in loader:
-        remaining = max_examples - examples
+        remaining = images.shape[0] if max_examples is None else max_examples - examples
         if remaining <= 0:
             break
         images = images[:remaining].to(device, non_blocking=True)
@@ -182,6 +180,8 @@ def evaluate_reconstruction(
                 )
             ).cpu()
         positions = indices.shape[1] * indices.shape[2]
+        per_image_mse = (reconstruction - images).square().flatten(1).mean(1)
+        psnr_sum += (10 * torch.log10(4 / per_image_mse.clamp_min(1e-12))).sum().item()
         squared_error += (reconstruction - images).square().sum().item()
         element_count += images.numel()
         paired_totals += (
@@ -209,8 +209,8 @@ def evaluate_reconstruction(
         )
         examples += images.shape[0]
 
-    if comparison is None or examples < 2:
-        raise ValueError("evaluation needs at least two held-out examples")
+    if comparison is None or examples == 0:
+        raise ValueError("evaluation needs at least one held-out example")
     paired = (paired_totals / examples).tolist()
     mse = squared_error / element_count
     token_statistics = usage.statistics()
@@ -220,6 +220,7 @@ def evaluate_reconstruction(
         "nll_nats_per_token": nll,
         "bits_per_token": nll / math.log(2),
         "bits_per_image": positions * nll / math.log(2),
+        "bits_per_pixel": positions * nll / math.log(2) / IMAGE_SIZE**2,
         "parameter_count": sum(
             parameter.numel() for parameter in system.prior.parameters()
         ),
@@ -235,11 +236,12 @@ def evaluate_reconstruction(
         "paired_fidelity": {
             "pixel_l1": paired[0],
             "mse": mse,
-            "psnr_for_minus_one_to_one_range": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
+            "mean_psnr_db": psnr_sum / examples,
+            "psnr_from_pooled_mse_db": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
             "lpips_v0_1_vgg": paired[1],
         },
         "quantization": {
-            "mse": paired[2],
+            "mse_within_model_only": paired[2],
             "vocabulary_size": system.vocabulary_size,
             "positions": positions,
             "active_codes": int(token_statistics["active_codes"]),
@@ -297,7 +299,7 @@ def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
     system = load_vqgan_system(VQGAN_TOKENIZER, device)
-    loader = make_validation_loader(device)
+    loader, protocol = make_evaluation_loader(device)
     perceptual = LPIPSPerceptualLoss().to(device)
     metrics, comparison = evaluate_reconstruction(
         system,
@@ -314,9 +316,9 @@ def evaluate() -> None:
         ),
     )
     metrics["protocol"] = {
-        "dataset": "CelebA validation",
-        "image_size": IMAGE_SIZE,
-        "class_names": list(CELEBA_SMILING_CLASSES),
+        **protocol,
+        "sampling_seed": SEED,
+        "generation_batch_size": GENERATION_BATCH_SIZE,
         "saved_generation_examples": SAVED_GENERATION_SAMPLES,
         "sampling_temperature": TEMPERATURE,
     }
@@ -324,7 +326,7 @@ def evaluate() -> None:
     save_image(
         comparison.mul(0.5).add(0.5),
         OUTPUT_DIR / "vqgan_real_and_reconstruction.png",
-        nrow=min(RECONSTRUCTION_SAMPLES, BATCH_SIZE, MAX_EXAMPLES),
+        nrow=comparison.shape[0] // 2,
     )
     save_image(
         images.mul(0.5).add(0.5),
@@ -333,7 +335,7 @@ def evaluate() -> None:
     )
     save_metric_summary(metrics, OUTPUT_DIR / "metric_summary.png")
     (OUTPUT_DIR / "metrics.json").write_text(
-        json.dumps(metrics, indent=2) + "\n",
+        json.dumps(metrics, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
 

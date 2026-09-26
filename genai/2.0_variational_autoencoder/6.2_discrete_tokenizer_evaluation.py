@@ -1,48 +1,16 @@
-"""Compare VQ-VAE and FSQ with their frozen priors on CelebA-128.
+"""Compare the selected VQ-VAE and FSQ systems on held-out CelebA-128.
 
-Tokenizer evidence:
+The default tokenizers have equal 16x16 grids and 512-entry vocabularies.
+Report paired MSE, both PSNR aggregations, token utilization, nominal rate,
+and conditional prior coding cost. Latent quantization MSE is diagnostic
+within a model; it is not a common distortion scale for VQ and FSQ.
 
-* reconstruction MSE/PSNR;
-* quantization error, active tokens, marginal entropy, and fixed capacity.
-
-System evidence:
-
-* held-out prior cross-entropy and effective bits per image;
-* conditional prior sample grids.
-
-Data:
-    data/celeba (official validation split), prepared by
-    tool_scripts/download_dataset.py --dataset celeba.
-
-Checkpoints:
-    output/vae/vq_vae/{vq_vae.pth,pixelcnn_prior.pth}: VQ-VAE system
-    output/vae/fsq/{fsq.pth,pixelcnn_prior.pth}: FSQ system
-    Run 6.0 and 6.1 first to produce both complete systems.
-
-Outputs:
-    output/vae/evaluation/discrete_tokenizer/metrics.json: system comparison
-    output/vae/evaluation/discrete_tokenizer/<system>_real_and_reconstruction.png
-    output/vae/evaluation/discrete_tokenizer/<system>_prior_samples.png
-    output/vae/evaluation/discrete_tokenizer/metric_comparison.png
-
-Evaluation data -- CelebA validation:
-Available images:                      19,867
-Batch size:                                64
-Reconstruction examples:                1,024
-Generated examples saved:                  64
-Generation batch size:                     10
-Sampling temperature:                     1.0
-
-Default dimensions:
-Evaluation input:                     128x128 RGB
-Generated image:                      128x128 RGB
-Latent token grid:                      16x16 indices
-
-Model size:
-VQ-VAE tokenizer / prior:               1.71 M / 1.84 M parameters
-VQ-VAE system total:                    3.55 M parameters
-FSQ tokenizer / prior:                  1.60 M / 2.12 M parameters
-FSQ system total:                       3.72 M parameters
+Run 6.0 and 6.1 first. Loading validates preprocessing, labels, architecture
+version and the exact tokenizer snapshot used to train each prior.
+By default all 19,962 official test images are evaluated. Set MAX_EXAMPLES
+for a reproducible sampled subset; metrics.json records its image IDs.
+Generation remains a 64-image conditional preview, not a distribution metric.
+Outputs remain in output/vae/evaluation/discrete_tokenizer/.
 """
 
 from __future__ import annotations
@@ -51,6 +19,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -59,9 +28,7 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_ATTRIBUTE,
     CELEBA_SMILING_CLASSES,
-    make_aligned_celeba_loader,
 )
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -75,6 +42,11 @@ from dl_utils.vae.quantization import (
     TokenUsageAccumulator,
 )
 from dl_utils.vae.token_prior import PixelCNNPrior
+from dl_utils.vae.tokenizer_workflow import (
+    heldout_loader,
+    load_prior_weights,
+    load_tokenizer_weights,
+)
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
@@ -90,7 +62,8 @@ NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
 # Edit these defaults to explore the lesson.
 DATA_DIR = DEFAULT_DATA_DIR
 BATCH_SIZE = 64
-MAX_EXAMPLES = 1_024
+EVALUATION_SPLIT = "test"
+MAX_EXAMPLES: int | None = None  # None evaluates the complete split.
 GENERATION_BATCH_SIZE = 10
 TEMPERATURE = 1.0
 WORKERS = 4
@@ -141,18 +114,16 @@ class DiscreteSystem:
         return self.tokenizer.decode_indices(indices)
 
 
-def make_validation_loader(device: torch.device) -> DataLoader:
-    return make_aligned_celeba_loader(
+def make_evaluation_loader(device: torch.device):
+    return heldout_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split="validation",
-        attribute=CELEBA_SMILING_ATTRIBUTE,
-        horizontal_flip=False,
+        split=EVALUATION_SPLIT,
+        max_examples=MAX_EXAMPLES,
+        seed=SEED,
         num_workers=WORKERS,
-        shuffle=False,
-        drop_last=False,
     )
 
 
@@ -163,19 +134,24 @@ def load_single_level_system(
     prior_path: Path,
     device: torch.device,
 ) -> DiscreteSystem:
-    checkpoint = torch.load(tokenizer_path, map_location=device, weights_only=True)
     model_class = VQVAE if name == "vq_vae" else FSQAutoencoder
-    tokenizer = model_class(**checkpoint["model_config"]).to(device)
-    tokenizer.load_state_dict(checkpoint["state_dict"])
-    checkpoint = torch.load(prior_path, map_location=device, weights_only=True)
-    prior = PixelCNNPrior(**checkpoint["model_config"]).to(device)
-    prior.load_state_dict(checkpoint["state_dict"])
-    return DiscreteSystem(
-        name,
-        tokenizer.eval().requires_grad_(False),
-        prior.eval().requires_grad_(False),
-        IMAGE_SIZE,
+    tokenizer, payload = load_tokenizer_weights(
+        tokenizer_path,
+        model_class,
+        name=f"{name}_tokenizer",
+        image_size=IMAGE_SIZE,
+        device=device,
     )
+    prior = load_prior_weights(
+        prior_path,
+        PixelCNNPrior,
+        name=f"{name}_pixelcnn_prior",
+        image_size=IMAGE_SIZE,
+        tokenizer=tokenizer,
+        tokenizer_payload=payload,
+        device=device,
+    )
+    return DiscreteSystem(name, tokenizer, prior, IMAGE_SIZE)
 
 
 def load_systems(device: torch.device) -> list[DiscreteSystem]:
@@ -201,20 +177,21 @@ def evaluate_tokenizer(
     system: DiscreteSystem,
     loader: DataLoader,
     *,
-    max_examples: int,
+    max_examples: int | None,
     device: torch.device,
 ) -> tuple[dict[str, object], Tensor]:
     vocabulary_size = system.tokenizer.quantizer.codebook_size
     positions = system.latent_grid_size**2
     usage = TokenUsageAccumulator(vocabulary_size)
     squared_error = 0.0
+    psnr_sum = 0.0
     elements = 0
     quantization_sum = 0.0
     prior_nll_sum = 0.0
     examples = 0
     comparison = None
     for images, labels in loader:
-        remaining = max_examples - examples
+        remaining = images.shape[0] if max_examples is None else max_examples - examples
         if remaining <= 0:
             break
         images = images[:remaining].to(device, non_blocking=True)
@@ -227,6 +204,8 @@ def evaluate_tokenizer(
                     reconstruction[:RECONSTRUCTION_SAMPLES],
                 )
             ).cpu()
+        per_image_mse = (reconstruction - images).square().flatten(1).mean(1)
+        psnr_sum += (10 * torch.log10(4 / per_image_mse.clamp_min(1e-12))).sum().item()
         squared_error += (reconstruction - images).square().sum().item()
         elements += images.numel()
         quantization_sum += diagnostics["quantization_mse"].item() * images.shape[0]
@@ -240,6 +219,8 @@ def evaluate_tokenizer(
         usage.update(indices)
         examples += images.shape[0]
 
+    if comparison is None or examples == 0:
+        raise ValueError("Evaluation requires at least one held-out example.")
     mse = squared_error / elements
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
@@ -247,8 +228,12 @@ def evaluate_tokenizer(
     return {
         "examples": examples,
         "mse": mse,
-        "psnr_for_minus_one_to_one_range": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
-        "quantization_mse": quantization_sum / examples,
+        "mean_psnr_db": psnr_sum / examples,
+        "psnr_from_pooled_mse_db": 10.0 * math.log10(4.0 / max(mse, 1e-12)),
+        "quantization_mse_within_model_only": quantization_sum / examples,
+        "positions": positions,
+        "tokenizer_parameters": sum(p.numel() for p in system.tokenizer.parameters()),
+        "prior_parameters": sum(p.numel() for p in system.prior.parameters()),
         "vocabulary_size": vocabulary_size,
         "active_codes": int(statistics["active_codes"]),
         "perplexity": statistics["perplexity"].item(),
@@ -258,16 +243,16 @@ def evaluate_tokenizer(
         * math.ceil(math.log2(vocabulary_size)),
         "prior_bits_per_token": prior_bits,
         "prior_bits_per_image": positions * prior_bits,
+        "prior_bits_per_pixel": positions * prior_bits / system.image_size**2,
     }, comparison
 
 
-def save_metric_comparison(
-    model_results: dict[str, object], output_path) -> None:
+def save_metric_comparison(model_results: dict[str, Any], output_path) -> None:
     """Compare fidelity, token capacity, and prior coding efficiency."""
     names = list(model_results)
     metrics = (
         ("Reconstruction MSE", "mse"),
-        ("Reconstruction PSNR", "psnr_for_minus_one_to_one_range"),
+        ("Mean per-image PSNR", "mean_psnr_db"),
         ("Marginal bits / image", "marginal_entropy_bits_per_image"),
         ("Prior bits / image", "prior_bits_per_image"),
     )
@@ -289,22 +274,19 @@ def save_metric_comparison(
 def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
-    loader = make_validation_loader(device)
+    loader, protocol = make_evaluation_loader(device)
     systems = load_systems(device)
     out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
-    model_results: dict[str, object] = {}
+    model_results: dict[str, Any] = {}
     results: dict[str, object] = {
         "protocol": {
-            "dataset": "celeba",
-            "split": "validation",
-            "image_size": IMAGE_SIZE,
+            **protocol,
             "conditioning": "class_conditional",
-            "attribute": CELEBA_SMILING_ATTRIBUTE,
-            "class_names": list(CELEBA_SMILING_CLASSES),
-            "max_reconstruction_examples": MAX_EXAMPLES,
             "saved_generation_examples": SAVED_GENERATION_SAMPLES,
             "sampling_temperature": TEMPERATURE,
+            "sampling_seed": SEED,
+            "generation_batch_size": GENERATION_BATCH_SIZE,
         },
         "models": model_results,
     }
@@ -318,17 +300,19 @@ def evaluate() -> None:
         save_image(
             comparison.mul(0.5).add(0.5),
             out_dir / f"{system.name}_real_and_reconstruction.png",
-            nrow=min(RECONSTRUCTION_SAMPLES, BATCH_SIZE, MAX_EXAMPLES),
+            nrow=comparison.shape[0] // 2,
         )
-        images = generate_in_batches(
-            torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(
-                NUM_CLASSES
-            ),
-            GENERATION_BATCH_SIZE,
-            lambda labels, system=system: system.sample(
-                len(labels), device=device, labels=labels, temperature=TEMPERATURE
-            ),
-        )
+        with torch.random.fork_rng():
+            torch.manual_seed(SEED)
+            images = generate_in_batches(
+                torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(
+                    NUM_CLASSES
+                ),
+                GENERATION_BATCH_SIZE,
+                lambda labels, system=system: system.sample(
+                    len(labels), device=device, labels=labels, temperature=TEMPERATURE
+                ),
+            )
         save_image(
             images.mul(0.5).add(0.5),
             out_dir / f"{system.name}_prior_samples.png",
@@ -337,7 +321,7 @@ def evaluate() -> None:
         model_results[system.name] = metrics
     save_metric_comparison(model_results, out_dir / "metric_comparison.png")
     (out_dir / "metrics.json").write_text(
-        json.dumps(results, indent=2) + "\n", encoding="utf-8"
+        json.dumps(results, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
 
 

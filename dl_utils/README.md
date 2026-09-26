@@ -115,6 +115,14 @@ environment or dependency workflow.
   The KL perceptual autoencoder also supports an f=8, 128px continuous first
   stage for latent diffusion; its 16x16 latent resolution is distinct from the
   decoded RGB image size.
+- [vae/tokenizer_workflow.py](vae/tokenizer_workflow.py) composes existing
+  checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
+  It owns recorded held-out subsets, snapshot-bound token caches, epoch recovery,
+  and best/last artifacts. Optimization, validation objectives, and model
+  selection metrics remain explicit in the lessons. Priors consume cached token
+  grids; gated PixelCNN uses two masked streams, and Transformer layers receive
+  independent initializations. The matched VQ/FSQ default vocabulary is 512;
+  VQGAN retains its separate 8x8 teaching budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through

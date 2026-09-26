@@ -23,8 +23,10 @@ def save_training_metrics(
     max_panels: int,
 ) -> None:
     """Keep metric curves and their numeric values together in the run root."""
-    metrics = {name: [row[name] for row in history] for name in history[0]}
-    epochs = list(range(1, len(history) + 1))
+    metrics = {
+        name: [row[name] for row in history] for name in history[0] if name != "epoch"
+    }
+    epochs = [row.get("epoch", index) for index, row in enumerate(history, 1)]
     save_metrics_csv(
         {"epoch": epochs, **metrics},
         out_dir / f"{prefix}_metrics.csv",

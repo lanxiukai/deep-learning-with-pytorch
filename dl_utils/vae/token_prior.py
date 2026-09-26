@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -30,7 +30,9 @@ class MaskedConv2d(nn.Conv2d):
 
     mask: Tensor
 
-    def __init__(self, mask_type: str, *args: Any, **kwargs: Any) -> None:
+    def __init__(
+        self, mask_type: str, *args: Any, stack: str = "raster", **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
         mask = torch.ones_like(self.weight)
         center_h = self.kernel_size[0] // 2
@@ -38,6 +40,11 @@ class MaskedConv2d(nn.Conv2d):
         mask[:, :, center_h + 1 :, :] = 0
         first_blocked = center_w if mask_type == "A" else center_w + 1
         mask[:, :, center_h, first_blocked:] = 0
+        if stack == "vertical":
+            # A excludes the whole current row; B receives already shifted features.
+            mask[:, :, center_h, :] = 0 if mask_type == "A" else 1
+        elif stack == "horizontal":
+            mask[:, :, :center_h, :] = 0
         self.register_buffer("mask", mask)
 
     def forward(self, input: Tensor) -> Tensor:
@@ -52,50 +59,89 @@ class MaskedConv2d(nn.Conv2d):
         )
 
 
+class GatedPixelCNNBlock(nn.Module):
+    """Separate above-row and left-row streams to remove the raster blind spot."""
+
+    def __init__(self, channels: int, mask_type: str, kernel_size: int) -> None:
+        super().__init__()
+        self.vertical = MaskedConv2d(
+            mask_type,
+            channels,
+            2 * channels,
+            kernel_size,
+            padding=kernel_size // 2,
+            stack="vertical",
+        )
+        self.horizontal = MaskedConv2d(
+            mask_type,
+            channels,
+            2 * channels,
+            (1, kernel_size),
+            padding=(0, kernel_size // 2),
+            stack="horizontal",
+        )
+        self.vertical_to_horizontal = nn.Conv2d(2 * channels, 2 * channels, 1)
+        self.output = nn.Conv2d(channels, channels, 1)
+        self.residual = mask_type == "B"
+
+    @staticmethod
+    def gate(features: Tensor) -> Tensor:
+        value, gate = features.chunk(2, dim=1)
+        return value.tanh() * gate.sigmoid()
+
+    def forward(self, vertical: Tensor, horizontal: Tensor, condition: Tensor):
+        above = self.vertical(vertical)
+        left = self.horizontal(horizontal)
+        update = self.gate(left + self.vertical_to_horizontal(above) + condition)
+        update = self.output(update)
+        # The first block cannot bypass its A mask with unmasked token embeddings.
+        horizontal = horizontal + update if self.residual else update
+        return self.gate(above + condition), horizontal
+
+
 class PixelCNNPrior(nn.Module):
-    """Class-conditional causal prior over an image-token grid."""
+    """Conditional gated PixelCNN with distinct vertical/horizontal streams.
+
+    Sixteen layers (7x7, then fifteen 3x3 blocks) cover the entire 16x16
+    causal context. Smaller lesson experiments may explicitly use fewer layers.
+    """
 
     def __init__(
         self,
         vocabulary_size: int,
         *,
-        hidden_channels: int = 128,
-        layers: int = 7,
+        hidden_channels: int = 64,
+        layers: int = 16,
         num_classes: int = 2,
     ) -> None:
         super().__init__()
+        if layers < 1:
+            raise ValueError("PixelCNN needs at least one masked layer.")
         self.vocabulary_size = vocabulary_size
         self.num_classes = num_classes
         self.embedding = nn.Embedding(vocabulary_size, hidden_channels)
-        self.class_embedding = nn.Embedding(num_classes, hidden_channels)
-        blocks: list[nn.Module] = [
-            MaskedConv2d("A", hidden_channels, hidden_channels, 7, padding=3),
-            nn.ReLU(inplace=True),
-        ]
-        for _ in range(layers - 1):
-            blocks.extend(
-                [
-                    MaskedConv2d("B", hidden_channels, hidden_channels, 3, padding=1),
-                    nn.ReLU(inplace=True),
-                ]
-            )
-        self.causal = nn.Sequential(*blocks)
+        self.class_embedding = nn.Embedding(num_classes, 2 * hidden_channels)
+        self.causal = nn.ModuleList(
+            [
+                GatedPixelCNNBlock(
+                    hidden_channels, "A" if i == 0 else "B", 7 if i == 0 else 3
+                )
+                for i in range(layers)
+            ]
+        )
         self.head = nn.Sequential(
+            nn.ReLU(),
             nn.Conv2d(hidden_channels, hidden_channels, 1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(hidden_channels, vocabulary_size, 1),
         )
 
-    def forward(
-        self,
-        indices: Tensor,
-        *,
-        labels: Tensor,
-    ) -> Tensor:
-        hidden = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
-        hidden = self.causal(hidden)
-        hidden = hidden + self.class_embedding(labels)[:, :, None, None]
-        return self.head(hidden)
+    def forward(self, indices: Tensor, *, labels: Tensor) -> Tensor:
+        vertical = horizontal = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
+        condition = self.class_embedding(labels)[:, :, None, None]
+        for block in self.causal:
+            vertical, horizontal = block(vertical, horizontal, condition)
+        return self.head(horizontal)
 
     @torch.inference_mode()
     def sample(
@@ -119,41 +165,36 @@ class PixelCNNPrior(nn.Module):
 
 
 def train_pixelcnn_prior_epoch(
-    tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
     loader: Iterable[tuple[Tensor, Tensor]],
     optimizer: Optimizer,
     device: torch.device,
     *,
     progress: tqdm,
+    log_every: int = 100,
 ) -> float:
-    """Train one causal-prior epoch over frozen tokenizer indices."""
+    """Train one causal-prior epoch over cached frozen-token grids."""
     prior.train()
     metrics = MetricAccumulator(("nll",), device=device)
-    for images, labels in loader:
-        images = images.to(device, non_blocking=True)
+    for batch_index, (indices, labels) in enumerate(loader, 1):
+        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        # The prior's embedding backward must be able to save these indices.
-        with torch.no_grad():
-            indices = tokenizer.encode_indices(images)
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        metrics.add_batch_means((loss,), num_examples=images.shape[0])
-        nll = metrics.compute_weighted_means()["nll"]
-        progress.set_postfix(
-            nll=f"{nll:.4f}",
-            bpt=f"{nll / math.log(2):.3f}",
-            refresh=False,
-        )
+        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
+        if batch_index % log_every == 0:
+            nll = metrics.compute_weighted_means(require_finite=True)["nll"]
+            progress.set_postfix(
+                nll=f"{nll:.4f}", bpt=f"{nll / math.log(2):.3f}", refresh=False
+            )
         progress.update(1)
-    return metrics.compute_weighted_means()["nll"]
+    return metrics.compute_weighted_means(require_finite=True)["nll"]
 
 
 @torch.inference_mode()
 def evaluate_pixelcnn_prior(
-    tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
     loader: Iterable[tuple[Tensor, Tensor]],
     *,
@@ -163,13 +204,12 @@ def evaluate_pixelcnn_prior(
     """Measure conditional PixelCNN NLL for one frozen tokenizer."""
     prior.eval()
     metrics = MetricAccumulator(("nll",), device=device)
-    for images, labels in loader:
-        images = images.to(device, non_blocking=True)
+    for indices, labels in loader:
+        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        indices = tokenizer.encode_indices(images)
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
-        metrics.add_batch_means((loss,), num_examples=images.shape[0])
-    nll = metrics.compute_weighted_means()["nll"]
+        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
+    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
     return {
         "nll_nats_per_token": nll,
         "bits_per_token": nll / math.log(2),
@@ -236,6 +276,13 @@ class CausalTransformerPrior(nn.Module):
         self.transformer = nn.TransformerEncoder(
             layer, num_layers=layers, enable_nested_tensor=False
         )
+        # TransformerEncoder clones one prototype, so initialize each clone separately.
+        for encoder_layer in self.transformer.layers:
+            block = cast(nn.TransformerEncoderLayer, encoder_layer)
+            nn.init.xavier_uniform_(cast(Tensor, block.self_attn.in_proj_weight))
+            for linear in (block.self_attn.out_proj, block.linear1, block.linear2):
+                nn.init.xavier_uniform_(linear.weight)
+                nn.init.zeros_(linear.bias)
         self.normalization = nn.LayerNorm(model_dim)
         self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
 
