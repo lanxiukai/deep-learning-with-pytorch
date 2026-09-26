@@ -9,6 +9,9 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+# Shared spatial compression for the VQ-VAE, FSQ and VQGAN lessons.
+TOKENIZER_DOWNSAMPLE_STEPS = 3
+
 
 def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:
     probabilities = counts / counts.sum().clamp_min(1.0)
@@ -186,7 +189,7 @@ class ImageEncoder(nn.Module):
         *,
         image_channels: int = 3,
         hidden_channels: int = 128,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         layers: list[nn.Module] = [
@@ -223,7 +226,7 @@ class ImageDecoder(nn.Module):
         *,
         image_channels: int = 3,
         hidden_channels: int = 128,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         layers: list[nn.Module] = [
@@ -264,7 +267,7 @@ class VQVAE(nn.Module):
         embedding_dim: int = 64,
         codebook_size: int = 512,
         commitment: float = 0.25,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         self.downsample_steps = downsample_steps
@@ -310,7 +313,7 @@ class FSQAutoencoder(nn.Module):
         *,
         image_channels: int = 3,
         hidden_channels: int = 128,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         self.downsample_steps = downsample_steps
@@ -344,6 +347,7 @@ class FSQAutoencoder(nn.Module):
 
 
 __all__ = [
+    "TOKENIZER_DOWNSAMPLE_STEPS",
     "VQVAE",
     "FSQAutoencoder",
     "FiniteScalarQuantizer",

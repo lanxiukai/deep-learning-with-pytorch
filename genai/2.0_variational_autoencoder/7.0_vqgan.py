@@ -5,15 +5,15 @@ and a delayed PatchGAN hinge objective. After the delay, an adaptive
 last-decoder-layer gradient ratio balances reconstruction and adversarial loss.
 Stage two fits a class-conditional causal Transformer to cached frozen tokens.
 
-This teaching recipe retains 128px CelebA, an 8x8 token grid, batch size 16,
-and 30 epochs per stage. It is not a rate- or compute-matched VQ-VAE ablation.
-VQ-VAE/FSQ use 16x16 grids and different first-stage architectures/objectives.
+This teaching recipe uses 128px CelebA and the same 16x16 token grid and
+512-entry vocabulary as VQ-VAE/FSQ: 256 tokens, or 2,304 fixed-length bits
+per image. Batch size 16 and 30 epochs per stage remain a separate training
+budget. Different backbones, objectives and priors still prevent a strict ablation.
 
 Edit RESUME and TRAIN_TOKENIZER below for recovery or prior-only training.
 Each stage saves latest full state before validation, best/last weights, and
 per-epoch CSV metrics. The selected tokenizer/prior snapshots are bound by ID.
 Validation uses a recorded seeded subset; 7.1 evaluates the full test split.
-Old lesson checkpoints must be regenerated after the architecture changes.
 
 Outputs under output/vae/vqgan/:
     tokenizer/{latest,best,last}.pth and metrics.csv
@@ -50,7 +50,7 @@ from dl_utils.vae.perceptual_autoencoder import (
     VQPerceptualAutoencoder,
     adaptive_adversarial_weight,
 )
-from dl_utils.vae.quantization import TokenUsageAccumulator
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
 from dl_utils.vae.token_prior import (
     CausalTransformerPrior,
     make_fixed_class_labels,
@@ -75,7 +75,7 @@ ADAM_BETAS = (0.5, 0.9)
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
 IMAGE_SIZE = 128
 NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
-DOWNSAMPLE_STEPS = 4
+DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
 TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
 SAMPLES_PER_CLASS = 1
@@ -432,6 +432,11 @@ def train_prior(
     validation_protocol,
 ):
     tokenizer.eval().requires_grad_(False)
+    tokenizer_grid_size = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+    if tokenizer_grid_size != LATENT_GRID_SIZE:
+        raise ValueError(
+            "The selected tokenizer grid must match the current training configuration."
+        )
     tokenizer_id = tokenizer_payload["snapshot_id"]
     cache_metadata = {
         **image_contract(IMAGE_SIZE),

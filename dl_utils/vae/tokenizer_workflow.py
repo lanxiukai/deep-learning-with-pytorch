@@ -29,10 +29,11 @@ from dl_utils.training.checkpoints import (
     load_model_weights,
 )
 from dl_utils.training.history import save_metrics_csv
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 
 
 def image_contract(image_size: int) -> dict[str, Any]:
-    """Version the changed residual, FSQ, and prior definitions explicitly."""
+    """Describe the current CelebA input and tokenizer architecture contract."""
     return {
         "tokenizer_lesson_version": 2,
         "dataset": "celeba",
@@ -257,6 +258,15 @@ class TokenizerStage:
         return payload
 
 
+def _current_tokenizer_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the spatial compression used by the current lessons."""
+    if config.get("downsample_steps") != TOKENIZER_DOWNSAMPLE_STEPS:
+        raise ValueError(
+            "Tokenizer downsample_steps must match the current configuration."
+        )
+    return config
+
+
 def load_tokenizer_weights[T: nn.Module](
     path, model_class: type[T], *, name, image_size, device
 ) -> tuple[T, dict[str, Any]]:
@@ -266,12 +276,11 @@ def load_tokenizer_weights[T: nn.Module](
         model_class,
         device=device,
         expected_metadata={**image_contract(image_size), "model_name": name},
+        config_transform=_current_tokenizer_config,
     )
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(payload.get("snapshot_id"), str):
-        raise TypeError(
-            "Tokenizer weights need a snapshot identity; retrain this lesson."
-        )
+        raise TypeError("Tokenizer weights require a snapshot identity.")
     return cast(T, model.requires_grad_(False)), payload
 
 
@@ -298,7 +307,7 @@ def load_prior_weights[T: nn.Module](
     )
     if prior.vocabulary_size != tokenizer.quantizer.codebook_size:
         raise ValueError("Prior vocabulary differs from the frozen tokenizer.")
-    positions = (image_size // (2**tokenizer.downsample_steps)) ** 2
+    positions = (image_size // (2**TOKENIZER_DOWNSAMPLE_STEPS)) ** 2
     if hasattr(prior, "sequence_length") and prior.sequence_length != positions:
         raise ValueError("Prior sequence length differs from the tokenizer grid.")
     return cast(T, prior.requires_grad_(False))

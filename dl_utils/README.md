@@ -121,8 +121,12 @@ environment or dependency workflow.
   and best/last artifacts. Optimization, validation objectives, and model
   selection metrics remain explicit in the lessons. Priors consume cached token
   grids; gated PixelCNN uses two masked streams, and Transformer layers receive
-  independent initializations. The matched VQ/FSQ default vocabulary is 512;
-  VQGAN retains its separate 8x8 teaching budget.
+  independent initializations. `TOKENIZER_DOWNSAMPLE_STEPS` in
+  [vae/quantization.py](vae/quantization.py) defines the shared model, training,
+  and evaluation defaults; weight loading enforces this configuration.
+  All three default tokenizers share a 16x16 grid and 512-code vocabulary;
+  VQGAN retains its separate backbone, objective,
+  prior and training budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through

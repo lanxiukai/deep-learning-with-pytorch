@@ -37,6 +37,7 @@ from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
     TokenUsageAccumulator,
@@ -83,7 +84,7 @@ class DiscreteSystem:
 
     @property
     def latent_grid_size(self) -> int:
-        return self.image_size // (2**self.tokenizer.downsample_steps)
+        return self.image_size // (2**TOKENIZER_DOWNSAMPLE_STEPS)
 
     def reconstruct_and_tokens(
         self, images: Tensor

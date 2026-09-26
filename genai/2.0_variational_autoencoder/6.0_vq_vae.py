@@ -10,8 +10,8 @@ Edit the constants below. RESUME continues an epoch-boundary checkpoint;
 set TRAIN_TOKENIZER=False to train only the prior from selected weights.
 Each stage saves latest full state, last weights and best validation weights.
 Validation uses a recorded, seeded subset; 6.2 evaluates the full test split.
-A prior is bound to the exact selected tokenizer snapshot. Old lesson weights
-must be regenerated because the residual blocks, FSQ and PixelCNN changed.
+A prior is bound to the exact selected tokenizer snapshot. Training and
+evaluation use the shared three-step spatial compression configuration.
 
 Outputs under output/vae/vq_vae/:
     tokenizer/{latest,best,last}.pth and metrics.csv
@@ -39,7 +39,11 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.quantization import VQVAE, TokenUsageAccumulator
+from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
+    VQVAE,
+    TokenUsageAccumulator,
+)
 from dl_utils.vae.token_prior import (
     PixelCNNPrior,
     evaluate_pixelcnn_prior,
@@ -61,7 +65,7 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vq_vae"
 TOKENIZER_CHECKPOINT_NAME = "vq_vae.pth"
 PRIOR_CHECKPOINT_NAME = "pixelcnn_prior.pth"
 IMAGE_SIZE = 128
-DOWNSAMPLE_STEPS = 3
+DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
 TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
 NUM_CLASSES = len(CELEBA_SMILING_CLASSES)

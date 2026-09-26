@@ -11,7 +11,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
-from dl_utils.vae.quantization import VectorQuantizer
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VectorQuantizer
 from dl_utils.vae.vae_common import reparameterize_logvar
 
 
@@ -41,7 +41,7 @@ class PerceptualEncoder(nn.Module):
         self,
         out_channels: int,
         hidden_channels: int = 128,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         if hidden_channels < 2 or downsample_steps < 2:
@@ -83,7 +83,7 @@ class PerceptualDecoder(nn.Module):
         self,
         in_channels: int,
         hidden_channels: int = 128,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         if hidden_channels < 2 or downsample_steps < 2:
@@ -135,7 +135,7 @@ class VQPerceptualAutoencoder(nn.Module):
         codebook_size: int = 512,
         hidden_channels: int = 128,
         commitment: float = 0.25,
-        downsample_steps: int = 2,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
         self.downsample_steps = downsample_steps
@@ -147,7 +147,9 @@ class VQPerceptualAutoencoder(nn.Module):
             latent_channels, hidden_channels, downsample_steps
         )
 
-    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def encode(
+        self, images: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
         return self.quantizer(self.encoder(images))
 
     def encode_indices(self, images: Tensor) -> Tensor:
@@ -157,7 +159,9 @@ class VQPerceptualAutoencoder(nn.Module):
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.lookup(indices))
 
-    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def forward(
+        self, images: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
         z_st, indices, quantizer_loss, diagnostics = self.encode(images)
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
@@ -216,7 +220,9 @@ class KLPerceptualAutoencoder(nn.Module):
         return self.decoder(z / latent_scale)
 
     def reconstruct(self, images: Tensor) -> Tensor:
-        return self.decode_latent(self.encode_latent(images, sample=False), latent_scale=1.0)
+        return self.decode_latent(
+            self.encode_latent(images, sample=False), latent_scale=1.0
+        )
 
     def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         mu, logvar = self.encode(images)

@@ -7,8 +7,9 @@ and PatchGAN diagnostics. The 64 generated images remain a visual preview.
 
 Loading requires matching tokenizer/prior snapshot IDs, image preprocessing,
 labels and the current lesson architecture version. Run 7.0 first.
-The 8x8 VQGAN recipe has a different rate and training budget from 6.0/6.1;
-its companion report does not constitute a controlled algorithm ranking.
+The default 16x16 grid and 512-entry vocabulary match 6.0/6.1. Different
+backbones, objectives, priors and training budgets still prevent a controlled
+algorithm ranking. Loading enforces the current shared spatial compression.
 Outputs remain in output/vae/vqgan/evaluation/.
 """
 
@@ -39,7 +40,7 @@ from dl_utils.vae.perceptual_autoencoder import (
     PatchDiscriminator,
     VQPerceptualAutoencoder,
 )
-from dl_utils.vae.quantization import TokenUsageAccumulator
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
 from dl_utils.vae.token_prior import CausalTransformerPrior
 from dl_utils.vae.tokenizer_workflow import (
     heldout_loader,
@@ -100,7 +101,7 @@ class EvaluatedSystem:
         labels: Tensor,
         temperature: float,
     ) -> Tensor:
-        side = math.isqrt(self.prior.sequence_length)
+        side = IMAGE_SIZE // (2**TOKENIZER_DOWNSAMPLE_STEPS)
         indices = self.prior.sample(
             count,
             device=device,
