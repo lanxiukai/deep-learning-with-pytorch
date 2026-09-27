@@ -89,7 +89,7 @@ class GatedPixelCNNBlock(nn.Module):
         value, gate = features.chunk(2, dim=1)
         return value.tanh() * gate.sigmoid()
 
-    def forward(self, vertical: Tensor, horizontal: Tensor, condition: Tensor):
+    def forward(self, vertical: Tensor, horizontal: Tensor, condition: Tensor | float):
         above = self.vertical(vertical)
         left = self.horizontal(horizontal)
         update = self.gate(left + self.vertical_to_horizontal(above) + condition)
@@ -100,10 +100,11 @@ class GatedPixelCNNBlock(nn.Module):
 
 
 class PixelCNNPrior(nn.Module):
-    """Conditional gated PixelCNN with distinct vertical/horizontal streams.
+    """Gated PixelCNN with distinct vertical/horizontal streams.
 
     Sixteen layers (7x7, then fifteen 3x3 blocks) cover the entire 16x16
     causal context. Smaller lesson experiments may explicitly use fewer layers.
+    Set num_classes=0 for an unconditional prior without a class embedding.
     """
 
     def __init__(
@@ -120,7 +121,9 @@ class PixelCNNPrior(nn.Module):
         self.vocabulary_size = vocabulary_size
         self.num_classes = num_classes
         self.embedding = nn.Embedding(vocabulary_size, hidden_channels)
-        self.class_embedding = nn.Embedding(num_classes, 2 * hidden_channels)
+        self.class_embedding = (
+            nn.Embedding(num_classes, 2 * hidden_channels) if num_classes else None
+        )
         self.causal = nn.ModuleList(
             [
                 GatedPixelCNNBlock(
@@ -136,9 +139,13 @@ class PixelCNNPrior(nn.Module):
             nn.Conv2d(hidden_channels, vocabulary_size, 1),
         )
 
-    def forward(self, indices: Tensor, *, labels: Tensor) -> Tensor:
+    def forward(self, indices: Tensor, *, labels: Tensor | None = None) -> Tensor:
         vertical = horizontal = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
-        condition = self.class_embedding(labels)[:, :, None, None]
+        condition: Tensor | float = 0.0
+        if self.class_embedding is not None:
+            if labels is None:
+                raise ValueError("A conditional PixelCNN requires class labels.")
+            condition = self.class_embedding(labels)[:, :, None, None]
         for block in self.causal:
             vertical, horizontal = block(vertical, horizontal, condition)
         return self.head(horizontal)
@@ -151,7 +158,7 @@ class PixelCNNPrior(nn.Module):
         width: int,
         *,
         device: torch.device,
-        labels: Tensor,
+        labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
@@ -178,7 +185,7 @@ def train_pixelcnn_prior_epoch(
     metrics = MetricAccumulator(("nll",), device=device)
     for batch_index, (indices, labels) in enumerate(loader, 1):
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -201,12 +208,12 @@ def evaluate_pixelcnn_prior(
     tokens_per_image: int,
     device: torch.device,
 ) -> dict[str, float]:
-    """Measure conditional PixelCNN NLL for one frozen tokenizer."""
+    """Measure PixelCNN NLL for one frozen tokenizer."""
     prior.eval()
     metrics = MetricAccumulator(("nll",), device=device)
     for indices, labels in loader:
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
         loss = F.cross_entropy(prior(indices, labels=labels), indices)
         metrics.add_batch_means((loss,), num_examples=indices.shape[0])
     nll = metrics.compute_weighted_means(require_finite=True)["nll"]
@@ -221,20 +228,20 @@ def evaluate_pixelcnn_prior(
 def sample_pixelcnn_prior_images(
     tokenizer: VQVAE | FSQAutoencoder,
     prior: PixelCNNPrior,
-    labels: Tensor,
+    count: int,
     *,
     grid_size: int,
     device: torch.device,
     temperature: float,
+    labels: Tensor | None = None,
 ) -> Tensor:
     """Sample a square token grid and decode it to an image batch."""
-    labels = labels.to(device)
     indices = prior.sample(
-        labels.shape[0],
+        count,
         grid_size,
         grid_size,
         device=device,
-        labels=labels,
+        labels=labels.to(device) if labels is not None else None,
         temperature=temperature,
     )
     return tokenizer.decode_indices(indices)

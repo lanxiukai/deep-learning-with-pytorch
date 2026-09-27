@@ -23,6 +23,7 @@ from dl_utils.data.datasets.celeba import (
     make_aligned_celeba_loader,
 )
 from dl_utils.data.loading import make_device_aware_loader
+from dl_utils.data.vision import image_folder_dataset
 from dl_utils.training.checkpoints import (
     TrainingCheckpoint,
     atomic_torch_save,
@@ -32,10 +33,22 @@ from dl_utils.training.history import save_metrics_csv
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 
 
-def image_contract(image_size: int) -> dict[str, Any]:
-    """Describe the current CelebA input and tokenizer architecture contract."""
+def image_contract(image_size: int, *, dataset: str = "celeba") -> dict[str, Any]:
+    """Describe the input contract for the selected tokenizer lesson."""
+    if dataset == "glasses-256":
+        return {
+            "dataset": dataset,
+            "image_size": image_size,
+            "crop_size": None,
+            "normalization": "[-1,1]",
+            "horizontal_flip": False,
+            "attribute": None,
+            "class_names": [],
+            "conditioning": "unconditional",
+        }
+    if dataset != "celeba":
+        raise ValueError(f"Unknown tokenizer dataset: {dataset}")
     return {
-        "tokenizer_lesson_version": 2,
         "dataset": "celeba",
         "image_size": image_size,
         "crop_size": CELEBA_ALIGNED_CROP_SIZE,
@@ -44,6 +57,54 @@ def image_contract(image_size: int) -> dict[str, Any]:
         "attribute": CELEBA_SMILING_ATTRIBUTE,
         "class_names": list(CELEBA_SMILING_CLASSES),
     }
+
+
+def glasses_loader(
+    root,
+    image_size,
+    batch_size,
+    device,
+    *,
+    shuffle=False,
+    max_examples=None,
+    seed=123,
+    num_workers=0,
+) -> tuple[DataLoader, dict[str, Any]]:
+    """Reuse the VAE's training images; a seeded subset is only a diagnostic."""
+    if max_examples is not None and max_examples < 1:
+        raise ValueError("max_examples must be positive or None (all training images).")
+    root = Path(root)
+    dataset = image_folder_dataset(
+        root, resize=(image_size, image_size), normalize=(0.5, 0.5)
+    )
+    indices = list(range(len(dataset)))
+    if max_examples is not None and max_examples < len(indices):
+        indices = torch.randperm(
+            len(indices), generator=torch.Generator().manual_seed(seed)
+        )[:max_examples].tolist()
+    loader = make_device_aware_loader(
+        Subset(dataset, indices),
+        batch_size,
+        device,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=shuffle,
+    )
+    loader.generator = torch.Generator().manual_seed(seed)
+    protocol = {
+        **image_contract(image_size, dataset="glasses-256"),
+        "split": "training",
+        "evaluation_scope": "training-set diagnostics, not held-out performance",
+        "subset_seed": seed,
+        "examples": len(indices),
+        "image_ids": [
+            Path(dataset.samples[i][0]).relative_to(root).as_posix() for i in indices
+        ],
+        "psnr_aggregation": "both mean per-image PSNR and PSNR from pooled MSE; data_range=2",
+        "rate_interpretation": "unconditional token cross-entropy; excludes model weights and coder overhead",
+        "latent_mse_interpretation": "within-tokenizer diagnostic, not comparable across quantizer coordinate systems",
+    }
+    return loader, protocol
 
 
 def heldout_loader(
@@ -258,9 +319,11 @@ class TokenizerStage:
         return payload
 
 
-def _current_tokenizer_config(config: dict[str, Any]) -> dict[str, Any]:
+def _current_tokenizer_config(
+    config: dict[str, Any], downsample_steps: int
+) -> dict[str, Any]:
     """Accept only the spatial compression used by the current lessons."""
-    if config.get("downsample_steps") != TOKENIZER_DOWNSAMPLE_STEPS:
+    if config.get("downsample_steps") != downsample_steps:
         raise ValueError(
             "Tokenizer downsample_steps must match the current configuration."
         )
@@ -268,15 +331,27 @@ def _current_tokenizer_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_tokenizer_weights[T: nn.Module](
-    path, model_class: type[T], *, name, image_size, device
+    path,
+    model_class: type[T],
+    *,
+    name,
+    image_size,
+    device,
+    dataset="celeba",
+    downsample_steps=TOKENIZER_DOWNSAMPLE_STEPS,
 ) -> tuple[T, dict[str, Any]]:
     """Reuse the common weight loader and return the identity needed by priors."""
     model, _ = load_model_weights(
         path,
         model_class,
         device=device,
-        expected_metadata={**image_contract(image_size), "model_name": name},
-        config_transform=_current_tokenizer_config,
+        expected_metadata={
+            **image_contract(image_size, dataset=dataset),
+            "model_name": name,
+        },
+        config_transform=lambda config: _current_tokenizer_config(
+            config, downsample_steps
+        ),
     )
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(payload.get("snapshot_id"), str):
@@ -293,6 +368,7 @@ def load_prior_weights[T: nn.Module](
     tokenizer,
     tokenizer_payload,
     device,
+    dataset="celeba",
 ) -> T:
     """Reject mixed runs, labels, image preprocessing, vocabularies and grids."""
     prior, _ = load_model_weights(
@@ -300,14 +376,17 @@ def load_prior_weights[T: nn.Module](
         model_class,
         device=device,
         expected_metadata={
-            **image_contract(image_size),
+            **image_contract(image_size, dataset=dataset),
             "model_name": name,
             "tokenizer_id": tokenizer_payload["snapshot_id"],
         },
     )
     if prior.vocabulary_size != tokenizer.quantizer.codebook_size:
         raise ValueError("Prior vocabulary differs from the frozen tokenizer.")
-    positions = (image_size // (2**TOKENIZER_DOWNSAMPLE_STEPS)) ** 2
+    expected_classes = len(image_contract(image_size, dataset=dataset)["class_names"])
+    if prior.num_classes != expected_classes:
+        raise ValueError("Prior conditioning differs from the image contract.")
+    positions = (image_size // (2**tokenizer.downsample_steps)) ** 2
     if hasattr(prior, "sequence_length") and prior.sequence_length != positions:
         raise ValueError("Prior sequence length differs from the tokenizer grid.")
     return cast(T, prior.requires_grad_(False))

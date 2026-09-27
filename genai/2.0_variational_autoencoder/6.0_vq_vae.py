@@ -1,17 +1,16 @@
-"""VQ-VAE: train a tokenizer, then a frozen-token conditional PixelCNN.
+"""VQ-VAE: train a 256px tokenizer, then an unconditional PixelCNN.
 
-CelebA aligned faces are center-cropped to 178px and resized to 128px.
-The official training split is label-free in stage one; Smiling labels
-condition only the stage-two prior. VQ-VAE and FSQ share a 16x16 token
-grid, a 512-entry vocabulary, an MSE reconstruction objective, and the
+Use the same 4,500 glasses-256 faces as the standard Gaussian VAE.
+Both stages ignore folder labels. VQ-VAE and FSQ share four downsampling
+steps, a 16x16 token grid, 512 possible codes, MSE reconstruction, and the
 same prior budget. Latent quantization MSE is a within-model diagnostic.
 
 Edit the constants below. RESUME continues an epoch-boundary checkpoint;
 set TRAIN_TOKENIZER=False to train only the prior from selected weights.
-Each stage saves latest full state, last weights and best validation weights.
-Validation uses a recorded, seeded subset; 6.2 evaluates the full test split.
-A prior is bound to the exact selected tokenizer snapshot. Training and
-evaluation use the shared three-step spatial compression configuration.
+A fixed 256-image training subset monitors progress and selects snapshots;
+the stored val_* fields are training-set diagnostics, not held-out results.
+A prior is bound to its exact tokenizer snapshot.
+Run 6.2 for simple VAE comparisons.
 
 Outputs under output/vae/vq_vae/:
     tokenizer/{latest,best,last}.pth and metrics.csv
@@ -29,32 +28,25 @@ import torch.nn.functional as F
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
-from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_ATTRIBUTE,
-    CELEBA_SMILING_CLASSES,
-    make_aligned_celeba_loader,
-)
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import (
-    TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     TokenUsageAccumulator,
 )
 from dl_utils.vae.token_prior import (
     PixelCNNPrior,
     evaluate_pixelcnn_prior,
-    make_fixed_class_labels,
     sample_pixelcnn_prior_images,
     train_pixelcnn_prior_epoch,
 )
 from dl_utils.vae.tokenizer_workflow import (
     TokenizerStage,
     cached_token_loader,
-    heldout_loader,
+    glasses_loader,
     image_contract,
     load_tokenizer_weights,
     seed_epoch_loader,
@@ -64,36 +56,36 @@ PROJECT_ROOT = infer_project_root()
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vq_vae"
 TOKENIZER_CHECKPOINT_NAME = "vq_vae.pth"
 PRIOR_CHECKPOINT_NAME = "pixelcnn_prior.pth"
-IMAGE_SIZE = 128
-DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
+IMAGE_SIZE = 256
+DOWNSAMPLE_STEPS = 4
 LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
 TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
-NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
 
 # Edit these defaults to explore the lesson.
-DATA_DIR = PROJECT_ROOT / "data" / "celeba"
+DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 TRAIN_TOKENIZER = True
-RESUME = True  # Set False for a fresh recipe; incompatible resumes fail explicitly.
-TOKENIZER_EPOCHS = 20
-PRIOR_EPOCHS = 20
+RESUME = True  # Continue from the latest epoch when a checkpoint exists.
+TOKENIZER_EPOCHS = 100
+PRIOR_EPOCHS = 100
 HIDDEN_CHANNELS = 128
 EMBEDDING_DIM = 64
 CODEBOOK_SIZE = 512
 COMMITMENT = 0.25
 PRIOR_HIDDEN_CHANNELS = 64
 PRIOR_LAYERS = 16  # The two masked streams cover the complete 16x16 past.
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 LR = 2e-4
 PRIOR_LR = 2e-4
 TEMPERATURE = 1.0
-SAMPLE_EVERY = 5
+SAMPLE_EVERY = 10
 LOG_EVERY = 100
-VALIDATION_EXAMPLES = 1_024
-VALIDATION_SEED = 123
+MONITOR_EXAMPLES = 256
+MONITOR_SEED = 123
 WORKERS = 4
 SEED = 42
 RECONSTRUCTION_SAMPLES = 8
-SAMPLES_PER_CLASS = 1
+NUM_FIXED_SAMPLES = 18
+SAMPLE_GRID_COLUMNS = 6
 PROGRESS_INTERVAL = 0.5
 MAX_METRIC_PANELS = 4
 
@@ -140,9 +132,7 @@ def evaluate_tokenizer(model, loader, *, device) -> dict[str, float]:
     }
 
 
-def train_tokenizer(
-    train_loader, validation_loader, device, out_dir, validation_protocol
-):
+def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_protocol):
     config = {
         "hidden_channels": HIDDEN_CHANNELS,
         "embedding_dim": EMBEDDING_DIM,
@@ -157,11 +147,11 @@ def train_tokenizer(
         models={"model": model},
         optimizers={"model": optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE),
+            **image_contract(IMAGE_SIZE, dataset="glasses-256"),
             "model_name": "vq_vae_tokenizer",
             "model_config": config,
-            "validation_protocol": validation_protocol,
-            "selection_metric": "validation_mse",
+            "monitor_protocol": monitor_protocol,
+            "selection_metric": "training_subset_mse",
         },
         recipe={"lr": LR, "batch_size": BATCH_SIZE, "seed": SEED},
         resume=RESUME,
@@ -218,12 +208,12 @@ def train_tokenizer(
                     / math.log(2),
                 },
             )
-        # latest.pth is already durable if validation or plotting fails.
-        validation = evaluate_tokenizer(model, validation_loader, device=device)
+        # latest.pth is already durable if monitoring or plotting fails.
+        validation = evaluate_tokenizer(model, monitor_loader, device=device)
         stage.record_validation(epoch, validation, score=validation["mse"])
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
             with torch.inference_mode():
-                images = next(iter(validation_loader))[0][:RECONSTRUCTION_SAMPLES].to(
+                images = next(iter(monitor_loader))[0][:RECONSTRUCTION_SAMPLES].to(
                     device
                 )
                 reconstruction = model(images)[0]
@@ -243,15 +233,15 @@ def train_prior(
     tokenizer,
     tokenizer_payload,
     train_loader,
-    validation_loader,
+    monitor_loader,
     device,
     out_dir,
-    validation_protocol,
+    monitor_protocol,
 ):
     tokenizer.eval().requires_grad_(False)
     tokenizer_id = tokenizer_payload["snapshot_id"]
     cache_metadata = {
-        **image_contract(IMAGE_SIZE),
+        **image_contract(IMAGE_SIZE, dataset="glasses-256"),
         "source_root": str(DATA_DIR.resolve()),
     }
     tokens = cached_token_loader(
@@ -263,12 +253,12 @@ def train_prior(
         device=device,
         shuffle=True,
     )
-    validation_tokens = cached_token_loader(
+    monitor_tokens = cached_token_loader(
         tokenizer,
-        validation_loader,
-        out_dir / "token_cache_validation.pth",
+        monitor_loader,
+        out_dir / "token_cache_monitor.pth",
         tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "protocol": validation_protocol},
+        metadata={**cache_metadata, "protocol": monitor_protocol},
         device=device,
         shuffle=False,
     )
@@ -276,7 +266,7 @@ def train_prior(
         "vocabulary_size": tokenizer.quantizer.codebook_size,
         "hidden_channels": PRIOR_HIDDEN_CHANNELS,
         "layers": PRIOR_LAYERS,
-        "num_classes": NUM_CLASSES,
+        "num_classes": 0,
     }
     prior = PixelCNNPrior(**config).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=PRIOR_LR)
@@ -285,12 +275,12 @@ def train_prior(
         models={"model": prior},
         optimizers={"model": optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE),
+            **image_contract(IMAGE_SIZE, dataset="glasses-256"),
             "model_name": "vq_vae_pixelcnn_prior",
             "model_config": config,
             "tokenizer_id": tokenizer_id,
-            "validation_protocol": validation_protocol,
-            "selection_metric": "validation_nll",
+            "monitor_protocol": monitor_protocol,
+            "selection_metric": "training_subset_nll",
         },
         recipe={"lr": PRIOR_LR, "batch_size": BATCH_SIZE, "seed": SEED},
         resume=RESUME,
@@ -319,7 +309,7 @@ def train_prior(
             )
         validation = evaluate_pixelcnn_prior(
             prior,
-            validation_tokens,
+            monitor_tokens,
             tokens_per_image=TOKENS_PER_IMAGE,
             device=device,
         )
@@ -331,11 +321,10 @@ def train_prior(
             with torch.random.fork_rng():
                 torch.manual_seed(SEED)
                 prior.eval()
-                labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
                 samples = sample_pixelcnn_prior_images(
                     tokenizer,
                     prior,
-                    labels,
+                    NUM_FIXED_SAMPLES,
                     grid_size=LATENT_GRID_SIZE,
                     device=device,
                     temperature=TEMPERATURE,
@@ -343,7 +332,7 @@ def train_prior(
             save_image(
                 samples.mul(0.5).add(0.5),
                 training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=NUM_CLASSES,
+                nrow=SAMPLE_GRID_COLUMNS,
             )
     stage.export_best(out_dir / PRIOR_CHECKPOINT_NAME)
     save_training_metrics(
@@ -353,29 +342,28 @@ def train_prior(
 
 def train() -> None:
     device = try_gpu()
-    train_loader = make_aligned_celeba_loader(
+    train_loader, _ = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
+        shuffle=True,
+        seed=SEED,
         num_workers=WORKERS,
-        attribute=CELEBA_SMILING_ATTRIBUTE,
-        horizontal_flip=False,
     )
-    validation_loader, protocol = heldout_loader(
+    monitor_loader, protocol = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split="validation",
-        max_examples=VALIDATION_EXAMPLES,
-        seed=VALIDATION_SEED,
+        max_examples=MONITOR_EXAMPLES,
+        seed=MONITOR_SEED,
         num_workers=WORKERS,
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if TRAIN_TOKENIZER:
         tokenizer, payload = train_tokenizer(
-            train_loader, validation_loader, device, OUTPUT_DIR, protocol
+            train_loader, monitor_loader, device, OUTPUT_DIR, protocol
         )
     else:
         tokenizer, payload = load_tokenizer_weights(
@@ -384,12 +372,14 @@ def train() -> None:
             name="vq_vae_tokenizer",
             image_size=IMAGE_SIZE,
             device=device,
+            dataset="glasses-256",
+            downsample_steps=DOWNSAMPLE_STEPS,
         )
     train_prior(
         tokenizer,
         payload,
         train_loader,
-        validation_loader,
+        monitor_loader,
         device,
         OUTPUT_DIR,
         protocol,

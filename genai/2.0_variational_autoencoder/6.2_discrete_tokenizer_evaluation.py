@@ -1,15 +1,14 @@
-"""Compare the selected VQ-VAE and FSQ systems on held-out CelebA-128.
+"""Visually compare Gaussian VAE, VQ-VAE and FSQ on glasses-256.
 
-The default tokenizers have equal 16x16 grids and 512-entry vocabularies.
-Report paired MSE, both PSNR aggregations, token utilization, nominal rate,
-and conditional prior coding cost. Latent quantization MSE is diagnostic
-within a model; it is not a common distortion scale for VQ and FSQ.
+Run 1.0, 6.0 and 6.1 first. All three models use the same 256px training
+images and unconditional generation. Two labeled grids compare posterior-mean
+VAE / discrete reconstructions and independent prior samples. Columns in the
+generation grid do not represent matched identities.
 
-Run 6.0 and 6.1 first. Loading validates preprocessing, labels, architecture
-version and the exact tokenizer snapshot used to train each prior.
-By default all 19,962 official test images are evaluated. Set MAX_EXAMPLES
-for a reproducible sampled subset; metrics.json records its image IDs.
-Generation remains a 64-image conditional preview, not a distribution metric.
+Keep the existing VQ/FSQ reconstruction, token-usage and prior diagnostics.
+The default 256-image seeded subset is drawn from the training set; these
+numbers do not measure held-out performance or distributional sample quality.
+Loading checks the dataset, architecture, conditioning and tokenizer/prior pair.
 Outputs remain in output/vae/evaluation/discrete_tokenizer/.
 """
 
@@ -27,48 +26,47 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_CLASSES,
-)
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
+from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.quantization import (
-    TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
     TokenUsageAccumulator,
 )
 from dl_utils.vae.token_prior import PixelCNNPrior
 from dl_utils.vae.tokenizer_workflow import (
-    heldout_loader,
+    glasses_loader,
     load_prior_weights,
     load_tokenizer_weights,
 )
+from dl_utils.vae.vae import VAE
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 OUTPUT_DIR = OUTPUT_ROOT / "evaluation" / "discrete_tokenizer"
-RECONSTRUCTION_SAMPLES = 16
+RECONSTRUCTION_SAMPLES = 8
 SAVED_GENERATION_SAMPLES = 64
 SAMPLE_GRID_COLUMNS = 8
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
-IMAGE_SIZE = 128
-NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
+IMAGE_SIZE = 256
+DOWNSAMPLE_STEPS = 4
 
 
 # Edit these defaults to explore the lesson.
 DATA_DIR = DEFAULT_DATA_DIR
-BATCH_SIZE = 64
-EVALUATION_SPLIT = "test"
-MAX_EXAMPLES: int | None = None  # None evaluates the complete split.
-GENERATION_BATCH_SIZE = 10
+BATCH_SIZE = 16
+MAX_EXAMPLES: int | None = 256  # None evaluates all training images.
+GENERATION_BATCH_SIZE = 8
 TEMPERATURE = 1.0
 WORKERS = 4
 SEED = 123
+VAE_CHECKPOINT = OUTPUT_ROOT / "vae" / "vae.pth"
 VQ_VAE_TOKENIZER = OUTPUT_ROOT / "vq_vae" / "vq_vae.pth"
 VQ_VAE_PRIOR = OUTPUT_ROOT / "vq_vae" / "pixelcnn_prior.pth"
 FSQ_TOKENIZER = OUTPUT_ROOT / "fsq" / "fsq.pth"
@@ -84,7 +82,7 @@ class DiscreteSystem:
 
     @property
     def latent_grid_size(self) -> int:
-        return self.image_size // (2**TOKENIZER_DOWNSAMPLE_STEPS)
+        return self.image_size // (2**self.tokenizer.downsample_steps)
 
     def reconstruct_and_tokens(
         self, images: Tensor
@@ -101,7 +99,6 @@ class DiscreteSystem:
         count: int,
         *,
         device: torch.device,
-        labels: Tensor,
         temperature: float,
     ) -> Tensor:
         indices = self.prior.sample(
@@ -109,19 +106,17 @@ class DiscreteSystem:
             self.latent_grid_size,
             self.latent_grid_size,
             device=device,
-            labels=labels,
             temperature=temperature,
         )
         return self.tokenizer.decode_indices(indices)
 
 
 def make_evaluation_loader(device: torch.device):
-    return heldout_loader(
+    return glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split=EVALUATION_SPLIT,
         max_examples=MAX_EXAMPLES,
         seed=SEED,
         num_workers=WORKERS,
@@ -142,6 +137,8 @@ def load_single_level_system(
         name=f"{name}_tokenizer",
         image_size=IMAGE_SIZE,
         device=device,
+        dataset="glasses-256",
+        downsample_steps=DOWNSAMPLE_STEPS,
     )
     prior = load_prior_weights(
         prior_path,
@@ -151,6 +148,7 @@ def load_single_level_system(
         tokenizer=tokenizer,
         tokenizer_payload=payload,
         device=device,
+        dataset="glasses-256",
     )
     return DiscreteSystem(name, tokenizer, prior, IMAGE_SIZE)
 
@@ -212,7 +210,9 @@ def evaluate_tokenizer(
         quantization_sum += diagnostics["quantization_mse"].item() * images.shape[0]
         prior_nll_sum += (
             F.cross_entropy(
-                system.prior(indices, labels=labels),
+                system.prior(
+                    indices, labels=labels if system.prior.num_classes else None
+                ),
                 indices,
             ).item()
             * images.shape[0]
@@ -221,7 +221,7 @@ def evaluate_tokenizer(
         examples += images.shape[0]
 
     if comparison is None or examples == 0:
-        raise ValueError("Evaluation requires at least one held-out example.")
+        raise ValueError("Evaluation requires at least one image.")
     mse = squared_error / elements
     statistics = usage.statistics()
     entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
@@ -272,18 +272,70 @@ def save_metric_comparison(model_results: dict[str, Any], output_path) -> None:
         plt.close(figure)
 
 
+@torch.inference_mode()
+def save_vae_comparisons(
+    vae: VAE,
+    originals: Tensor,
+    reconstructions: dict[str, Tensor],
+    generations: dict[str, Tensor],
+    *,
+    device: torch.device,
+    out_dir: Path,
+) -> None:
+    """Add only two labeled grids; the Gaussian baseline keeps its [0, 1] input."""
+    count = min(len(originals), SAVED_GENERATION_SAMPLES, RECONSTRUCTION_SAMPLES)
+    originals = originals[:count].to(device)
+    vae.eval()
+    _, _, vae_reconstruction = vae.reconstruct(
+        originals.mul(0.5).add(0.5), sample=False
+    )
+    with torch.random.fork_rng():
+        torch.manual_seed(SEED)
+        vae_samples = vae.decoder(torch.randn(count, vae.z_dim, device=device))
+    names = list(reconstructions)
+    labels = [{"vq_vae": "VQ-VAE", "fsq": "FSQ"}[name] for name in names]
+    save_image_row_grid(
+        [originals, vae_reconstruction.mul(2).sub(1)]
+        + [reconstructions[name][:count] for name in names],
+        ["Original", "VAE (mean)"] + labels,
+        out_dir / "vae_vq_vae_fsq_reconstructions.png",
+        title="Same training images: reconstruction",
+        dpi=160,
+    )
+    save_image_row_grid(
+        [vae_samples.mul(2).sub(1)] + [generations[name][:count] for name in names],
+        ["VAE"] + labels,
+        out_dir / "vae_vq_vae_fsq_samples.png",
+        title="Independent unconditional prior samples",
+        dpi=160,
+    )
+
+
 def evaluate() -> None:
     set_seed(SEED)
     device = try_gpu()
     loader, protocol = make_evaluation_loader(device)
     systems = load_systems(device)
+    vae, _ = load_model_weights(
+        VAE_CHECKPOINT,
+        VAE,
+        device=device,
+        expected_metadata={
+            "model_name": "vae",
+            "backbone": VAE.backbone,
+            "dataset": "glasses-256",
+            "value_range": [0.0, 1.0],
+            "beta": 1.0,
+        },
+    )
     out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
     model_results: dict[str, Any] = {}
     results: dict[str, object] = {
         "protocol": {
             **protocol,
-            "conditioning": "class_conditional",
+            "conditioning": "unconditional",
+            "visual_baseline": "standard Gaussian VAE (1.0)",
             "saved_generation_examples": SAVED_GENERATION_SAMPLES,
             "sampling_temperature": TEMPERATURE,
             "sampling_seed": SEED,
@@ -291,6 +343,9 @@ def evaluate() -> None:
         },
         "models": model_results,
     }
+    reconstructions: dict[str, Tensor] = {}
+    generations: dict[str, Tensor] = {}
+    originals = None
     for system in systems:
         metrics, comparison = evaluate_tokenizer(
             system,
@@ -306,12 +361,10 @@ def evaluate() -> None:
         with torch.random.fork_rng():
             torch.manual_seed(SEED)
             images = generate_in_batches(
-                torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(
-                    NUM_CLASSES
-                ),
+                torch.arange(SAVED_GENERATION_SAMPLES, device=device),
                 GENERATION_BATCH_SIZE,
-                lambda labels, system=system: system.sample(
-                    len(labels), device=device, labels=labels, temperature=TEMPERATURE
+                lambda batch, system=system: system.sample(
+                    len(batch), device=device, temperature=TEMPERATURE
                 ),
             )
         save_image(
@@ -319,7 +372,14 @@ def evaluate() -> None:
             out_dir / f"{system.name}_prior_samples.png",
             nrow=SAMPLE_GRID_COLUMNS,
         )
+        originals, reconstruction = comparison.chunk(2)
+        reconstructions[system.name] = reconstruction
+        generations[system.name] = images.cpu()
         model_results[system.name] = metrics
+    assert originals is not None
+    save_vae_comparisons(
+        vae, originals, reconstructions, generations, device=device, out_dir=out_dir
+    )
     save_metric_comparison(model_results, out_dir / "metric_comparison.png")
     (out_dir / "metrics.json").write_text(
         json.dumps(results, indent=2, allow_nan=False) + "\n", encoding="utf-8"

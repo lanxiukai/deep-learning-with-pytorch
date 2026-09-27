@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-# Shared spatial compression for the VQ-VAE, FSQ and VQGAN lessons.
+# Default for the 128px VQGAN lesson; the 256px VQ-VAE/FSQ entries use four steps.
 TOKENIZER_DOWNSAMPLE_STEPS = 3
 
 
