@@ -53,21 +53,72 @@ class TokenUsageAccumulator:
 
 
 class VectorQuantizer(nn.Module):
-    """Nearest-neighbour VQ with the original gradient-updated codebook."""
+    """Nearest-neighbour VQ with training-only EMA codebook updates.
+
+    The embedding is frozen for autograd; quantizer loss is commitment loss.
+    Counts and vector sums are persistent model buffers.
+    """
+
+    ema_cluster_size: Tensor
+    ema_embedding_sum: Tensor
 
     def __init__(
         self,
         codebook_size: int = 512,
         embedding_dim: int = 64,
         commitment: float = 0.25,
+        *,
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
     ) -> None:
         super().__init__()
+        if not 0.0 <= ema_decay < 1.0:
+            raise ValueError("ema_decay must be in [0, 1).")
+        if not math.isfinite(ema_epsilon) or ema_epsilon <= 0.0:
+            raise ValueError("ema_epsilon must be finite and positive.")
+        self.ema_decay = ema_decay
+        self.ema_epsilon = ema_epsilon
         self.codebook_size = codebook_size
         self.embedding_dim = embedding_dim
         self.commitment = commitment
         self.embedding = nn.Embedding(codebook_size, embedding_dim)
         nn.init.uniform_(
             self.embedding.weight, -1.0 / codebook_size, 1.0 / codebook_size
+        )
+        self.embedding.requires_grad_(False)
+        self.register_buffer("ema_cluster_size", torch.zeros(codebook_size))
+        self.register_buffer(
+            "ema_embedding_sum", torch.zeros_like(self.embedding.weight)
+        )
+
+    @torch.no_grad()
+    def _update_ema(self, flat: Tensor, indices: Tensor) -> None:
+        counts = torch.bincount(indices, minlength=self.codebook_size).to(
+            self.ema_cluster_size
+        )
+        sums = torch.zeros_like(self.ema_embedding_sum)
+        # Accumulate in the buffer dtype, including under mixed precision.
+        sums.index_add_(0, indices, flat.to(sums))
+        self.ema_cluster_size.mul_(self.ema_decay).add_(
+            counts, alpha=1.0 - self.ema_decay
+        )
+        self.ema_embedding_sum.mul_(self.ema_decay).add_(
+            sums, alpha=1.0 - self.ema_decay
+        )
+        total = self.ema_cluster_size.sum()
+        smoothed_counts = (
+            (self.ema_cluster_size + self.ema_epsilon)
+            / (total + self.codebook_size * self.ema_epsilon)
+            * total
+        )
+        # Never-assigned codes keep their initialization instead of collapsing
+        # to zero or dividing an arbitrary initial vector by a tiny count.
+        self.embedding.weight.copy_(
+            torch.where(
+                self.ema_cluster_size[:, None] > 0,
+                self.ema_embedding_sum / smoothed_counts[:, None],
+                self.embedding.weight,
+            )
         )
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
@@ -82,7 +133,6 @@ class VectorQuantizer(nn.Module):
             z_e.shape[0], z_e.shape[2], z_e.shape[3], self.embedding_dim
         )
         z_q = z_q.permute(0, 3, 1, 2).contiguous()
-        codebook_loss = F.mse_loss(z_q, z_e.detach())
         commitment_loss = self.commitment * F.mse_loss(z_e, z_q.detach())
         # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
         z_st = z_e + (z_q - z_e).detach()
@@ -90,12 +140,14 @@ class VectorQuantizer(nn.Module):
         diagnostics = token_usage(index_grid, self.codebook_size)
         diagnostics.update(
             {
-                "codebook_loss": codebook_loss.detach(),
                 "commitment_loss": commitment_loss.detach(),
                 "quantization_mse": F.mse_loss(z_e, z_q).detach(),
             }
         )
-        return z_st, index_grid, codebook_loss + commitment_loss, diagnostics
+        # This batch uses the pre-update vectors for its outputs and losses.
+        if self.training:
+            self._update_ema(flat, indices)
+        return z_st, index_grid, commitment_loss, diagnostics
 
     def lookup(self, indices: Tensor) -> Tensor:
         return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
@@ -267,6 +319,8 @@ class VQVAE(nn.Module):
         embedding_dim: int = 64,
         codebook_size: int = 512,
         commitment: float = 0.25,
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
         downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
@@ -277,7 +331,13 @@ class VQVAE(nn.Module):
             hidden_channels=hidden_channels,
             downsample_steps=downsample_steps,
         )
-        self.quantizer = VectorQuantizer(codebook_size, embedding_dim, commitment)
+        self.quantizer = VectorQuantizer(
+            codebook_size,
+            embedding_dim,
+            commitment,
+            ema_decay=ema_decay,
+            ema_epsilon=ema_epsilon,
+        )
         self.decoder = ImageDecoder(
             embedding_dim,
             image_channels=image_channels,

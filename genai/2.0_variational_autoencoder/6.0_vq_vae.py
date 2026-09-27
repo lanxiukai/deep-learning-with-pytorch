@@ -4,6 +4,8 @@ Use the same 4,500 glasses-256 faces as the standard Gaussian VAE.
 Both stages ignore folder labels. VQ-VAE and FSQ share four downsampling
 steps, a 16x16 token grid, 512 possible codes, MSE reconstruction, and the
 same prior budget. Latent quantization MSE is a within-model diagnostic.
+The codebook uses EMA updates; quantizer loss is commitment loss.
+Quantization MSE monitors the distance between encoder vectors and codes.
 
 Edit the constants below. RESUME continues an epoch-boundary checkpoint;
 set TRAIN_TOKENIZER=False to train only the prior from selected weights.
@@ -71,6 +73,8 @@ HIDDEN_CHANNELS = 128
 EMBEDDING_DIM = 64
 CODEBOOK_SIZE = 512
 COMMITMENT = 0.25
+EMA_DECAY = 0.99
+EMA_EPSILON = 1e-5
 PRIOR_HIDDEN_CHANNELS = 64
 PRIOR_LAYERS = 16  # The two masked streams cover the complete 16x16 past.
 BATCH_SIZE = 16
@@ -138,6 +142,8 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
         "embedding_dim": EMBEDDING_DIM,
         "codebook_size": CODEBOOK_SIZE,
         "commitment": COMMITMENT,
+        "ema_decay": EMA_DECAY,
+        "ema_epsilon": EMA_EPSILON,
         "downsample_steps": DOWNSAMPLE_STEPS,
     }
     model = VQVAE(**config).to(device)
@@ -163,7 +169,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
             model.train()
             seed_epoch_loader(train_loader, SEED, epoch)
             metrics = MetricAccumulator(
-                ("loss", "mse", "codebook_loss", "commitment_loss"), device=device
+                ("loss", "mse", "quantization_mse", "commitment_loss"), device=device
             )
             usage = TokenUsageAccumulator(model.quantizer.codebook_size)
             with tqdm(
@@ -185,7 +191,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                         (
                             loss,
                             distortion,
-                            diagnostics["codebook_loss"],
+                            diagnostics["quantization_mse"],
                             diagnostics["commitment_loss"],
                         ),
                         num_examples=images.shape[0],

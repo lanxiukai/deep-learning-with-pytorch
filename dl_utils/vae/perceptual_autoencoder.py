@@ -135,6 +135,8 @@ class VQPerceptualAutoencoder(nn.Module):
         codebook_size: int = 512,
         hidden_channels: int = 128,
         commitment: float = 0.25,
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
         downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
@@ -142,7 +144,13 @@ class VQPerceptualAutoencoder(nn.Module):
         self.encoder = PerceptualEncoder(
             latent_channels, hidden_channels, downsample_steps
         )
-        self.quantizer = VectorQuantizer(codebook_size, latent_channels, commitment)
+        self.quantizer = VectorQuantizer(
+            codebook_size,
+            latent_channels,
+            commitment,
+            ema_decay=ema_decay,
+            ema_epsilon=ema_epsilon,
+        )
         self.decoder = PerceptualDecoder(
             latent_channels, hidden_channels, downsample_steps
         )

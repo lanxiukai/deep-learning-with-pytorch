@@ -1,8 +1,9 @@
 """Train a perceptual VQ tokenizer, then its frozen-token Transformer prior.
 
-Stage one combines pixel L1, frozen LPIPS, VQ codebook/commitment loss,
+Stage one combines pixel L1, frozen LPIPS, VQ commitment loss,
 and a delayed PatchGAN hinge objective. After the delay, an adaptive
 last-decoder-layer gradient ratio balances reconstruction and adversarial loss.
+The codebook uses EMA updates independently of the optimizer.
 Stage two fits a class-conditional causal Transformer to cached frozen tokens.
 
 This teaching recipe uses 128px CelebA and the same 16x16 token grid and
@@ -94,6 +95,8 @@ HIDDEN_CHANNELS = 128
 LATENT_CHANNELS = 64
 CODEBOOK_SIZE = 512
 COMMITMENT = 0.25
+EMA_DECAY = 0.99
+EMA_EPSILON = 1e-5
 DISCRIMINATOR_CHANNELS = 64
 PERCEPTUAL_WEIGHT = 1.0
 VQ_WEIGHT = 1.0
@@ -279,6 +282,8 @@ def train_tokenizer(
         "codebook_size": CODEBOOK_SIZE,
         "hidden_channels": HIDDEN_CHANNELS,
         "commitment": COMMITMENT,
+        "ema_decay": EMA_DECAY,
+        "ema_epsilon": EMA_EPSILON,
         "downsample_steps": DOWNSAMPLE_STEPS,
     }
     model = VQPerceptualAutoencoder(**config).to(device)
