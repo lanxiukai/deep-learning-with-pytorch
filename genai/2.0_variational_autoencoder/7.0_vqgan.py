@@ -46,21 +46,23 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.discrete_workflow import (
+    TokenizerStage,
+    TokenUsageAccumulator,
+    cached_token_loader,
+    glasses_loader,
+    image_contract,
+    load_tokenizer_weights,
+    save_tokenizer_preview,
+    seed_epoch_loader,
+)
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,
     VQPerceptualAutoencoder,
     adaptive_adversarial_weight,
 )
-from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
-from dl_utils.vae.tokenizer_workflow import (
-    TokenizerStage,
-    cached_token_loader,
-    glasses_loader,
-    image_contract,
-    load_tokenizer_weights,
-    seed_epoch_loader,
-)
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.transformer_prior import CausalTransformerPrior
 
 PROJECT_ROOT = infer_project_root()
@@ -128,7 +130,7 @@ def vqgan_autoencoder_step(
     vq_weight: float,
     discriminator_weight: float,
 ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-    reconstruction, indices, vq_loss, diagnostics = model(images)
+    reconstruction, indices, vq_loss, _ = model(images)
     pixel_l1 = F.l1_loss(reconstruction, images)
     perceptual_loss = perceptual(reconstruction, images)
     reconstruction_objective = pixel_l1 + float(perceptual_weight) * perceptual_loss
@@ -161,8 +163,6 @@ def vqgan_autoencoder_step(
             "vq": vq_loss.detach(),
             "generator_adversarial": adversarial.detach(),
             "adversarial_scale": adversarial_scale.detach(),
-            "perplexity": diagnostics["perplexity"],
-            "active_codes": diagnostics["active_codes"].float(),
         },
     )
 
@@ -199,7 +199,6 @@ def validate_tokenizer(
     perceptual: nn.Module,
     loader: DataLoader,
     *,
-    max_examples: int | None,
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
@@ -219,10 +218,7 @@ def validate_tokenizer(
     examples = 0
     usage = TokenUsageAccumulator(vocabulary_size)
     for images, _ in loader:
-        remaining = images.shape[0] if max_examples is None else max_examples - examples
-        if remaining <= 0:
-            break
-        images = images[:remaining].to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True)
         reconstruction, indices, _, diagnostics = model(images)
         metrics.add_batch_means(
             (
@@ -239,19 +235,10 @@ def validate_tokenizer(
     if examples == 0:
         raise ValueError("tokenizer validation observed no examples")
     values = metrics.compute_weighted_means()
-    statistics = usage.statistics()
-    entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
     return {
         "examples": float(examples),
         **values,
-        "perplexity": statistics["perplexity"].item(),
-        "active_codes": statistics["active_codes"].item(),
-        "usage_fraction": statistics["usage_fraction"].item(),
-        "marginal_entropy_bits_per_token": entropy_bits,
-        "marginal_entropy_bits_per_image": TOKENS_PER_IMAGE * entropy_bits,
-        "fixed_length_bits_per_image": (
-            TOKENS_PER_IMAGE * math.ceil(math.log2(vocabulary_size))
-        ),
+        **usage.rate_metrics(TOKENS_PER_IMAGE),
     }
 
 
@@ -381,16 +368,12 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                             d=f"{running['discriminator']:.4f}",
                             refresh=False,
                         )
-            statistics = usage.statistics()
             stage.state["global_step"] = global_step
             stage.record_training(
                 epoch,
                 {
                     **metrics_accumulator.compute_weighted_means(require_finite=True),
-                    "perplexity": statistics["perplexity"].item(),
-                    "active_codes": statistics["active_codes"].item(),
-                    "entropy_bits": statistics["token_entropy_nats"].item()
-                    / math.log(2),
+                    **usage.training_metrics(),
                 },
             )
         validation = validate_tokenizer(
@@ -398,7 +381,6 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
             discriminator,
             perceptual,
             monitor_loader,
-            max_examples=MONITOR_EXAMPLES,
             device=device,
         )
         score = (
@@ -407,16 +389,13 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
         )
         stage.record_validation(epoch, validation, score=score)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            with torch.inference_mode():
-                images = next(iter(monitor_loader))[0][:RECONSTRUCTION_SAMPLES].to(
-                    device
-                )
-                reconstruction = model(images)[0]
-                save_image(
-                    torch.cat((images, reconstruction)).mul(0.5).add(0.5),
-                    training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                    nrow=len(images),
-                )
+            save_tokenizer_preview(
+                model,
+                monitor_loader,
+                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                count=RECONSTRUCTION_SAMPLES,
+                device=device,
+            )
     payload = stage.export_best(out_dir / TOKENIZER_CHECKPOINT_NAME)
     save_training_metrics(
         stage.history, out_dir, prefix="tokenizer", max_panels=MAX_METRIC_PANELS

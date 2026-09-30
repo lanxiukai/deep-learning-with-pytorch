@@ -15,12 +15,17 @@ from torch import Tensor, nn
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VectorQuantizer
 
 
+def _group_count(channels: int) -> int:
+    groups = min(32, channels)
+    while channels % groups != 0:
+        groups -= 1
+    return groups
+
+
 class ResidualBlock(nn.Module):
     def __init__(self, channels: int) -> None:
         super().__init__()
-        groups = min(32, channels)
-        while channels % groups != 0:
-            groups -= 1
+        groups = _group_count(channels)
         self.net = nn.Sequential(
             nn.GroupNorm(groups, channels),
             nn.SiLU(inplace=True),
@@ -48,9 +53,7 @@ class PerceptualEncoder(nn.Module):
             raise ValueError(
                 "hidden_channels and downsample_steps must be at least two"
             )
-        groups = min(32, hidden_channels)
-        while hidden_channels % groups != 0:
-            groups -= 1
+        groups = _group_count(hidden_channels)
         layers: list[nn.Module] = [
             nn.Conv2d(3, hidden_channels // 2, 4, 2, 1),
             nn.SiLU(inplace=True),
@@ -90,9 +93,7 @@ class PerceptualDecoder(nn.Module):
             raise ValueError(
                 "hidden_channels and downsample_steps must be at least two"
             )
-        groups = min(32, hidden_channels)
-        while hidden_channels % groups != 0:
-            groups -= 1
+        groups = _group_count(hidden_channels)
         layers: list[nn.Module] = [
             nn.Conv2d(in_channels, hidden_channels, 3, padding=1),
             ResidualBlock(hidden_channels),
@@ -186,12 +187,10 @@ class PatchDiscriminator(nn.Module):
                 nn.LeakyReLU(0.2, inplace=True),
             ]
 
-        self.features = nn.ModuleList(
-            [
-                nn.Sequential(*block(3, base_channels)),
-                nn.Sequential(*block(base_channels, base_channels * 2)),
-                nn.Sequential(*block(base_channels * 2, base_channels * 4)),
-            ]
+        self.features = nn.Sequential(
+            nn.Sequential(*block(3, base_channels)),
+            nn.Sequential(*block(base_channels, base_channels * 2)),
+            nn.Sequential(*block(base_channels * 2, base_channels * 4)),
         )
         self.head = nn.Sequential(
             nn.Conv2d(base_channels * 4, base_channels * 4, 3, 1, 1),
@@ -200,9 +199,7 @@ class PatchDiscriminator(nn.Module):
         )
 
     def forward(self, images: Tensor) -> Tensor:
-        for block in self.features:
-            images = block(images)
-        return self.head(images)
+        return self.head(self.features(images))
 
 
 class LPIPSPerceptualLoss(nn.Module):

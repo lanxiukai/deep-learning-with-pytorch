@@ -1,4 +1,4 @@
-"""Gated PixelCNN token prior, training helpers, and cached raster sampling.
+"""Gated PixelCNN token prior and cached raster sampling.
 
 Inference caches belong to a single sampling call and are absent from checkpoints.
 """
@@ -6,17 +6,11 @@ Inference caches belong to a single sampling call and are absent from checkpoint
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.optim import Optimizer
-from tqdm.auto import tqdm
-
-from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
 
 class MaskedConv2d(nn.Conv2d):
@@ -166,82 +160,6 @@ class PixelCNNPrior(nn.Module):
         return sample_pixelcnn_cached(
             self, indices, labels=labels, temperature=temperature
         )
-
-
-def train_pixelcnn_prior_epoch(
-    prior: PixelCNNPrior,
-    loader: Iterable[tuple[Tensor, Tensor]],
-    optimizer: Optimizer,
-    device: torch.device,
-    *,
-    progress: tqdm,
-    log_every: int = 100,
-) -> float:
-    """Train one causal-prior epoch over cached frozen-token grids."""
-    prior.train()
-    metrics = MetricAccumulator(("nll",), device=device)
-    for batch_index, (indices, labels) in enumerate(loader, 1):
-        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
-        loss = F.cross_entropy(prior(indices, labels=labels), indices)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-        if batch_index % log_every == 0:
-            nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-            progress.set_postfix(
-                nll=f"{nll:.4f}", bpt=f"{nll / math.log(2):.3f}", refresh=False
-            )
-        progress.update(1)
-    return metrics.compute_weighted_means(require_finite=True)["nll"]
-
-
-@torch.inference_mode()
-def evaluate_pixelcnn_prior(
-    prior: PixelCNNPrior,
-    loader: Iterable[tuple[Tensor, Tensor]],
-    *,
-    tokens_per_image: int,
-    device: torch.device,
-) -> dict[str, float]:
-    """Measure PixelCNN NLL for one frozen tokenizer."""
-    prior.eval()
-    metrics = MetricAccumulator(("nll",), device=device)
-    for indices, labels in loader:
-        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
-        loss = F.cross_entropy(prior(indices, labels=labels), indices)
-        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-    return {
-        "nll_nats_per_token": nll,
-        "bits_per_token": nll / math.log(2),
-        "bits_per_image": tokens_per_image * nll / math.log(2),
-    }
-
-
-@torch.inference_mode()
-def sample_pixelcnn_prior_images(
-    tokenizer: VQVAE | FSQAutoencoder,
-    prior: PixelCNNPrior,
-    count: int,
-    *,
-    grid_size: int,
-    device: torch.device,
-    temperature: float,
-    labels: Tensor | None = None,
-) -> Tensor:
-    """Sample a square token grid and decode it to an image batch."""
-    indices = prior.sample(
-        count,
-        grid_size,
-        grid_size,
-        device=device,
-        labels=labels.to(device) if labels is not None else None,
-        temperature=temperature,
-    )
-    return tokenizer.decode_indices(indices)
 
 
 class _PixelCNNCache:
@@ -442,7 +360,4 @@ def sample_pixelcnn_cached(
 __all__ = [
     "MaskedConv2d",
     "PixelCNNPrior",
-    "evaluate_pixelcnn_prior",
-    "sample_pixelcnn_prior_images",
-    "train_pixelcnn_prior_epoch",
 ]

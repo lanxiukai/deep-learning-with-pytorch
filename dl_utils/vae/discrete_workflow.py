@@ -1,6 +1,7 @@
-"""Glasses-256 data and artifact helpers for the discrete-tokenizer lessons.
+"""Data, monitoring, artifacts, and shared training for discrete-tokenizer lessons.
 
-Optimization and training-subset monitoring remain in the lesson scripts.
+Tokenizer optimization and VQGAN objectives remain in the lesson scripts.
+VQ-VAE and FSQ share the frozen-token PixelCNN training workflow here.
 Validation / val_* artifact fields store these training-set diagnostics.
 Recovery replays monitoring after an already saved training epoch.
 """
@@ -8,24 +9,86 @@ Recovery replays monitoring after an already saved training epoch.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
 import torch
-from torch import nn
+import torch.nn.functional as F
+from torch import Tensor, nn
+from torch.optim import Optimizer
 from torch.utils.data import DataLoader, RandomSampler, Subset, TensorDataset
+from torchvision.utils import save_image
+from tqdm.auto import tqdm
 
 from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.data.vision import image_folder_dataset
+from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.checkpoints import (
     TrainingCheckpoint,
     atomic_torch_save,
     load_model_weights,
 )
 from dl_utils.training.history import save_metrics_csv
-from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
+from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.pixelcnn_prior import PixelCNNPrior
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VQVAE, FSQAutoencoder
+
+
+def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:
+    probabilities = counts / counts.sum().clamp_min(1.0)
+    nonzero = probabilities > 0
+    entropy = -(probabilities[nonzero] * probabilities[nonzero].log()).sum()
+    return {
+        "perplexity": entropy.exp().detach(),
+        "active_codes": nonzero.sum().detach(),
+        "usage_fraction": nonzero.float().mean().detach(),
+        "token_entropy_nats": entropy.detach(),
+    }
+
+
+class TokenUsageAccumulator:
+    """Accumulate exact token counts over an epoch or evaluation window."""
+
+    def __init__(self, vocabulary_size: int) -> None:
+        self.vocabulary_size = vocabulary_size
+        self.counts: Tensor | None = None
+
+    def update(self, indices: Tensor) -> None:
+        counts = torch.bincount(
+            indices.detach().reshape(-1), minlength=self.vocabulary_size
+        )
+        if self.counts is None:
+            self.counts = torch.zeros_like(counts)
+        self.counts += counts
+
+    def statistics(self) -> dict[str, Tensor]:
+        if self.counts is None:
+            raise ValueError("Token usage requires at least one observed batch.")
+        return _token_usage_from_counts(self.counts.float())
+
+    def training_metrics(self) -> dict[str, float]:
+        statistics = self.statistics()
+        return {
+            "perplexity": statistics["perplexity"].item(),
+            "active_codes": statistics["active_codes"].item(),
+            "entropy_bits": statistics["token_entropy_nats"].item() / math.log(2),
+        }
+
+    def rate_metrics(self, tokens_per_image: int) -> dict[str, float]:
+        statistics = self.statistics()
+        entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
+        return {
+            "perplexity": statistics["perplexity"].item(),
+            "active_codes": statistics["active_codes"].item(),
+            "usage_fraction": statistics["usage_fraction"].item(),
+            "marginal_entropy_bits_per_token": entropy_bits,
+            "marginal_entropy_bits_per_image": tokens_per_image * entropy_bits,
+            "fixed_length_bits_per_image": tokens_per_image
+            * math.ceil(math.log2(self.vocabulary_size)),
+        }
 
 
 def image_contract(image_size: int, *, conditional: bool = False) -> dict[str, Any]:
@@ -164,6 +227,47 @@ def cached_token_loader(
     )
 
 
+@torch.inference_mode()
+def evaluate_mse_tokenizer(
+    model, loader, *, tokens_per_image, device
+) -> dict[str, float]:
+    model.eval()
+    vocabulary_size = model.quantizer.codebook_size
+    metrics = MetricAccumulator(
+        ("mse", "mean_psnr_db", "quantization_mse"), device=device
+    )
+    usage = TokenUsageAccumulator(vocabulary_size)
+    for images, _ in loader:
+        images = images.to(device, non_blocking=True)
+        reconstruction, indices, *_, diagnostics = model(images)
+        per_image_mse = (reconstruction - images).square().flatten(1).mean(1)
+        metrics.add_batch_means(
+            (
+                per_image_mse.mean(),
+                (10 * torch.log10(4 / per_image_mse.clamp_min(1e-12))).mean(),
+                diagnostics["quantization_mse"],
+            ),
+            num_examples=images.shape[0],
+        )
+        usage.update(indices)
+    means = metrics.compute_weighted_means(require_finite=True)
+    return {
+        **means,
+        "psnr_from_pooled_mse_db": 10 * math.log10(4 / max(means["mse"], 1e-12)),
+        **usage.rate_metrics(tokens_per_image),
+    }
+
+
+@torch.inference_mode()
+def save_tokenizer_preview(model, loader, path, *, count, device) -> None:
+    """Save the first monitoring images above their reconstructions."""
+    images = next(iter(loader))[0][:count].to(device)
+    reconstruction = model(images)[0]
+    save_image(
+        torch.cat((images, reconstruction)).mul(0.5).add(0.5), path, nrow=len(images)
+    )
+
+
 class TokenizerStage:
     """Persist training and subset monitoring through TrainingCheckpoint."""
 
@@ -288,7 +392,7 @@ def load_tokenizer_weights[T: nn.Module](
     conditional=False,
 ) -> tuple[T, dict[str, Any]]:
     """Reuse the common weight loader and return the identity needed by priors."""
-    model, _ = load_model_weights(
+    model, payload = load_model_weights(
         path,
         model_class,
         device=device,
@@ -296,11 +400,11 @@ def load_tokenizer_weights[T: nn.Module](
             **image_contract(image_size, conditional=conditional),
             "model_name": name,
         },
+        return_checkpoint=True,
         config_transform=lambda config: _current_tokenizer_config(
             config, downsample_steps
         ),
     )
-    payload = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(payload.get("snapshot_id"), str):
         raise TypeError("Tokenizer weights require a snapshot identity.")
     return cast(T, model.requires_grad_(False)), payload
@@ -340,3 +444,209 @@ def load_prior_weights[T: nn.Module](
     if hasattr(prior, "sequence_length") and prior.sequence_length != positions:
         raise ValueError("Prior sequence length differs from the tokenizer grid.")
     return cast(T, prior.requires_grad_(False))
+
+
+def train_pixelcnn_prior_epoch(
+    prior: PixelCNNPrior,
+    loader: Iterable[tuple[Tensor, Tensor]],
+    optimizer: Optimizer,
+    device: torch.device,
+    *,
+    progress: tqdm,
+    log_every: int = 100,
+) -> float:
+    """Train one causal-prior epoch over cached frozen-token grids."""
+    prior.train()
+    metrics = MetricAccumulator(("nll",), device=device)
+    for batch_index, (indices, labels) in enumerate(loader, 1):
+        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
+        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
+        loss = F.cross_entropy(prior(indices, labels=labels), indices)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
+        if batch_index % log_every == 0:
+            nll = metrics.compute_weighted_means(require_finite=True)["nll"]
+            progress.set_postfix(
+                nll=f"{nll:.4f}", bpt=f"{nll / math.log(2):.3f}", refresh=False
+            )
+        progress.update(1)
+    return metrics.compute_weighted_means(require_finite=True)["nll"]
+
+
+@torch.inference_mode()
+def evaluate_pixelcnn_prior(
+    prior: PixelCNNPrior,
+    loader: Iterable[tuple[Tensor, Tensor]],
+    *,
+    tokens_per_image: int,
+    device: torch.device,
+) -> dict[str, float]:
+    """Measure PixelCNN NLL for one frozen tokenizer."""
+    prior.eval()
+    metrics = MetricAccumulator(("nll",), device=device)
+    for indices, labels in loader:
+        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
+        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
+        loss = F.cross_entropy(prior(indices, labels=labels), indices)
+        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
+    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
+    return {
+        "nll_nats_per_token": nll,
+        "bits_per_token": nll / math.log(2),
+        "bits_per_image": tokens_per_image * nll / math.log(2),
+    }
+
+
+@torch.inference_mode()
+def sample_pixelcnn_prior_images(
+    tokenizer: VQVAE | FSQAutoencoder,
+    prior: PixelCNNPrior,
+    count: int,
+    *,
+    grid_size: int,
+    device: torch.device,
+    temperature: float,
+    labels: Tensor | None = None,
+) -> Tensor:
+    """Sample a square token grid and decode it to an image batch."""
+    indices = prior.sample(
+        count,
+        grid_size,
+        grid_size,
+        device=device,
+        labels=labels.to(device) if labels is not None else None,
+        temperature=temperature,
+    )
+    return tokenizer.decode_indices(indices)
+
+
+def train_pixelcnn_prior(
+    tokenizer,
+    tokenizer_payload,
+    train_loader,
+    monitor_loader,
+    device,
+    out_dir,
+    monitor_protocol,
+    *,
+    model_name,
+    data_dir,
+    image_size,
+    hidden_channels,
+    layers,
+    lr,
+    epochs,
+    resume,
+    seed,
+    sample_every,
+    log_every,
+    sample_count,
+    sample_columns,
+    temperature,
+    checkpoint_name,
+    progress_interval,
+    max_metric_panels,
+):
+    grid_size = image_size // (2**tokenizer.downsample_steps)
+    tokenizer.eval().requires_grad_(False)
+    tokenizer_id = tokenizer_payload["snapshot_id"]
+    cache_metadata = {
+        **image_contract(image_size),
+        "source_root": str(data_dir.resolve()),
+    }
+    tokens = cached_token_loader(
+        tokenizer,
+        train_loader,
+        out_dir / "token_cache_train.pth",
+        tokenizer_id=tokenizer_id,
+        metadata={**cache_metadata, "split": "train"},
+        device=device,
+        shuffle=True,
+    )
+    monitor_tokens = cached_token_loader(
+        tokenizer,
+        monitor_loader,
+        out_dir / "token_cache_monitor.pth",
+        tokenizer_id=tokenizer_id,
+        metadata={**cache_metadata, "protocol": monitor_protocol},
+        device=device,
+        shuffle=False,
+    )
+    config = {
+        "vocabulary_size": tokenizer.quantizer.codebook_size,
+        "hidden_channels": hidden_channels,
+        "layers": layers,
+        "num_classes": 0,
+    }
+    prior = PixelCNNPrior(**config).to(device)
+    optimizer = torch.optim.Adam(prior.parameters(), lr=lr)
+    stage = TokenizerStage(
+        out_dir / "prior",
+        models={"model": prior},
+        optimizers={"model": optimizer},
+        metadata={
+            **image_contract(image_size),
+            "model_name": model_name,
+            "model_config": config,
+            "tokenizer_id": tokenizer_id,
+            "monitor_protocol": monitor_protocol,
+            "selection_metric": "training_subset_nll",
+        },
+        recipe={"lr": lr, "batch_size": train_loader.batch_size, "seed": seed},
+        resume=resume,
+    )
+    training_dir = out_dir / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    for epoch in stage.epochs(epochs):
+        if stage.needs_training(epoch):
+            seed_epoch_loader(tokens, seed, epoch)
+            with tqdm(
+                total=len(tokens),
+                desc=f"PixelCNN {epoch}/{epochs}",
+                unit="batch",
+                mininterval=progress_interval,
+            ) as progress:
+                nll = train_pixelcnn_prior_epoch(
+                    prior,
+                    tokens,
+                    optimizer,
+                    device,
+                    progress=progress,
+                    log_every=log_every,
+                )
+            stage.record_training(
+                epoch, {"nll": nll, "bits_per_token": nll / math.log(2)}
+            )
+        validation = evaluate_pixelcnn_prior(
+            prior,
+            monitor_tokens,
+            tokens_per_image=grid_size**2,
+            device=device,
+        )
+        stage.record_validation(
+            epoch, validation, score=validation["nll_nats_per_token"]
+        )
+        if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
+            # Preview randomness must not change the resumed optimization stream.
+            with torch.random.fork_rng():
+                torch.manual_seed(seed)
+                prior.eval()
+                samples = sample_pixelcnn_prior_images(
+                    tokenizer,
+                    prior,
+                    sample_count,
+                    grid_size=grid_size,
+                    device=device,
+                    temperature=temperature,
+                )
+            save_image(
+                samples.mul(0.5).add(0.5),
+                training_dir / f"prior_epoch_{epoch:03d}.png",
+                nrow=sample_columns,
+            )
+    stage.export_best(out_dir / checkpoint_name)
+    save_training_metrics(
+        stage.history, out_dir, prefix="prior", max_panels=max_metric_panels
+    )

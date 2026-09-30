@@ -18,7 +18,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
@@ -34,17 +34,17 @@ from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
+from dl_utils.vae.discrete_workflow import (
+    TokenUsageAccumulator,
+    glasses_loader,
+    load_prior_weights,
+    load_tokenizer_weights,
+)
 from dl_utils.vae.pixelcnn_prior import PixelCNNPrior
 from dl_utils.vae.quantization import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
-    TokenUsageAccumulator,
-)
-from dl_utils.vae.tokenizer_workflow import (
-    glasses_loader,
-    load_prior_weights,
-    load_tokenizer_weights,
 )
 from dl_utils.vae.vae import VAE
 
@@ -327,6 +327,7 @@ def evaluate() -> None:
             "beta": 1.0,
         },
     )
+    vae = cast(VAE, vae)
     out_dir = OUTPUT_DIR
     reset_dir(str(out_dir))
     model_results: dict[str, Any] = {}

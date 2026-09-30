@@ -117,14 +117,18 @@ environment or dependency workflow.
   back to 128px. It reuses the RGB encoder/decoder in
   [vae/perceptual_autoencoder.py](vae/perceptual_autoencoder.py); the KL lesson
   also reuses that module's PatchGAN and adaptive adversarial weight.
-- [vae/tokenizer_workflow.py](vae/tokenizer_workflow.py) composes existing
+- [vae/discrete_workflow.py](vae/discrete_workflow.py) composes existing
   checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
-  It owns glasses-256 loading, recorded training subsets, snapshot-bound token
-  caches, epoch recovery, and best/last artifacts.
-  Optimization, validation objectives, and model selection metrics remain
-  explicit in the lessons. Priors consume cached token grids.
-  [vae/pixelcnn_prior.py](vae/pixelcnn_prior.py) keeps the gated PixelCNN,
-  its training helpers, and cached sampling together. Two masked streams
+  It owns glasses-256 loading, recorded training subsets, token-usage statistics,
+  shared monitoring and reconstruction previews, snapshot-bound token caches,
+  epoch recovery, and best/last artifacts. It also owns the shared frozen-token
+  PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ.
+  Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
+  The lessons import this workflow and the four model modules: quantization,
+  perceptual autoencoding, PixelCNN, and Transformer. Model modules do not
+  import the workflow. Priors consume cached token grids.
+  [vae/pixelcnn_prior.py](vae/pixelcnn_prior.py) keeps the gated PixelCNN
+  and its cached token sampler together. Two masked streams
   generate tokens; inference caches vertical features once per row and short
   horizontal history once per token. CUDA replays a one-token CUDA Graph,
   while CPU executes eager steps.

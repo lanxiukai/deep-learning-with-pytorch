@@ -13,45 +13,6 @@ from torch import Tensor, nn
 TOKENIZER_DOWNSAMPLE_STEPS = 4
 
 
-def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:
-    probabilities = counts / counts.sum().clamp_min(1.0)
-    nonzero = probabilities > 0
-    entropy = -(probabilities[nonzero] * probabilities[nonzero].log()).sum()
-    return {
-        "perplexity": entropy.exp().detach(),
-        "active_codes": nonzero.sum().detach(),
-        "usage_fraction": nonzero.float().mean().detach(),
-        "token_entropy_nats": entropy.detach(),
-    }
-
-
-def token_usage(indices: Tensor, vocabulary_size: int) -> dict[str, Tensor]:
-    """Return marginal token entropy diagnostics for one observation window."""
-    counts = torch.bincount(indices.reshape(-1), minlength=vocabulary_size).float()
-    return _token_usage_from_counts(counts)
-
-
-class TokenUsageAccumulator:
-    """Accumulate exact token counts over an epoch or evaluation window."""
-
-    def __init__(self, vocabulary_size: int) -> None:
-        self.vocabulary_size = vocabulary_size
-        self.counts: Tensor | None = None
-
-    def update(self, indices: Tensor) -> None:
-        counts = torch.bincount(
-            indices.detach().reshape(-1), minlength=self.vocabulary_size
-        )
-        if self.counts is None:
-            self.counts = torch.zeros_like(counts)
-        self.counts += counts
-
-    def statistics(self) -> dict[str, Tensor]:
-        if self.counts is None:
-            raise ValueError("Token usage requires at least one observed batch.")
-        return _token_usage_from_counts(self.counts.float())
-
-
 class VectorQuantizer(nn.Module):
     """Nearest-neighbour VQ with training-only EMA codebook updates.
 
@@ -137,13 +98,10 @@ class VectorQuantizer(nn.Module):
         # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
         z_st = z_e + (z_q - z_e).detach()
         index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
-        diagnostics = token_usage(index_grid, self.codebook_size)
-        diagnostics.update(
-            {
-                "commitment_loss": commitment_loss.detach(),
-                "quantization_mse": F.mse_loss(z_e, z_q).detach(),
-            }
-        )
+        diagnostics = {
+            "commitment_loss": commitment_loss.detach(),
+            "quantization_mse": F.mse_loss(z_e, z_q).detach(),
+        }
         # This batch uses the pre-update vectors for its outputs and losses.
         if self.training:
             self._update_ema(flat, indices)
@@ -201,11 +159,12 @@ class FiniteScalarQuantizer(nn.Module):
         half_width = (self.levels // 2).to(dtype=bounded.dtype)
         z_st = (bounded + (rounded - bounded).detach()) / half_width
         indices = self.pack(rounded + half_width)
-        diagnostics = token_usage(indices, self.codebook_size)
         # FSQ latent MSE is not directly comparable with VQ latent MSE.
-        diagnostics["quantization_mse"] = F.mse_loss(
-            bounded / half_width, rounded / half_width
-        ).detach()
+        diagnostics = {
+            "quantization_mse": F.mse_loss(
+                bounded / half_width, rounded / half_width
+            ).detach()
+        }
         return z_st.permute(0, 3, 1, 2).contiguous(), indices, diagnostics
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
@@ -410,7 +369,5 @@ __all__ = [
     "ImageDecoder",
     "ImageEncoder",
     "ResidualBlock",
-    "TokenUsageAccumulator",
     "VectorQuantizer",
-    "token_usage",
 ]

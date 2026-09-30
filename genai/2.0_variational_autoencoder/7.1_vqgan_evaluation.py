@@ -35,17 +35,18 @@ from dl_utils.inference.batching import generate_in_batches
 from dl_utils.plot._backend import pyplot as plt
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.vae.discrete_workflow import (
+    TokenUsageAccumulator,
+    glasses_loader,
+    load_prior_weights,
+    load_tokenizer_weights,
+)
 from dl_utils.vae.perceptual_autoencoder import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,
     VQPerceptualAutoencoder,
 )
-from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
-from dl_utils.vae.tokenizer_workflow import (
-    glasses_loader,
-    load_prior_weights,
-    load_tokenizer_weights,
-)
+from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.transformer_prior import CausalTransformerPrior
 
 PROJECT_ROOT = infer_project_root()
