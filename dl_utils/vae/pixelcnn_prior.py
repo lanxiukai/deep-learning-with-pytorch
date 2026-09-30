@@ -1,4 +1,7 @@
-"""Compact causal token priors shared by VQ-VAE, FSQ, and VQGAN."""
+"""Gated PixelCNN token prior, training helpers, and cached raster sampling.
+
+Inference caches belong to a single sampling call and are absent from checkpoints.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +16,7 @@ from torch.optim import Optimizer
 from tqdm.auto import tqdm
 
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.pixelcnn_sampling import sample_pixelcnn_cached
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
-from dl_utils.vae.transformer_sampling import sample_transformer_cached
 
 
 class MaskedConv2d(nn.Conv2d):
@@ -243,116 +244,202 @@ def sample_pixelcnn_prior_images(
     return tokenizer.decode_indices(indices)
 
 
-class CausalTransformerPrior(nn.Module):
-    """Fixed-length causal token Transformer, unconditional by default.
-
-    A positive num_classes explicitly enables class conditioning.
-    """
+class _PixelCNNCache:
+    """One raster scan over a batch; use inside an inference-mode context."""
 
     def __init__(
         self,
-        vocabulary_size: int,
-        sequence_length: int,
-        *,
-        model_dim: int = 256,
-        heads: int = 8,
-        layers: int = 4,
-        dropout: float = 0.0,
-        num_classes: int = 0,
-    ) -> None:
-        super().__init__()
-        self.vocabulary_size = vocabulary_size
-        self.sequence_length = sequence_length
-        self.num_classes = num_classes
-        self.bos_token = vocabulary_size
-        self.token_embedding = nn.Embedding(vocabulary_size + 1, model_dim)
-        self.class_embedding = (
-            nn.Embedding(num_classes, model_dim) if num_classes else None
-        )
-        self.position_embedding = nn.Parameter(
-            torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
-        )
-        layer = nn.TransformerEncoderLayer(
-            d_model=model_dim,
-            nhead=heads,
-            dim_feedforward=4 * model_dim,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(
-            layer, num_layers=layers, enable_nested_tensor=False
-        )
-        # TransformerEncoder clones one prototype, so initialize each clone separately.
-        for encoder_layer in self.transformer.layers:
-            block = cast(nn.TransformerEncoderLayer, encoder_layer)
-            nn.init.xavier_uniform_(cast(Tensor, block.self_attn.in_proj_weight))
-            for linear in (block.self_attn.out_proj, block.linear1, block.linear2):
-                nn.init.xavier_uniform_(linear.weight)
-                nn.init.zeros_(linear.bias)
-        self.normalization = nn.LayerNorm(model_dim)
-        self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
-
-    def _causal_mask(self, length: int, device: torch.device) -> Tensor:
-        return torch.triu(
-            torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1
-        )
-
-    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
-        length = input_tokens.shape[1]
-        hidden = self.token_embedding(input_tokens)
-        hidden = hidden + self.position_embedding[:, :length]
-        if self.class_embedding is not None:
-            if labels is None:
-                raise ValueError("A class-conditional prior requires labels.")
-            hidden = hidden + self.class_embedding(labels)[:, None, :]
-        hidden = self.transformer(
-            hidden, mask=self._causal_mask(length, input_tokens.device)
-        )
-        return self.head(self.normalization(hidden))
-
-    def teacher_forcing(
-        self,
-        indices: Tensor,
-        labels: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor]:
-        """Return logits and targets for ``[B,H,W]`` or ``[B,T]`` indices."""
-        targets = indices.flatten(1)
-        bos = targets.new_full((targets.shape[0], 1), self.bos_token)
-        inputs = torch.cat((bos, targets[:, :-1]), dim=1)
-        return self(inputs, labels), targets
-
-    @torch.inference_mode()
-    def sample(
-        self,
+        prior: PixelCNNPrior,
         count: int,
+        height: int,
+        width: int,
         *,
         device: torch.device,
-        labels: Tensor | None = None,
-        temperature: float = 1.0,
-    ) -> Tensor:
-        """Generate with KV caches, using CUDA Graph replay on CUDA.
-
-        Sampling temporarily disables dropout and restores the previous mode.
-        Training and likelihood evaluation use the parallel forward pass.
-        """
-        if not math.isfinite(temperature) or temperature <= 0:
-            raise ValueError("Sampling temperature must be finite and positive.")
-        if count < 1 or self.sequence_length < 1:
-            raise ValueError("Sample count and sequence length must be positive.")
-        was_training = self.training
-        self.eval()
-        try:
-            return sample_transformer_cached(
-                self, count, device=device, labels=labels, temperature=temperature
+        labels: Tensor | None,
+    ) -> None:
+        self.prior = prior
+        self.blocks = [cast("GatedPixelCNNBlock", block) for block in prior.causal]
+        self.condition: Tensor | float = 0.0
+        if prior.class_embedding is not None:
+            if labels is None:
+                raise ValueError("A conditional PixelCNN requires class labels.")
+            self.condition = prior.class_embedding(labels)[:, :, None, None]
+        channels = prior.embedding.embedding_dim
+        self.vertical_inputs: list[Tensor] = []
+        self.vertical_weights: list[Tensor] = []
+        self.horizontal_weights: list[Tensor] = []
+        self.history: list[Tensor] = []
+        self.row_context: list[Tensor] = []
+        for block in self.blocks:
+            top = block.vertical.kernel_size[0] // 2
+            left = block.horizontal.kernel_size[1] // 2
+            self.vertical_inputs.append(
+                prior.embedding.weight.new_zeros(
+                    count, channels, height + top, width, device=device
+                )
             )
-        finally:
-            self.train(was_training)
+            # A excludes the current input; B sees an already-causal feature.
+            rows = top + int(block.residual)
+            columns = left + int(block.residual)
+            self.vertical_weights.append(
+                (block.vertical.weight * block.vertical.mask)[:, :, :rows].contiguous()
+            )
+            self.horizontal_weights.append(
+                (block.horizontal.weight * block.horizontal.mask)[:, :, 0, :columns]
+                .permute(0, 2, 1)
+                .flatten(1)
+                .contiguous()
+            )
+            self.history.append(
+                prior.embedding.weight.new_zeros(count, left, channels, device=device)
+            )
+            self.row_context.append(
+                prior.embedding.weight.new_empty(
+                    count, width, 2 * channels, device=device
+                )
+            )
+        self.token_row = prior.embedding.weight.new_empty(
+            count, channels, width, device=device
+        )
+
+    def begin_row(self, row: int) -> None:
+        """Cache every vertical-to-horizontal contribution for the next row."""
+        for index, block in enumerate(self.blocks):
+            weight = self.vertical_weights[index]
+            above = F.conv2d(
+                self.vertical_inputs[index][:, :, row : row + weight.shape[2]],
+                weight,
+                block.vertical.bias,
+                padding=(0, block.vertical.kernel_size[1] // 2),
+            )
+            context = block.vertical_to_horizontal(above) + self.condition
+            self.row_context[index].copy_(context.squeeze(2).transpose(1, 2))
+            if index + 1 < len(self.blocks):
+                next_top = self.blocks[index + 1].vertical.kernel_size[0] // 2
+                self.vertical_inputs[index + 1][:, :, row + next_top].copy_(
+                    block.gate(above + self.condition).squeeze(2)
+                )
+            self.history[index].zero_()
+
+    def logits(self, column: int | Tensor) -> Tensor:
+        """Advance hidden horizontal features by exactly one position."""
+        horizontal: Tensor | None = None
+        for index, block in enumerate(self.blocks):
+            context = self.history[index]
+            if horizontal is not None:
+                context = torch.cat((context, horizontal[:, None]), dim=1)
+                self.history[index].copy_(context[:, 1:])
+            left = F.linear(
+                context.flatten(1),
+                self.horizontal_weights[index],
+                block.horizontal.bias,
+            )
+            above = (
+                self.row_context[index].index_select(1, column).squeeze(1)
+                if isinstance(column, Tensor)
+                else self.row_context[index][:, column]
+            )
+            update = block.gate(left + above)
+            update = F.linear(
+                update, block.output.weight[:, :, 0, 0], block.output.bias
+            )
+            horizontal = horizontal + update if horizontal is not None else update
+        assert horizontal is not None
+        hidden_head = cast(nn.Conv2d, self.prior.head[1])
+        output_head = cast(nn.Conv2d, self.prior.head[3])
+        hidden = F.linear(
+            self.prior.head[0](horizontal),
+            hidden_head.weight[:, :, 0, 0],
+            hidden_head.bias,
+        )
+        return F.linear(
+            self.prior.head[2](hidden),
+            output_head.weight[:, :, 0, 0],
+            output_head.bias,
+        )
+
+    def append_token(self, column: int | Tensor, tokens: Tensor) -> None:
+        embedded = self.prior.embedding(tokens)
+        self.history[0].copy_(
+            torch.cat((self.history[0][:, 1:], embedded[:, None]), dim=1)
+        )
+        if isinstance(column, Tensor):
+            self.token_row.index_copy_(2, column, embedded[:, :, None])
+        else:
+            self.token_row[:, :, column].copy_(embedded)
+
+    def end_row(self, row: int) -> None:
+        top = self.blocks[0].vertical.kernel_size[0] // 2
+        self.vertical_inputs[0][:, :, row + top].copy_(self.token_row)
+
+
+def _sample_with_cuda_graph(
+    cache: _PixelCNNCache, indices: Tensor, temperature: float
+) -> Tensor:
+    """Replay a fixed one-token computation with a device-side column counter."""
+    count, height, width = indices.shape
+    column = torch.zeros(1, dtype=torch.long, device=indices.device)
+    sampled_row = indices.new_empty(count, width)
+
+    def step() -> None:
+        logits = cache.logits(column) / temperature
+        tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
+        cache.append_token(column, tokens)
+        sampled_row.index_copy_(1, column, tokens[:, None])
+        column.add_(1)
+
+    with torch.cuda.device(indices.device):
+        graph = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream(device=indices.device)
+        current = torch.cuda.current_stream(indices.device)
+        # Warmup/capture must not spend the caller's sampling random numbers.
+        with torch.random.fork_rng(devices=[indices.device]):
+            stream.wait_stream(current)
+            with torch.cuda.stream(stream):
+                cache.begin_row(0)
+                for _ in range(3):
+                    column.zero_()
+                    step()
+            current.wait_stream(stream)
+            column.zero_()
+            with torch.cuda.graph(graph, stream=stream):
+                step()
+        for row in range(height):
+            cache.begin_row(row)
+            column.zero_()
+            for _ in range(width):
+                graph.replay()
+            indices[:, row].copy_(sampled_row)
+            cache.end_row(row)
+    return indices
+
+
+@torch.inference_mode()
+def sample_pixelcnn_cached(
+    prior: PixelCNNPrior,
+    indices: Tensor,
+    *,
+    labels: Tensor | None,
+    temperature: float,
+) -> Tensor:
+    count, height, width = indices.shape
+    cache = _PixelCNNCache(
+        prior, count, height, width, device=indices.device, labels=labels
+    )
+    if indices.is_cuda:
+        return _sample_with_cuda_graph(cache, indices, temperature)
+    for row in range(height):
+        cache.begin_row(row)
+        for column in range(width):
+            logits = cache.logits(column) / temperature
+            tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
+            indices[:, row, column] = tokens
+            cache.append_token(column, tokens)
+        cache.end_row(row)
+    return indices
 
 
 __all__ = [
-    "CausalTransformerPrior",
     "MaskedConv2d",
     "PixelCNNPrior",
     "evaluate_pixelcnn_prior",

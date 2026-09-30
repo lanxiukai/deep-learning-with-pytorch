@@ -41,12 +41,12 @@ from dl_utils.vae.perceptual_autoencoder import (
     VQPerceptualAutoencoder,
 )
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
-from dl_utils.vae.token_prior import CausalTransformerPrior
 from dl_utils.vae.tokenizer_workflow import (
     glasses_loader,
     load_prior_weights,
     load_tokenizer_weights,
 )
+from dl_utils.vae.transformer_prior import CausalTransformerPrior
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"

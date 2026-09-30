@@ -122,20 +122,18 @@ environment or dependency workflow.
   It owns glasses-256 loading, recorded training subsets, snapshot-bound token
   caches, epoch recovery, and best/last artifacts.
   Optimization, validation objectives, and model selection metrics remain
-  explicit in the lessons. Priors consume cached token
-  grids; gated PixelCNN uses two masked streams. Its inference-only
-  [vae/pixelcnn_sampling.py](vae/pixelcnn_sampling.py) caches vertical features
-  once per row and the short horizontal history once per generated token.
-  Sampling always uses caches: CUDA replays a one-token CUDA Graph, while CPU
-  executes eager steps. Transformer layers receive independent initializations.
-  VQGAN Transformer sampling uses the independent
-  [vae/transformer_sampling.py](vae/transformer_sampling.py) implementation to
-  project only the newest token and reuse per-layer key/value buffers. It uses
-  this prior's own PyTorch weights without dependencies on the D2L utilities.
-  CUDA replays a fixed-shape token step with an explicit valid-prefix mask;
-  CPU uses eager prefix slices. Transformer sampling temporarily disables dropout.
-  Training and likelihood evaluation use the parallel forward path.
-  [vae/quantization.py](vae/quantization.py)
+  explicit in the lessons. Priors consume cached token grids.
+  [vae/pixelcnn_prior.py](vae/pixelcnn_prior.py) keeps the gated PixelCNN,
+  its training helpers, and cached sampling together. Two masked streams
+  generate tokens; inference caches vertical features once per row and short
+  horizontal history once per token. CUDA replays a one-token CUDA Graph,
+  while CPU executes eager steps.
+  [vae/transformer_prior.py](vae/transformer_prior.py) keeps the VQGAN prior
+  and its KV-cache sampler together. Its independently initialized layers use
+  their own PyTorch weights without D2L dependencies. CUDA replays a fixed-shape
+  token step with an explicit valid-prefix mask; CPU uses eager prefix slices.
+  Sampling temporarily disables dropout; training and likelihood evaluation
+  use the parallel forward path. [vae/quantization.py](vae/quantization.py)
   supplies the shared quantizers. Both priors default to unconditional generation;
   class conditioning requires an explicit positive `num_classes`.
   Models, lesson entries, and weight loaders share

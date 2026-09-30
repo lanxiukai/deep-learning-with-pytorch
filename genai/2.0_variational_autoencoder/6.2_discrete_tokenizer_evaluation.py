@@ -34,13 +34,13 @@ from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
+from dl_utils.vae.pixelcnn_prior import PixelCNNPrior
 from dl_utils.vae.quantization import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
     TokenUsageAccumulator,
 )
-from dl_utils.vae.token_prior import PixelCNNPrior
 from dl_utils.vae.tokenizer_workflow import (
     glasses_loader,
     load_prior_weights,

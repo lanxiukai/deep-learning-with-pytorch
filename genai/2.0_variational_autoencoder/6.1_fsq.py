@@ -33,16 +33,16 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.quantization import (
-    TOKENIZER_DOWNSAMPLE_STEPS,
-    FSQAutoencoder,
-    TokenUsageAccumulator,
-)
-from dl_utils.vae.token_prior import (
+from dl_utils.vae.pixelcnn_prior import (
     PixelCNNPrior,
     evaluate_pixelcnn_prior,
     sample_pixelcnn_prior_images,
     train_pixelcnn_prior_epoch,
+)
+from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
+    FSQAutoencoder,
+    TokenUsageAccumulator,
 )
 from dl_utils.vae.tokenizer_workflow import (
     TokenizerStage,
