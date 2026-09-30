@@ -12,7 +12,11 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
-from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VectorQuantizer
+from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
+    VectorQuantizer,
+    validate_image_size,
+)
 
 
 def _group_count(channels: int) -> int:
@@ -53,6 +57,7 @@ class PerceptualEncoder(nn.Module):
             raise ValueError(
                 "hidden_channels and downsample_steps must be at least two"
             )
+        self.downsample_steps = downsample_steps
         groups = _group_count(hidden_channels)
         layers: list[nn.Module] = [
             nn.Conv2d(3, hidden_channels // 2, 4, 2, 1),
@@ -76,6 +81,7 @@ class PerceptualEncoder(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, images: Tensor) -> Tensor:
+        validate_image_size(images.shape[-2], images.shape[-1], self.downsample_steps)
         return self.net(images)
 
 

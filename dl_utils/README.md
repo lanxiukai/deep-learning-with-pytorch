@@ -121,7 +121,10 @@ environment or dependency workflow.
   checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
   It owns glasses-256 loading, recorded training subsets, token-usage statistics,
   shared monitoring and reconstruction previews, snapshot-bound token caches,
-  epoch recovery, and best/last artifacts. It also owns the shared frozen-token
+  epoch recovery, and best/last artifacts. Token caches also track ordered image
+  paths, labels, file sizes, and nanosecond modification times; datasets without
+  inspectable files are re-encoded. Image and token training loaders retain the
+  final partial batch. It also owns the shared frozen-token
   PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ.
   Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
   The lessons import this workflow and the four model modules: quantization,
@@ -138,7 +141,9 @@ environment or dependency workflow.
   token step with an explicit valid-prefix mask; CPU uses eager prefix slices.
   Sampling temporarily disables dropout; training and likelihood evaluation
   use the parallel forward path. [vae/quantization.py](vae/quantization.py)
-  supplies the shared quantizers. Both priors default to unconditional generation;
+  supplies the shared quantizers. Encoders require at least two downsampling
+  steps and image dimensions divisible by their compression factor.
+  Both priors default to unconditional generation;
   class conditioning requires an explicit positive `num_classes`.
   Models, lesson entries, and weight loaders share
   `TOKENIZER_DOWNSAMPLE_STEPS=4` for 256x256 inputs and outputs; weight loading

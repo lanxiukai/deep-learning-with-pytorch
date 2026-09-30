@@ -94,13 +94,14 @@ class VectorQuantizer(nn.Module):
             z_e.shape[0], z_e.shape[2], z_e.shape[3], self.embedding_dim
         )
         z_q = z_q.permute(0, 3, 1, 2).contiguous()
-        commitment_loss = self.commitment * F.mse_loss(z_e, z_q.detach())
+        quantization_mse = F.mse_loss(z_e, z_q.detach())
+        commitment_loss = self.commitment * quantization_mse
         # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
         z_st = z_e + (z_q - z_e).detach()
         index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
         diagnostics = {
             "commitment_loss": commitment_loss.detach(),
-            "quantization_mse": F.mse_loss(z_e, z_q).detach(),
+            "quantization_mse": quantization_mse.detach(),
         }
         # This batch uses the pre-update vectors for its outputs and losses.
         if self.training:
@@ -187,6 +188,16 @@ class ResidualBlock(nn.Module):
         return inputs + self.net(inputs)
 
 
+def validate_image_size(height: int, width: int, downsample_steps: int) -> None:
+    """Require positive spatial dimensions divisible by the compression factor."""
+    factor = 2**downsample_steps
+    if height < factor or width < factor or height % factor or width % factor:
+        raise ValueError(
+            f"Image height and width must be positive multiples of {factor}; "
+            f"got {height}x{width}."
+        )
+
+
 class ImageEncoder(nn.Module):
     """Image encoder with configurable compression; the default is 16x."""
 
@@ -199,6 +210,11 @@ class ImageEncoder(nn.Module):
         downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
+        if hidden_channels < 2 or downsample_steps < 2:
+            raise ValueError(
+                "hidden_channels and downsample_steps must be at least two"
+            )
+        self.downsample_steps = downsample_steps
         layers: list[nn.Module] = [
             nn.Conv2d(image_channels, hidden_channels // 2, 4, 2, 1),
             nn.ReLU(inplace=True),
@@ -221,6 +237,7 @@ class ImageEncoder(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, images: Tensor) -> Tensor:
+        validate_image_size(images.shape[-2], images.shape[-1], self.downsample_steps)
         return self.net(images)
 
 
@@ -236,6 +253,10 @@ class ImageDecoder(nn.Module):
         downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
     ) -> None:
         super().__init__()
+        if hidden_channels < 2 or downsample_steps < 2:
+            raise ValueError(
+                "hidden_channels and downsample_steps must be at least two"
+            )
         layers: list[nn.Module] = [
             nn.Conv2d(in_channels, hidden_channels, 3, padding=1),
             ResidualBlock(hidden_channels),
@@ -370,4 +391,5 @@ __all__ = [
     "ImageEncoder",
     "ResidualBlock",
     "VectorQuantizer",
+    "validate_image_size",
 ]

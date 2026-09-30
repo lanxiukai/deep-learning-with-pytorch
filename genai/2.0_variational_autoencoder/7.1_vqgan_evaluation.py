@@ -218,8 +218,7 @@ def evaluate_reconstruction(
         raise ValueError("evaluation needs at least one training example")
     paired = (paired_totals / examples).tolist()
     mse = squared_error / element_count
-    token_statistics = usage.statistics()
-    entropy_bits = token_statistics["token_entropy_nats"].item() / math.log(2)
+    rates = usage.rate_metrics(positions)
     nll = prior_nll / prior_examples
     prior_metrics = {
         "nll_nats_per_token": nll,
@@ -249,13 +248,8 @@ def evaluate_reconstruction(
             "mse_within_model_only": paired[2],
             "vocabulary_size": system.vocabulary_size,
             "positions": positions,
-            "active_codes": int(token_statistics["active_codes"]),
-            "usage_fraction": token_statistics["usage_fraction"].item(),
-            "perplexity": token_statistics["perplexity"].item(),
-            "marginal_entropy_bits_per_token": entropy_bits,
-            "marginal_entropy_bits_per_image": positions * entropy_bits,
-            "fixed_length_bits_per_image": positions
-            * math.ceil(math.log2(system.vocabulary_size)),
+            **rates,
+            "active_codes": int(rates["active_codes"]),
         },
         "patch_discriminator": discriminator_metrics,
         "prior": prior_metrics,

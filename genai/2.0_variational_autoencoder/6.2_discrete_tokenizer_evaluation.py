@@ -222,8 +222,8 @@ def evaluate_tokenizer(
     if comparison is None or examples == 0:
         raise ValueError("Evaluation requires at least one image.")
     mse = squared_error / elements
-    statistics = usage.statistics()
-    entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
+    rates = usage.rate_metrics(positions)
+    rates.pop("usage_fraction")  # Preserve the existing evaluation fields.
     prior_bits = prior_nll_sum / examples / math.log(2)
     return {
         "examples": examples,
@@ -235,12 +235,8 @@ def evaluate_tokenizer(
         "tokenizer_parameters": sum(p.numel() for p in system.tokenizer.parameters()),
         "prior_parameters": sum(p.numel() for p in system.prior.parameters()),
         "vocabulary_size": vocabulary_size,
-        "active_codes": int(statistics["active_codes"]),
-        "perplexity": statistics["perplexity"].item(),
-        "marginal_entropy_bits_per_token": entropy_bits,
-        "marginal_entropy_bits_per_image": positions * entropy_bits,
-        "fixed_length_bits_per_image": positions
-        * math.ceil(math.log2(vocabulary_size)),
+        **rates,
+        "active_codes": int(rates["active_codes"]),
         "prior_bits_per_token": prior_bits,
         "prior_bits_per_image": positions * prior_bits,
         "prior_bits_per_pixel": positions * prior_bits / system.image_size**2,

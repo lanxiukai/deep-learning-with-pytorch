@@ -49,10 +49,10 @@ from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
     TokenizerStage,
     TokenUsageAccumulator,
-    cached_token_loader,
     glasses_loader,
     image_contract,
     load_tokenizer_weights,
+    prepare_token_loaders,
     save_tokenizer_preview,
     seed_epoch_loader,
 )
@@ -419,27 +419,17 @@ def train_prior(
             "The selected tokenizer grid must match the current training configuration."
         )
     tokenizer_id = tokenizer_payload["snapshot_id"]
-    cache_metadata = {
-        **image_contract(IMAGE_SIZE, conditional=True),
-        "source_root": str(DATA_DIR.resolve()),
-    }
-    tokens = cached_token_loader(
+    tokens, monitor_tokens = prepare_token_loaders(
         tokenizer,
         train_loader,
-        out_dir / "token_cache_train.pth",
-        tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "split": "train"},
-        device=device,
-        shuffle=True,
-    )
-    monitor_tokens = cached_token_loader(
-        tokenizer,
         monitor_loader,
-        out_dir / "token_cache_monitor.pth",
+        out_dir,
         tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "protocol": monitor_protocol},
+        data_dir=DATA_DIR,
+        image_size=IMAGE_SIZE,
+        monitor_protocol=monitor_protocol,
         device=device,
-        shuffle=False,
+        conditional=True,
     )
     config = {
         "vocabulary_size": tokenizer.quantizer.codebook_size,

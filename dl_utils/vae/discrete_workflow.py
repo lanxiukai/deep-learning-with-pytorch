@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, RandomSampler, Subset, TensorDataset
+from torchvision.datasets import ImageFolder
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
@@ -139,7 +140,7 @@ def glasses_loader(
         device,
         shuffle=shuffle,
         num_workers=num_workers,
-        drop_last=shuffle,
+        drop_last=False,
     )
     loader.generator = torch.Generator().manual_seed(seed)
     protocol = {
@@ -169,6 +170,30 @@ def seed_epoch_loader(loader: DataLoader, seed: int, epoch: int) -> None:
         loader.sampler.generator = torch.Generator().manual_seed(seed + epoch)
 
 
+def _image_manifest(dataset) -> dict[str, object] | None:
+    """Describe the actual ordered files; other dataset types are not cached across calls."""
+    indices = list(range(len(dataset)))
+    while isinstance(dataset, Subset):
+        indices = [dataset.indices[index] for index in indices]
+        dataset = dataset.dataset
+    if not isinstance(dataset, ImageFolder):
+        return None
+    files = []
+    for index in indices:
+        filename, label = dataset.samples[index]
+        path = Path(filename)
+        stat = path.stat()
+        files.append(
+            (
+                path.relative_to(dataset.root).as_posix(),
+                label,
+                stat.st_size,
+                stat.st_mtime_ns,
+            )
+        )
+    return {"root": str(Path(dataset.root).resolve()), "files": files}
+
+
 @torch.no_grad()
 def cached_token_loader(
     tokenizer, image_loader, path, *, tokenizer_id, metadata, device, shuffle
@@ -176,17 +201,21 @@ def cached_token_loader(
     """Encode deterministic images once and bind the cache to frozen weights.
 
     Folder labels condition the VQGAN Transformer prior. VQ-VAE and FSQ
-    keep the same batch format and ignore those labels.
+    keep the same batch format and ignore those labels. File manifests detect
+    ordinary image replacements via paths, labels, sizes, and modification times.
+    Datasets without inspectable files are re-encoded on each call.
     """
     path = Path(path)
+    manifest = _image_manifest(image_loader.dataset)
     cache_metadata = {
         **metadata,
         "tokenizer_id": tokenizer_id,
         "examples": len(image_loader.dataset),
+        "image_manifest": manifest,
     }
     payload = (
         torch.load(path, map_location="cpu", weights_only=True)
-        if path.is_file()
+        if manifest is not None and path.is_file()
         else None
     )
     if payload is None or payload.get("metadata") != cache_metadata:
@@ -223,7 +252,7 @@ def cached_token_loader(
         device,
         shuffle=shuffle,
         num_workers=0,
-        drop_last=shuffle,
+        drop_last=False,
     )
 
 
@@ -522,6 +551,45 @@ def sample_pixelcnn_prior_images(
     return tokenizer.decode_indices(indices)
 
 
+def prepare_token_loaders(
+    tokenizer,
+    train_loader,
+    monitor_loader,
+    out_dir,
+    *,
+    tokenizer_id,
+    data_dir,
+    image_size,
+    monitor_protocol,
+    device,
+    conditional=False,
+) -> tuple[DataLoader, DataLoader]:
+    """Prepare full training tokens and fixed monitoring tokens for either prior."""
+    cache_metadata = {
+        **image_contract(image_size, conditional=conditional),
+        "source_root": str(data_dir.resolve()),
+    }
+    tokens = cached_token_loader(
+        tokenizer,
+        train_loader,
+        out_dir / "token_cache_train.pth",
+        tokenizer_id=tokenizer_id,
+        metadata={**cache_metadata, "split": "train"},
+        device=device,
+        shuffle=True,
+    )
+    monitor_tokens = cached_token_loader(
+        tokenizer,
+        monitor_loader,
+        out_dir / "token_cache_monitor.pth",
+        tokenizer_id=tokenizer_id,
+        metadata={**cache_metadata, "protocol": monitor_protocol},
+        device=device,
+        shuffle=False,
+    )
+    return tokens, monitor_tokens
+
+
 def train_pixelcnn_prior(
     tokenizer,
     tokenizer_payload,
@@ -552,27 +620,16 @@ def train_pixelcnn_prior(
     grid_size = image_size // (2**tokenizer.downsample_steps)
     tokenizer.eval().requires_grad_(False)
     tokenizer_id = tokenizer_payload["snapshot_id"]
-    cache_metadata = {
-        **image_contract(image_size),
-        "source_root": str(data_dir.resolve()),
-    }
-    tokens = cached_token_loader(
+    tokens, monitor_tokens = prepare_token_loaders(
         tokenizer,
         train_loader,
-        out_dir / "token_cache_train.pth",
-        tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "split": "train"},
-        device=device,
-        shuffle=True,
-    )
-    monitor_tokens = cached_token_loader(
-        tokenizer,
         monitor_loader,
-        out_dir / "token_cache_monitor.pth",
+        out_dir,
         tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "protocol": monitor_protocol},
+        data_dir=data_dir,
+        image_size=image_size,
+        monitor_protocol=monitor_protocol,
         device=device,
-        shuffle=False,
     )
     config = {
         "vocabulary_size": tokenizer.quantizer.codebook_size,
