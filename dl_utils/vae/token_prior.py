@@ -16,15 +16,6 @@ from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
 
-def make_fixed_class_labels(
-    num_classes: int,
-    samples_per_class: int,
-    device: torch.device,
-) -> Tensor:
-    """Return adjacent, balanced labels for readable generated-image grids."""
-    return torch.arange(num_classes, device=device).repeat_interleave(samples_per_class)
-
-
 class MaskedConv2d(nn.Conv2d):
     """PixelCNN mask: type A excludes the current token; B includes it."""
 
@@ -41,7 +32,8 @@ class MaskedConv2d(nn.Conv2d):
         first_blocked = center_w if mask_type == "A" else center_w + 1
         mask[:, :, center_h, first_blocked:] = 0
         if stack == "vertical":
-            # A excludes the whole current row; B receives already shifted features.
+            # A excludes the current image row. B combines vertical features
+            # that already depend only on earlier image rows.
             mask[:, :, center_h, :] = 0 if mask_type == "A" else 1
         elif stack == "horizontal":
             mask[:, :, :center_h, :] = 0
@@ -104,7 +96,8 @@ class PixelCNNPrior(nn.Module):
 
     Sixteen layers (7x7, then fifteen 3x3 blocks) cover the entire 16x16
     causal context. Smaller lesson experiments may explicitly use fewer layers.
-    Set num_classes=0 for an unconditional prior without a class embedding.
+    The default prior is unconditional. A positive num_classes explicitly
+    enables class conditioning and requires labels for forward/sampling calls.
     """
 
     def __init__(
@@ -113,7 +106,7 @@ class PixelCNNPrior(nn.Module):
         *,
         hidden_channels: int = 64,
         layers: int = 16,
-        num_classes: int = 2,
+        num_classes: int = 0,
     ) -> None:
         super().__init__()
         if layers < 1:
@@ -248,7 +241,10 @@ def sample_pixelcnn_prior_images(
 
 
 class CausalTransformerPrior(nn.Module):
-    """Teacher-forced causal Transformer over a fixed-length token sequence."""
+    """Fixed-length causal token Transformer, unconditional by default.
+
+    A positive num_classes explicitly enables class conditioning.
+    """
 
     def __init__(
         self,
@@ -259,7 +255,7 @@ class CausalTransformerPrior(nn.Module):
         heads: int = 8,
         layers: int = 4,
         dropout: float = 0.0,
-        num_classes: int = 2,
+        num_classes: int = 0,
     ) -> None:
         super().__init__()
         self.vocabulary_size = vocabulary_size
@@ -267,7 +263,9 @@ class CausalTransformerPrior(nn.Module):
         self.num_classes = num_classes
         self.bos_token = vocabulary_size
         self.token_embedding = nn.Embedding(vocabulary_size + 1, model_dim)
-        self.class_embedding = nn.Embedding(num_classes, model_dim)
+        self.class_embedding = (
+            nn.Embedding(num_classes, model_dim) if num_classes else None
+        )
         self.position_embedding = nn.Parameter(
             torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
         )
@@ -298,11 +296,14 @@ class CausalTransformerPrior(nn.Module):
             torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1
         )
 
-    def forward(self, input_tokens: Tensor, labels: Tensor) -> Tensor:
+    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
         length = input_tokens.shape[1]
         hidden = self.token_embedding(input_tokens)
         hidden = hidden + self.position_embedding[:, :length]
-        hidden = hidden + self.class_embedding(labels)[:, None, :]
+        if self.class_embedding is not None:
+            if labels is None:
+                raise ValueError("A class-conditional prior requires labels.")
+            hidden = hidden + self.class_embedding(labels)[:, None, :]
         hidden = self.transformer(
             hidden, mask=self._causal_mask(length, input_tokens.device)
         )
@@ -311,7 +312,7 @@ class CausalTransformerPrior(nn.Module):
     def teacher_forcing(
         self,
         indices: Tensor,
-        labels: Tensor,
+        labels: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Return logits and targets for ``[B,H,W]`` or ``[B,T]`` indices."""
         targets = indices.flatten(1)
@@ -325,7 +326,7 @@ class CausalTransformerPrior(nn.Module):
         count: int,
         *,
         device: torch.device,
-        labels: Tensor,
+        labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
         sequence = torch.full(
@@ -346,7 +347,6 @@ __all__ = [
     "MaskedConv2d",
     "PixelCNNPrior",
     "evaluate_pixelcnn_prior",
-    "make_fixed_class_labels",
     "sample_pixelcnn_prior_images",
     "train_pixelcnn_prior_epoch",
 ]

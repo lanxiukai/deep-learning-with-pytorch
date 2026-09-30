@@ -34,6 +34,7 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
     FSQAutoencoder,
     TokenUsageAccumulator,
 )
@@ -57,7 +58,7 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "fsq"
 TOKENIZER_CHECKPOINT_NAME = "fsq.pth"
 PRIOR_CHECKPOINT_NAME = "pixelcnn_prior.pth"
 IMAGE_SIZE = 256
-DOWNSAMPLE_STEPS = 4
+DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
 TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
 
@@ -138,7 +139,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
         models={"model": model},
         optimizers={"model": optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE, dataset="glasses-256"),
+            **image_contract(IMAGE_SIZE),
             "model_name": "fsq_tokenizer",
             "model_config": config,
             "monitor_protocol": monitor_protocol,
@@ -223,7 +224,7 @@ def train_prior(
     tokenizer.eval().requires_grad_(False)
     tokenizer_id = tokenizer_payload["snapshot_id"]
     cache_metadata = {
-        **image_contract(IMAGE_SIZE, dataset="glasses-256"),
+        **image_contract(IMAGE_SIZE),
         "source_root": str(DATA_DIR.resolve()),
     }
     tokens = cached_token_loader(
@@ -257,7 +258,7 @@ def train_prior(
         models={"model": prior},
         optimizers={"model": optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE, dataset="glasses-256"),
+            **image_contract(IMAGE_SIZE),
             "model_name": "fsq_pixelcnn_prior",
             "model_config": config,
             "tokenizer_id": tokenizer_id,
@@ -354,7 +355,6 @@ def train() -> None:
             name="fsq_tokenizer",
             image_size=IMAGE_SIZE,
             device=device,
-            dataset="glasses-256",
             downsample_steps=DOWNSAMPLE_STEPS,
         )
     train_prior(

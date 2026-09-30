@@ -20,6 +20,7 @@ from tqdm import tqdm
 from dl_utils.data.datasets.celeba import CelebAAlignedDataset
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
+from dl_utils.diffusion.kl_autoencoder import KLPerceptualAutoencoder
 from dl_utils.diffusion.lesson_utils import (
     OUTPUT_ROOT,
     BinnedLoss,
@@ -36,7 +37,6 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.ema import update_ema
-from dl_utils.vae.perceptual_autoencoder import KLPerceptualAutoencoder
 
 
 def parse_args():

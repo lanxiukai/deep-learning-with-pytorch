@@ -35,6 +35,7 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.quantization import (
+    TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
     TokenUsageAccumulator,
@@ -55,7 +56,7 @@ SAVED_GENERATION_SAMPLES = 64
 SAMPLE_GRID_COLUMNS = 8
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 IMAGE_SIZE = 256
-DOWNSAMPLE_STEPS = 4
+DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 
 
 # Edit these defaults to explore the lesson.
@@ -137,7 +138,6 @@ def load_single_level_system(
         name=f"{name}_tokenizer",
         image_size=IMAGE_SIZE,
         device=device,
-        dataset="glasses-256",
         downsample_steps=DOWNSAMPLE_STEPS,
     )
     prior = load_prior_weights(
@@ -148,7 +148,6 @@ def load_single_level_system(
         tokenizer=tokenizer,
         tokenizer_payload=payload,
         device=device,
-        dataset="glasses-256",
     )
     return DiscreteSystem(name, tokenizer, prior, IMAGE_SIZE)
 

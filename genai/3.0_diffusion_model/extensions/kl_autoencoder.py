@@ -25,6 +25,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
+from dl_utils.diffusion.kl_autoencoder import KLPerceptualAutoencoder, VGGPerceptualLoss
 from dl_utils.diffusion.lesson_utils import (
     OUTPUT_ROOT,
     add_data_arguments,
@@ -36,9 +37,7 @@ from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.perceptual_autoencoder import (
-    KLPerceptualAutoencoder,
     PatchDiscriminator,
-    VGGPerceptualLoss,
     adaptive_adversarial_weight,
 )
 from dl_utils.vae.vae_common import (
@@ -399,7 +398,9 @@ def train(args: argparse.Namespace) -> None:
                 step=global_step,
                 discriminator_start=args.discriminator_start,
             )
-            sums += torch.stack([*metrics.values(), *d_metrics.values()]) * images.shape[0]
+            sums += (
+                torch.stack([*metrics.values(), *d_metrics.values()]) * images.shape[0]
+            )
             examples += images.shape[0]
             global_step += 1
         means = (sums / examples).tolist()

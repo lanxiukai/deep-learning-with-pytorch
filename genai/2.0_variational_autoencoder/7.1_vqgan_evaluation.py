@@ -1,15 +1,17 @@
-"""Evaluate selected VQGAN, PatchGAN, and Transformer weights on CelebA test.
+"""Evaluate selected VQGAN, PatchGAN, and Transformer weights on glasses-256.
 
-The complete 19,962-image test split is the default. MAX_EXAMPLES selects
-and records a seeded random subset for a shorter check. Report paired L1,
-MSE, both PSNR aggregations, LPIPS, token rates, conditional prior NLL,
-and PatchGAN diagnostics. The 64 generated images remain a visual preview.
+The complete 4,500-image training set at 256x256 is the default. MAX_EXAMPLES
+selects and records a seeded random subset for a shorter check. These are
+training-set diagnostics, not held-out results. Report paired L1,
+MSE, both PSNR aggregations, LPIPS, token rates, class-conditional prior NLL,
+and PatchGAN diagnostics. The 64 generated images remain a visual preview;
+columns alternate G (with glasses) and NoG (without glasses).
 
 Loading requires matching tokenizer/prior snapshot IDs, image preprocessing,
-labels and the current lesson architecture version. Run 7.0 first.
+conditioning and the current four-step spatial compression. Run 7.0 first.
 The default 16x16 grid and 512-entry vocabulary match 6.0/6.1. Different
-backbones, objectives, priors and training budgets still prevent a controlled
-algorithm ranking. Loading enforces the current shared spatial compression.
+conditioning, backbones, objectives, priors and training budgets prevent a controlled
+algorithm ranking.
 Outputs remain in output/vae/vqgan/evaluation/.
 """
 
@@ -26,9 +28,7 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
-from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_CLASSES,
-)
+from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.inference.batching import generate_in_batches
@@ -43,23 +43,23 @@ from dl_utils.vae.perceptual_autoencoder import (
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
 from dl_utils.vae.token_prior import CausalTransformerPrior
 from dl_utils.vae.tokenizer_workflow import (
-    heldout_loader,
+    glasses_loader,
     load_prior_weights,
     load_tokenizer_weights,
 )
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
-IMAGE_SIZE = 128
-NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
+IMAGE_SIZE = 256
+NUM_CLASSES = len(GLASSES_CLASS_NAMES)
+DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 
 
 # Edit these defaults to explore the lesson.
 DATA_DIR = DEFAULT_DATA_DIR
 BATCH_SIZE = 16
-EVALUATION_SPLIT = "test"
-MAX_EXAMPLES: int | None = None
+MAX_EXAMPLES: int | None = None  # None evaluates all training images.
 GENERATION_BATCH_SIZE = 10
 TEMPERATURE = 1.0
 WORKERS = 4
@@ -101,7 +101,7 @@ class EvaluatedSystem:
         labels: Tensor,
         temperature: float,
     ) -> Tensor:
-        side = IMAGE_SIZE // (2**TOKENIZER_DOWNSAMPLE_STEPS)
+        side = IMAGE_SIZE // (2**self.tokenizer.downsample_steps)
         indices = self.prior.sample(
             count,
             device=device,
@@ -112,15 +112,15 @@ class EvaluatedSystem:
 
 
 def make_evaluation_loader(device: torch.device):
-    return heldout_loader(
+    return glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split=EVALUATION_SPLIT,
         max_examples=MAX_EXAMPLES,
         seed=SEED,
         num_workers=WORKERS,
+        conditional=True,
     )
 
 
@@ -131,6 +131,8 @@ def load_vqgan_system(tokenizer_path: Path, device: torch.device) -> EvaluatedSy
         name="vqgan_tokenizer",
         image_size=IMAGE_SIZE,
         device=device,
+        downsample_steps=DOWNSAMPLE_STEPS,
+        conditional=True,
     )
     discriminator = PatchDiscriminator(**payload["discriminator_config"]).to(device)
     discriminator.load_state_dict(payload["discriminator_state_dict"])
@@ -142,6 +144,7 @@ def load_vqgan_system(tokenizer_path: Path, device: torch.device) -> EvaluatedSy
         tokenizer=tokenizer,
         tokenizer_payload=payload,
         device=device,
+        conditional=True,
     )
     return EvaluatedSystem(tokenizer, prior, discriminator.eval().requires_grad_(False))
 
@@ -211,7 +214,7 @@ def evaluate_reconstruction(
         examples += images.shape[0]
 
     if comparison is None or examples == 0:
-        raise ValueError("evaluation needs at least one held-out example")
+        raise ValueError("evaluation needs at least one training example")
     paired = (paired_totals / examples).tolist()
     mse = squared_error / element_count
     token_statistics = usage.statistics()
@@ -259,7 +262,7 @@ def evaluate_reconstruction(
 
 
 def save_metric_summary(metrics: dict[str, object], output_path) -> None:
-    """Visualize held-out fidelity, code use, and prior fit."""
+    """Visualize training-set fidelity, code use, and prior fit."""
     fidelity = metrics["paired_fidelity"]
     quantization = metrics["quantization"]
     prior = metrics["prior"]
@@ -309,8 +312,11 @@ def evaluate() -> None:
         max_examples=MAX_EXAMPLES,
         device=device,
     )
+    sample_labels = torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(
+        NUM_CLASSES
+    )
     images = generate_in_batches(
-        torch.arange(SAVED_GENERATION_SAMPLES, device=device).remainder(NUM_CLASSES),
+        sample_labels,
         GENERATION_BATCH_SIZE,
         lambda labels: system.sample(
             len(labels), device=device, labels=labels, temperature=TEMPERATURE
@@ -322,6 +328,7 @@ def evaluate() -> None:
         "generation_batch_size": GENERATION_BATCH_SIZE,
         "saved_generation_examples": SAVED_GENERATION_SAMPLES,
         "sampling_temperature": TEMPERATURE,
+        "generation_class_ids": sample_labels.cpu().tolist(),
     }
     reset_dir(str(OUTPUT_DIR))
     save_image(

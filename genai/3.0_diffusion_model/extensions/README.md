@@ -19,6 +19,13 @@ protocol. For 128px input, the approximately 4.5M-parameter KL stage produces
 decoding restores 128px RGB. The first-stage identity and latent scale must
 match the LDM checkpoint. Latents are not clipped to a pixel range.
 
+The KL first-stage model and VGG feature loss live in
+[dl_utils/diffusion/kl_autoencoder.py](../../../dl_utils/diffusion/kl_autoencoder.py).
+Shared RGB blocks, PatchGAN, and adaptive adversarial weighting are reused
+from [the perceptual image module](../../../dl_utils/vae/perceptual_autoencoder.py).
+The first-stage and latent-diffusion scripts import the KL model from its
+diffusion module.
+
 ## Algorithm boundaries
 
 - Improved DDPM maps its raw variance head with `r=(v+1)/2`, without a sigmoid

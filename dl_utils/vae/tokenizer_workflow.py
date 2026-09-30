@@ -1,7 +1,8 @@
-"""Data and artifact helpers for the three discrete-tokenizer lessons.
+"""Glasses-256 data and artifact helpers for the discrete-tokenizer lessons.
 
-Optimization and validation remain in the lesson scripts. Recovery replays
-validation if an interruption follows an already saved training epoch.
+Optimization and training-subset monitoring remain in the lesson scripts.
+Validation / val_* artifact fields store these training-set diagnostics.
+Recovery replays monitoring after an already saved training epoch.
 """
 
 from __future__ import annotations
@@ -15,13 +16,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, RandomSampler, Subset, TensorDataset
 
-from dl_utils.data.datasets.celeba import (
-    CELEBA_ALIGNED_CROP_SIZE,
-    CELEBA_SMILING_ATTRIBUTE,
-    CELEBA_SMILING_CLASSES,
-    CelebAAlignedDataset,
-    make_aligned_celeba_loader,
-)
+from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.data.vision import image_folder_dataset
 from dl_utils.training.checkpoints import (
@@ -33,29 +28,17 @@ from dl_utils.training.history import save_metrics_csv
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 
 
-def image_contract(image_size: int, *, dataset: str = "celeba") -> dict[str, Any]:
-    """Describe the input contract for the selected tokenizer lesson."""
-    if dataset == "glasses-256":
-        return {
-            "dataset": dataset,
-            "image_size": image_size,
-            "crop_size": None,
-            "normalization": "[-1,1]",
-            "horizontal_flip": False,
-            "attribute": None,
-            "class_names": [],
-            "conditioning": "unconditional",
-        }
-    if dataset != "celeba":
-        raise ValueError(f"Unknown tokenizer dataset: {dataset}")
+def image_contract(image_size: int, *, conditional: bool = False) -> dict[str, Any]:
+    """Record glasses-256 preprocessing and the selected prior conditioning."""
     return {
-        "dataset": "celeba",
+        "dataset": "glasses-256",
         "image_size": image_size,
-        "crop_size": CELEBA_ALIGNED_CROP_SIZE,
+        "crop_size": None,
         "normalization": "[-1,1]",
         "horizontal_flip": False,
-        "attribute": CELEBA_SMILING_ATTRIBUTE,
-        "class_names": list(CELEBA_SMILING_CLASSES),
+        "attribute": "glasses" if conditional else None,
+        "class_names": list(GLASSES_CLASS_NAMES) if conditional else [],
+        "conditioning": "class-conditional" if conditional else "unconditional",
     }
 
 
@@ -69,6 +52,7 @@ def glasses_loader(
     max_examples=None,
     seed=123,
     num_workers=0,
+    conditional=False,
 ) -> tuple[DataLoader, dict[str, Any]]:
     """Reuse the VAE's training images; a seeded subset is only a diagnostic."""
     if max_examples is not None and max_examples < 1:
@@ -77,6 +61,10 @@ def glasses_loader(
     dataset = image_folder_dataset(
         root, resize=(image_size, image_size), normalize=(0.5, 0.5)
     )
+    if conditional and dataset.classes != list(GLASSES_CLASS_NAMES):
+        raise ValueError(
+            f"Expected conditional classes {GLASSES_CLASS_NAMES}, got {dataset.classes}"
+        )
     indices = list(range(len(dataset)))
     if max_examples is not None and max_examples < len(indices):
         indices = torch.randperm(
@@ -92,7 +80,7 @@ def glasses_loader(
     )
     loader.generator = torch.Generator().manual_seed(seed)
     protocol = {
-        **image_contract(image_size, dataset="glasses-256"),
+        **image_contract(image_size, conditional=conditional),
         "split": "training",
         "evaluation_scope": "training-set diagnostics, not held-out performance",
         "subset_seed": seed,
@@ -101,59 +89,11 @@ def glasses_loader(
             Path(dataset.samples[i][0]).relative_to(root).as_posix() for i in indices
         ],
         "psnr_aggregation": "both mean per-image PSNR and PSNR from pooled MSE; data_range=2",
-        "rate_interpretation": "unconditional token cross-entropy; excludes model weights and coder overhead",
-        "latent_mse_interpretation": "within-tokenizer diagnostic, not comparable across quantizer coordinate systems",
-    }
-    return loader, protocol
-
-
-def heldout_loader(
-    root, image_size, batch_size, device, *, split, max_examples, seed, num_workers
-) -> tuple[DataLoader, dict[str, Any]]:
-    """Use a recorded random subset for monitoring, or the complete test split."""
-    if split not in {"validation", "test"}:
-        raise ValueError("Held-out evaluation requires validation or test images.")
-    if max_examples is not None and max_examples < 1:
-        raise ValueError("max_examples must be positive or None (the full split).")
-    loader = make_aligned_celeba_loader(
-        root,
-        image_size,
-        batch_size,
-        device,
-        split=split,
-        attribute=CELEBA_SMILING_ATTRIBUTE,
-        horizontal_flip=False,
-        num_workers=num_workers,
-        shuffle=False,
-        drop_last=False,
-    )
-    dataset = cast(CelebAAlignedDataset, loader.dataset)
-    indices = list(range(len(dataset)))
-    if max_examples is not None and max_examples < len(indices):
-        generator = torch.Generator().manual_seed(seed)
-        indices = (
-            torch.randperm(len(indices), generator=generator)[:max_examples]
-            .sort()
-            .values.tolist()
-        )
-        loader = make_device_aware_loader(
-            Subset(dataset, indices),
-            batch_size,
-            device,
-            shuffle=False,
-            num_workers=num_workers,
-            drop_last=False,
-        )
-    # DataLoader worker seeds must not consume the model's random stream.
-    loader.generator = torch.Generator().manual_seed(seed)
-    protocol = {
-        **image_contract(image_size),
-        "split": split,
-        "subset_seed": seed,
-        "examples": len(indices),
-        "image_ids": [dataset.image_paths[i].name for i in indices],
-        "psnr_aggregation": "both mean per-image PSNR and PSNR from pooled MSE; data_range=2",
-        "rate_interpretation": "conditional token cross-entropy; excludes labels, model weights and coder overhead",
+        "rate_interpretation": (
+            "conditional token cross-entropy; excludes labels, model weights and coder overhead"
+            if conditional
+            else "unconditional token cross-entropy; excludes model weights and coder overhead"
+        ),
         "latent_mse_interpretation": "within-tokenizer diagnostic, not comparable across quantizer coordinate systems",
     }
     return loader, protocol
@@ -170,7 +110,11 @@ def seed_epoch_loader(loader: DataLoader, seed: int, epoch: int) -> None:
 def cached_token_loader(
     tokenizer, image_loader, path, *, tokenizer_id, metadata, device, shuffle
 ) -> DataLoader:
-    """Encode each deterministic image once and bind the cache to frozen weights."""
+    """Encode deterministic images once and bind the cache to frozen weights.
+
+    Folder labels condition the VQGAN Transformer prior. VQ-VAE and FSQ
+    keep the same batch format and ignore those labels.
+    """
     path = Path(path)
     cache_metadata = {
         **metadata,
@@ -221,7 +165,7 @@ def cached_token_loader(
 
 
 class TokenizerStage:
-    """Thin artifact wrapper around TrainingCheckpoint; no training callbacks."""
+    """Persist training and subset monitoring through TrainingCheckpoint."""
 
     def __init__(self, directory, *, models, optimizers, metadata, recipe, resume):
         self.directory = Path(directory)
@@ -265,13 +209,14 @@ class TokenizerStage:
         return not (epoch == self.completed_epoch and self.state["pending_validation"])
 
     def record_training(self, epoch, metrics):
-        """Save recoverable state before validation or optional plotting."""
+        """Save recoverable state before subset monitoring or plotting."""
         self.history.append({"epoch": epoch, **metrics})
         self.state["pending_validation"] = True
         self.completed_epoch = epoch
         self.checkpoint.save(epoch, self.state)
 
     def record_validation(self, epoch, validation, *, score):
+        """Store training-subset diagnostics in validation / val_* fields."""
         if not math.isfinite(score):
             raise FloatingPointError("The model-selection metric must be finite.")
         payload = {
@@ -301,9 +246,11 @@ class TokenizerStage:
         )
 
     def export_best(self, destination):
-        """Select frozen weights only after their validation has completed."""
+        """Select frozen weights after training-subset monitoring completes."""
         if self.state["pending_validation"] or self.state["best_epoch"] is None:
-            raise RuntimeError("Finish validation before exporting this stage.")
+            raise RuntimeError(
+                "Finish training-subset monitoring before exporting this stage."
+            )
         payload = torch.load(
             self.directory / "best.pth", map_location="cpu", weights_only=True
         )
@@ -337,8 +284,8 @@ def load_tokenizer_weights[T: nn.Module](
     name,
     image_size,
     device,
-    dataset="celeba",
     downsample_steps=TOKENIZER_DOWNSAMPLE_STEPS,
+    conditional=False,
 ) -> tuple[T, dict[str, Any]]:
     """Reuse the common weight loader and return the identity needed by priors."""
     model, _ = load_model_weights(
@@ -346,7 +293,7 @@ def load_tokenizer_weights[T: nn.Module](
         model_class,
         device=device,
         expected_metadata={
-            **image_contract(image_size, dataset=dataset),
+            **image_contract(image_size, conditional=conditional),
             "model_name": name,
         },
         config_transform=lambda config: _current_tokenizer_config(
@@ -368,25 +315,28 @@ def load_prior_weights[T: nn.Module](
     tokenizer,
     tokenizer_payload,
     device,
-    dataset="celeba",
+    conditional=False,
 ) -> T:
-    """Reject mixed runs, labels, image preprocessing, vocabularies and grids."""
+    """Require matching snapshots, conditioning, vocabulary and token grid."""
     prior, _ = load_model_weights(
         path,
         model_class,
         device=device,
         expected_metadata={
-            **image_contract(image_size, dataset=dataset),
+            **image_contract(image_size, conditional=conditional),
             "model_name": name,
             "tokenizer_id": tokenizer_payload["snapshot_id"],
         },
     )
     if prior.vocabulary_size != tokenizer.quantizer.codebook_size:
         raise ValueError("Prior vocabulary differs from the frozen tokenizer.")
-    expected_classes = len(image_contract(image_size, dataset=dataset)["class_names"])
+    expected_classes = len(
+        image_contract(image_size, conditional=conditional)["class_names"]
+    )
     if prior.num_classes != expected_classes:
         raise ValueError("Prior conditioning differs from the image contract.")
     positions = (image_size // (2**tokenizer.downsample_steps)) ** 2
+    # Transformer sequence length is fixed; PixelCNN accepts a grid at sampling.
     if hasattr(prior, "sequence_length") and prior.sequence_length != positions:
         raise ValueError("Prior sequence length differs from the tokenizer grid.")
     return cast(T, prior.requires_grad_(False))

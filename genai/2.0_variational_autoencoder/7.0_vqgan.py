@@ -5,16 +5,21 @@ and a delayed PatchGAN hinge objective. After the delay, an adaptive
 last-decoder-layer gradient ratio balances reconstruction and adversarial loss.
 The codebook uses EMA updates independently of the optimizer.
 Stage two fits a class-conditional causal Transformer to cached frozen tokens.
+The tokenizer reconstructs without labels; the prior uses G=0 / NoG=1 labels.
 
-This teaching recipe uses 128px CelebA and the same 16x16 token grid and
-512-entry vocabulary as VQ-VAE/FSQ: 256 tokens, or 2,304 fixed-length bits
-per image. Batch size 16 and 30 epochs per stage remain a separate training
-budget. Different backbones, objectives and priors still prevent a strict ablation.
+This teaching recipe uses 256px glasses-256 faces
+and downsamples four times to the same 16x16 token grid and 512-entry
+vocabulary as VQ-VAE/FSQ: 256 tokens, or 2,304 fixed-length bits per image.
+Batch size 16 and 30 epochs per stage remain a separate training budget.
+Different conditioning, backbones, objectives and priors prevent a strict ablation.
+Prior preview columns alternate G (with glasses) and NoG (without glasses).
 
 Edit RESUME and TRAIN_TOKENIZER below for recovery or prior-only training.
 Each stage saves latest full state before validation, best/last weights, and
 per-epoch CSV metrics. The selected tokenizer/prior snapshots are bound by ID.
-Validation uses a recorded seeded subset; 7.1 evaluates the full test split.
+A recorded seeded training subset monitors progress and selects snapshots;
+the stored validation / val_* fields are training-set diagnostics.
+Run 7.1 for reconstruction and generation diagnostics on the training images.
 
 Outputs under output/vae/vqgan/:
     tokenizer/{latest,best,last}.pth and metrics.csv
@@ -34,11 +39,7 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
-from dl_utils.data.datasets.celeba import (
-    CELEBA_SMILING_ATTRIBUTE,
-    CELEBA_SMILING_CLASSES,
-    make_aligned_celeba_loader,
-)
+from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
 from dl_utils.runtime.devices import try_gpu
@@ -52,14 +53,11 @@ from dl_utils.vae.perceptual_autoencoder import (
     adaptive_adversarial_weight,
 )
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, TokenUsageAccumulator
-from dl_utils.vae.token_prior import (
-    CausalTransformerPrior,
-    make_fixed_class_labels,
-)
+from dl_utils.vae.token_prior import CausalTransformerPrior
 from dl_utils.vae.tokenizer_workflow import (
     TokenizerStage,
     cached_token_loader,
-    heldout_loader,
+    glasses_loader,
     image_contract,
     load_tokenizer_weights,
     seed_epoch_loader,
@@ -73,13 +71,14 @@ RECONSTRUCTION_SAMPLES = 8
 PROGRESS_INTERVAL = 0.5
 MAX_METRIC_PANELS = 4
 ADAM_BETAS = (0.5, 0.9)
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "celeba"
-IMAGE_SIZE = 128
-NUM_CLASSES = len(CELEBA_SMILING_CLASSES)
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
+IMAGE_SIZE = 256
+NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
 LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
 TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
-SAMPLES_PER_CLASS = 1
+NUM_FIXED_SAMPLES = 8
+SAMPLE_GRID_COLUMNS = 4
 
 
 # Edit these defaults to explore the lesson.
@@ -87,7 +86,7 @@ DATA_DIR = DEFAULT_DATA_DIR
 TRAIN_TOKENIZER = True
 RESUME = True
 LOG_EVERY = 100
-VALIDATION_SEED = 123
+MONITOR_SEED = 123
 TOKENIZER_EPOCHS = 30
 PRIOR_EPOCHS = 30
 BATCH_SIZE = 16
@@ -111,7 +110,7 @@ DISCRIMINATOR_LR = 2e-4
 PRIOR_LR = 3e-4
 TEMPERATURE = 1.0
 SAMPLE_EVERY = 5
-VALIDATION_EXAMPLES = 1_024
+MONITOR_EXAMPLES = 1_024
 WORKERS = 4
 SEED = 42
 
@@ -274,9 +273,7 @@ def validate_prior(prior, loader, *, device) -> dict[str, float]:
     }
 
 
-def train_tokenizer(
-    train_loader, validation_loader, device, out_dir, validation_protocol
-):
+def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_protocol):
     config = {
         "latent_channels": LATENT_CHANNELS,
         "codebook_size": CODEBOOK_SIZE,
@@ -298,13 +295,13 @@ def train_tokenizer(
         models={"model": model, "discriminator": discriminator},
         optimizers={"model": ae_optimizer, "discriminator": d_optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE),
+            **image_contract(IMAGE_SIZE, conditional=True),
             "model_name": "vqgan_tokenizer",
             "model_config": config,
             "discriminator_config": {"base_channels": DISCRIMINATOR_CHANNELS},
             "perceptual_loss": "lpips-v0.1-vgg",
-            "validation_protocol": validation_protocol,
-            "selection_metric": "validation_pixel_l1_plus_weighted_lpips",
+            "monitor_protocol": monitor_protocol,
+            "selection_metric": "training_subset_pixel_l1_plus_weighted_lpips",
         },
         recipe={
             "lr": LR,
@@ -400,8 +397,8 @@ def train_tokenizer(
             model,
             discriminator,
             perceptual,
-            validation_loader,
-            max_examples=VALIDATION_EXAMPLES,
+            monitor_loader,
+            max_examples=MONITOR_EXAMPLES,
             device=device,
         )
         score = (
@@ -411,7 +408,7 @@ def train_tokenizer(
         stage.record_validation(epoch, validation, score=score)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
             with torch.inference_mode():
-                images = next(iter(validation_loader))[0][:RECONSTRUCTION_SAMPLES].to(
+                images = next(iter(monitor_loader))[0][:RECONSTRUCTION_SAMPLES].to(
                     device
                 )
                 reconstruction = model(images)[0]
@@ -431,10 +428,10 @@ def train_prior(
     tokenizer,
     tokenizer_payload,
     train_loader,
-    validation_loader,
+    monitor_loader,
     device,
     out_dir,
-    validation_protocol,
+    monitor_protocol,
 ):
     tokenizer.eval().requires_grad_(False)
     tokenizer_grid_size = IMAGE_SIZE // (2**tokenizer.downsample_steps)
@@ -444,7 +441,7 @@ def train_prior(
         )
     tokenizer_id = tokenizer_payload["snapshot_id"]
     cache_metadata = {
-        **image_contract(IMAGE_SIZE),
+        **image_contract(IMAGE_SIZE, conditional=True),
         "source_root": str(DATA_DIR.resolve()),
     }
     tokens = cached_token_loader(
@@ -456,12 +453,12 @@ def train_prior(
         device=device,
         shuffle=True,
     )
-    validation_tokens = cached_token_loader(
+    monitor_tokens = cached_token_loader(
         tokenizer,
-        validation_loader,
-        out_dir / "token_cache_validation.pth",
+        monitor_loader,
+        out_dir / "token_cache_monitor.pth",
         tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "protocol": validation_protocol},
+        metadata={**cache_metadata, "protocol": monitor_protocol},
         device=device,
         shuffle=False,
     )
@@ -481,12 +478,12 @@ def train_prior(
         models={"model": prior},
         optimizers={"model": optimizer},
         metadata={
-            **image_contract(IMAGE_SIZE),
+            **image_contract(IMAGE_SIZE, conditional=True),
             "model_name": "vqgan_transformer_prior",
             "model_config": config,
             "tokenizer_id": tokenizer_id,
-            "validation_protocol": validation_protocol,
-            "selection_metric": "validation_nll",
+            "monitor_protocol": monitor_protocol,
+            "selection_metric": "training_subset_nll",
         },
         recipe={"lr": PRIOR_LR, "batch_size": BATCH_SIZE, "seed": SEED},
         resume=RESUME,
@@ -526,7 +523,7 @@ def train_prior(
             stage.record_training(
                 epoch, {"nll": nll, "bits_per_token": nll / math.log(2)}
             )
-        validation = validate_prior(prior, validation_tokens, device=device)
+        validation = validate_prior(prior, monitor_tokens, device=device)
         stage.record_validation(
             epoch, validation, score=validation["nll_nats_per_token"]
         )
@@ -534,17 +531,24 @@ def train_prior(
             with torch.random.fork_rng(), torch.inference_mode():
                 torch.manual_seed(SEED)
                 prior.eval()
-                labels = make_fixed_class_labels(NUM_CLASSES, SAMPLES_PER_CLASS, device)
+                labels = torch.arange(NUM_FIXED_SAMPLES, device=device).remainder(
+                    NUM_CLASSES
+                )
                 indices = prior.sample(
-                    len(labels), device=device, labels=labels, temperature=TEMPERATURE
+                    NUM_FIXED_SAMPLES,
+                    device=device,
+                    labels=labels,
+                    temperature=TEMPERATURE,
                 )
                 samples = tokenizer.decode_indices(
-                    indices.reshape(len(labels), LATENT_GRID_SIZE, LATENT_GRID_SIZE)
+                    indices.reshape(
+                        NUM_FIXED_SAMPLES, LATENT_GRID_SIZE, LATENT_GRID_SIZE
+                    )
                 )
             save_image(
                 samples.mul(0.5).add(0.5),
                 training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=NUM_CLASSES,
+                nrow=SAMPLE_GRID_COLUMNS,
             )
     stage.export_best(out_dir / PRIOR_CHECKPOINT_NAME)
     save_training_metrics(
@@ -554,29 +558,30 @@ def train_prior(
 
 def train() -> None:
     device = try_gpu()
-    train_loader = make_aligned_celeba_loader(
+    train_loader, _ = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
+        shuffle=True,
+        seed=SEED,
         num_workers=WORKERS,
-        attribute=CELEBA_SMILING_ATTRIBUTE,
-        horizontal_flip=False,
+        conditional=True,
     )
-    validation_loader, protocol = heldout_loader(
+    monitor_loader, protocol = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
-        split="validation",
-        max_examples=VALIDATION_EXAMPLES,
-        seed=VALIDATION_SEED,
+        max_examples=MONITOR_EXAMPLES,
+        seed=MONITOR_SEED,
         num_workers=WORKERS,
+        conditional=True,
     )
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if TRAIN_TOKENIZER:
         tokenizer, payload = train_tokenizer(
-            train_loader, validation_loader, device, OUTPUT_DIR, protocol
+            train_loader, monitor_loader, device, OUTPUT_DIR, protocol
         )
     else:
         tokenizer, payload = load_tokenizer_weights(
@@ -585,12 +590,14 @@ def train() -> None:
             name="vqgan_tokenizer",
             image_size=IMAGE_SIZE,
             device=device,
+            downsample_steps=DOWNSAMPLE_STEPS,
+            conditional=True,
         )
     train_prior(
         tokenizer,
         payload,
         train_loader,
-        validation_loader,
+        monitor_loader,
         device,
         OUTPUT_DIR,
         protocol,

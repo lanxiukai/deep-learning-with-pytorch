@@ -105,28 +105,35 @@ environment or dependency workflow.
   on a model family.
 - [data/datasets/celeba/](data/datasets/celeba/) loads aligned faces using the official
   partitions and optional binary attributes. Conditional GANs use Smiling
-  labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images
-  and pass labels only to their second-stage priors.
+  labels with 64x64 images.
 - [vae/vae.py](vae/vae.py) implements the 256x256 introductory VAE and the
   comparable standard/beta-VAE training path using the RGB encoder/decoder in
   [vae/vae_common.py](vae/vae_common.py). Focused modules cover 256x256 RGB
-  hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior, and
-  perceptual-autoencoder blocks for the 128x128 CelebA lessons.
-  The KL perceptual autoencoder also supports an f=8, 128px continuous first
-  stage for latent diffusion; its 16x16 latent resolution is distinct from the
-  decoded RGB image size.
+  hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior,
+  and perceptual-autoencoder blocks for the 256x256 glasses-256 lessons.
+- [diffusion/kl_autoencoder.py](diffusion/kl_autoencoder.py) owns the KL
+  perceptual autoencoder and frozen VGG feature loss for latent diffusion.
+  Its f=8 default maps 128px RGB to 4x16x16 continuous latents and decodes
+  back to 128px. It reuses the RGB encoder/decoder in
+  [vae/perceptual_autoencoder.py](vae/perceptual_autoencoder.py); the KL lesson
+  also reuses that module's PatchGAN and adaptive adversarial weight.
 - [vae/tokenizer_workflow.py](vae/tokenizer_workflow.py) composes existing
   checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
-  It owns recorded held-out subsets, snapshot-bound token caches, epoch recovery,
-  and best/last artifacts. Optimization, validation objectives, and model
-  selection metrics remain explicit in the lessons. Priors consume cached token
+  It owns glasses-256 loading, recorded training subsets, snapshot-bound token
+  caches, epoch recovery, and best/last artifacts.
+  Optimization, validation objectives, and model selection metrics remain
+  explicit in the lessons. Priors consume cached token
   grids; gated PixelCNN uses two masked streams, and Transformer layers receive
-  independent initializations. `TOKENIZER_DOWNSAMPLE_STEPS` in
-  [vae/quantization.py](vae/quantization.py) defines the shared model, training,
-  and evaluation defaults; weight loading enforces this configuration.
-  All three default tokenizers share a 16x16 grid and 512-code vocabulary;
-  VQGAN retains its separate backbone, objective,
-  prior and training budget.
+  independent initializations. [vae/quantization.py](vae/quantization.py)
+  supplies the shared quantizers. Both priors default to unconditional generation;
+  class conditioning requires an explicit positive `num_classes`.
+  Models, lesson entries, and weight loaders share
+  `TOKENIZER_DOWNSAMPLE_STEPS=4` for 256x256 inputs and outputs; weight loading
+  enforces this configuration. They share a 16x16
+  grid and 512-code vocabulary. VQ-VAE/FSQ ignore the G/NoG folder labels;
+  VQGAN explicitly enables its two-class Transformer prior. Data loading,
+  checkpoints, token caches, and evaluation record this conditioning contract.
+  VQGAN retains its separate backbone, objective, prior, and training budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through

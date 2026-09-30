@@ -165,10 +165,13 @@ uv run --locked --no-sync python tool_scripts/download_dataset.py \
   --dataset mnist celeba glasses
 ```
 
-SN-GAN, SAGAN, BigGAN, VQ-VAE, FSQ, and VQGAN default to aligned CelebA under
-`data/celeba`, using its official train and validation partitions. GANs use
-64x64 faces; discrete tokenizers retain their 128x128 setup. Smiling labels
-condition GANs and the tokenizers' second-stage priors.
+SN-GAN, SAGAN, and BigGAN default to aligned CelebA under `data/celeba`,
+using its official train and validation partitions, 64x64 faces, and Smiling
+conditioning. VQ-VAE, FSQ, and VQGAN use 256x256 RGB images from
+`data/glasses-256`. VQ-VAE and FSQ use unconditional token priors; VQGAN's
+Transformer prior conditions on G=0 (with glasses) and NoG=1 (without glasses).
+Their recorded training subsets provide diagnostics; the glasses cache has
+no independent test split.
 
 Explicit `--dataset all` is equivalent to omitting the option. The downloader
 continues through the selected sequence after individual provider failures and

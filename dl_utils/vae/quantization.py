@@ -1,4 +1,4 @@
-"""Quantizers and reusable image-tokenizer blocks for VQ/FSQ lessons."""
+"""Quantizers for VQ-VAE, FSQ, and VQGAN, plus VQ-VAE/FSQ image blocks."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-# Default for the 128px VQGAN lesson; the 256px VQ-VAE/FSQ entries use four steps.
-TOKENIZER_DOWNSAMPLE_STEPS = 3
+# VQ-VAE, FSQ, and VQGAN map 256x256 images to 16x16 token grids.
+TOKENIZER_DOWNSAMPLE_STEPS = 4
 
 
 def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:
@@ -181,10 +181,6 @@ class FiniteScalarQuantizer(nn.Module):
         half_width = (self.levels // 2).to(dtype=digits.dtype)
         return (digits - half_width) / half_width
 
-    def _values_to_digits(self, values: Tensor) -> Tensor:
-        half_width = (self.levels // 2).to(dtype=values.dtype)
-        return torch.round(values * half_width + half_width)
-
     def bound(self, values: Tensor) -> Tensor:
         """Bound channels before rounding, with zero inside the center bin."""
         levels = self.levels.to(dtype=values.dtype)
@@ -233,7 +229,7 @@ class ResidualBlock(nn.Module):
 
 
 class ImageEncoder(nn.Module):
-    """Image encoder with an explicit power-of-two spatial compression."""
+    """Image encoder with configurable compression; the default is 16x."""
 
     def __init__(
         self,
@@ -270,7 +266,7 @@ class ImageEncoder(nn.Module):
 
 
 class ImageDecoder(nn.Module):
-    """Mirror an ``ImageEncoder`` and map features to RGB in [-1, 1]."""
+    """Mirror an ``ImageEncoder`` and reconstruct images in [-1, 1]."""
 
     def __init__(
         self,
@@ -365,7 +361,7 @@ class VQVAE(nn.Module):
 
 
 class FSQAutoencoder(nn.Module):
-    """The same configurable tokenizer with FSQ replacing learned VQ."""
+    """FSQ image tokenizer using the same encoder/decoder as VQ-VAE."""
 
     def __init__(
         self,
