@@ -194,13 +194,12 @@ def sample_pixelcnn_cached(
     *,
     labels: Tensor | None,
     temperature: float,
-    cuda_graph: bool,
 ) -> Tensor:
     count, height, width = indices.shape
     cache = _PixelCNNCache(
         prior, count, height, width, device=indices.device, labels=labels
     )
-    if cuda_graph and indices.is_cuda:
+    if indices.is_cuda:
         return _sample_with_cuda_graph(cache, indices, temperature)
     for row in range(height):
         cache.begin_row(row)

@@ -126,11 +126,16 @@ environment or dependency workflow.
   grids; gated PixelCNN uses two masked streams. Its inference-only
   [vae/pixelcnn_sampling.py](vae/pixelcnn_sampling.py) caches vertical features
   once per row and the short horizontal history once per generated token.
-  CUDA sampling also replays a one-token CUDA Graph; CPU uses eager caches.
-  `PixelCNNPrior.sample(..., cached=False)` retains the full-grid reference;
-  `cuda_graph=False` keeps the caches with eager execution. Existing weights,
-  training, and checkpoint metadata remain unchanged. Transformer layers receive
-  independent initializations. [vae/quantization.py](vae/quantization.py)
+  Sampling always uses caches: CUDA replays a one-token CUDA Graph, while CPU
+  executes eager steps. Transformer layers receive independent initializations.
+  VQGAN Transformer sampling uses the independent
+  [vae/transformer_sampling.py](vae/transformer_sampling.py) implementation to
+  project only the newest token and reuse per-layer key/value buffers. It uses
+  this prior's own PyTorch weights without dependencies on the D2L utilities.
+  CUDA replays a fixed-shape token step with an explicit valid-prefix mask;
+  CPU uses eager prefix slices. Transformer sampling temporarily disables dropout.
+  Training and likelihood evaluation use the parallel forward path.
+  [vae/quantization.py](vae/quantization.py)
   supplies the shared quantizers. Both priors default to unconditional generation;
   class conditioning requires an explicit positive `num_classes`.
   Models, lesson entries, and weight loaders share

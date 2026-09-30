@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.pixelcnn_sampling import sample_pixelcnn_cached
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
+from dl_utils.vae.transformer_sampling import sample_transformer_cached
 
 
 class MaskedConv2d(nn.Conv2d):
@@ -154,37 +155,16 @@ class PixelCNNPrior(nn.Module):
         device: torch.device,
         labels: Tensor | None = None,
         temperature: float = 1.0,
-        cached: bool = True,
-        cuda_graph: bool = True,
     ) -> Tensor:
-        """Sample with per-row/per-position caches; ``cached=False`` is the reference.
-
-        CUDA caches also replay a captured one-token graph by default; set
-        ``cuda_graph=False`` for eager cached execution. CPU uses eager caches.
-        All paths reuse the same trained weights and categorical conditionals.
-        Different convolution/GEMM shapes can introduce floating-point rounding
-        differences, so identical seeds do not guarantee identical token grids.
-        """
+        """Generate with caches: CUDA Graph replay on CUDA, eager steps on CPU."""
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError("Sampling temperature must be finite and positive.")
         if min(count, height, width) < 1:
             raise ValueError("Sample count and grid dimensions must be positive.")
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
-        if cached:
-            return sample_pixelcnn_cached(
-                self,
-                indices,
-                labels=labels,
-                temperature=temperature,
-                cuda_graph=cuda_graph,
-            )
-        for row in range(height):
-            for column in range(width):
-                logits = self(indices, labels=labels)[:, :, row, column] / temperature
-                indices[:, row, column] = torch.multinomial(
-                    logits.softmax(dim=1), 1
-                ).squeeze(1)
-        return indices
+        return sample_pixelcnn_cached(
+            self, indices, labels=labels, temperature=temperature
+        )
 
 
 def train_pixelcnn_prior_epoch(
@@ -352,17 +332,23 @@ class CausalTransformerPrior(nn.Module):
         labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
-        sequence = torch.full(
-            (count, 1), self.bos_token, dtype=torch.long, device=device
-        )
-        generated: list[Tensor] = []
-        for _ in range(self.sequence_length):
-            logits = self(sequence, labels)[:, -1] / temperature
-            token = torch.multinomial(logits.softmax(dim=1), 1)
-            generated.append(token)
-            if len(generated) < self.sequence_length:
-                sequence = torch.cat((sequence, token), dim=1)
-        return torch.cat(generated, dim=1)
+        """Generate with KV caches, using CUDA Graph replay on CUDA.
+
+        Sampling temporarily disables dropout and restores the previous mode.
+        Training and likelihood evaluation use the parallel forward pass.
+        """
+        if not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError("Sampling temperature must be finite and positive.")
+        if count < 1 or self.sequence_length < 1:
+            raise ValueError("Sample count and sequence length must be positive.")
+        was_training = self.training
+        self.eval()
+        try:
+            return sample_transformer_cached(
+                self, count, device=device, labels=labels, temperature=temperature
+            )
+        finally:
+            self.train(was_training)
 
 
 __all__ = [
