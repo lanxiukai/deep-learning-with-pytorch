@@ -123,7 +123,13 @@ environment or dependency workflow.
   caches, epoch recovery, and best/last artifacts.
   Optimization, validation objectives, and model selection metrics remain
   explicit in the lessons. Priors consume cached token
-  grids; gated PixelCNN uses two masked streams, and Transformer layers receive
+  grids; gated PixelCNN uses two masked streams. Its inference-only
+  [vae/pixelcnn_sampling.py](vae/pixelcnn_sampling.py) caches vertical features
+  once per row and the short horizontal history once per generated token.
+  CUDA sampling also replays a one-token CUDA Graph; CPU uses eager caches.
+  `PixelCNNPrior.sample(..., cached=False)` retains the full-grid reference;
+  `cuda_graph=False` keeps the caches with eager execution. Existing weights,
+  training, and checkpoint metadata remain unchanged. Transformer layers receive
   independent initializations. [vae/quantization.py](vae/quantization.py)
   supplies the shared quantizers. Both priors default to unconditional generation;
   class conditioning requires an explicit positive `num_classes`.

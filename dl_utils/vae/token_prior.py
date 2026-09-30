@@ -13,6 +13,7 @@ from torch.optim import Optimizer
 from tqdm.auto import tqdm
 
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.pixelcnn_sampling import sample_pixelcnn_cached
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 
 
@@ -153,8 +154,30 @@ class PixelCNNPrior(nn.Module):
         device: torch.device,
         labels: Tensor | None = None,
         temperature: float = 1.0,
+        cached: bool = True,
+        cuda_graph: bool = True,
     ) -> Tensor:
+        """Sample with per-row/per-position caches; ``cached=False`` is the reference.
+
+        CUDA caches also replay a captured one-token graph by default; set
+        ``cuda_graph=False`` for eager cached execution. CPU uses eager caches.
+        All paths reuse the same trained weights and categorical conditionals.
+        Different convolution/GEMM shapes can introduce floating-point rounding
+        differences, so identical seeds do not guarantee identical token grids.
+        """
+        if not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError("Sampling temperature must be finite and positive.")
+        if min(count, height, width) < 1:
+            raise ValueError("Sample count and grid dimensions must be positive.")
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
+        if cached:
+            return sample_pixelcnn_cached(
+                self,
+                indices,
+                labels=labels,
+                temperature=temperature,
+                cuda_graph=cuda_graph,
+            )
         for row in range(height):
             for column in range(width):
                 logits = self(indices, labels=labels)[:, :, row, column] / temperature
