@@ -12,6 +12,8 @@ set TRAIN_TOKENIZER=False to train only the prior from selected weights.
 A fixed 256-image training subset monitors progress and selects snapshots;
 the stored val_* fields are training-set diagnostics, not held-out results.
 A prior is bound to its exact tokenizer snapshot.
+Former gated PixelCNN weights require prior retraining: set
+TRAIN_TOKENIZER=False and RESUME=False to reuse the selected tokenizer.
 Run 6.2 for simple VAE comparisons.
 
 Outputs under output/vae/vq_vae/:
@@ -70,7 +72,7 @@ COMMITMENT = 0.25
 EMA_DECAY = 0.99
 EMA_EPSILON = 1e-5
 PRIOR_HIDDEN_CHANNELS = 64
-PRIOR_LAYERS = 16  # The two masked streams cover the complete 16x16 past.
+PRIOR_LAYERS = 16  # Basic single-stream A/B masked convolutions with ReLU.
 BATCH_SIZE = 16
 LR = 2e-4
 PRIOR_LR = 2e-4
