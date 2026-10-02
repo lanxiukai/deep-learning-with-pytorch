@@ -170,18 +170,21 @@ class VectorQuantizer(nn.Module):
 
     @torch.no_grad()
     def _update_ema(self, flat: Tensor, indices: Tensor) -> None:
+        # flat: (N, D), where N = B * H * W; all latent vectors in the batch
+        # indices: (N,), the codebook index selected for each latent vector
         counts = torch.bincount(indices, minlength=self.codebook_size).to(
             self.ema_cluster_size
-        )
+        )  # counts[i] is the number of occurrences of i in indices
         sums = torch.zeros_like(self.ema_embedding_sum)
         # Accumulate in the buffer dtype, including under mixed precision.
         sums.index_add_(0, indices, flat.to(sums))
         self.ema_cluster_size.mul_(self.ema_decay).add_(
             counts, alpha=1.0 - self.ema_decay
-        )
+        )  # new = old * ema_decay + (1 - ema_decay) * counts
         self.ema_embedding_sum.mul_(self.ema_decay).add_(
             sums, alpha=1.0 - self.ema_decay
-        )
+        )  # new = old * ema_decay + (1 - ema_decay) * sums
+        # Apply additive smoothing to the EMA counts while preserving the total count
         total = self.ema_cluster_size.sum()
         smoothed_counts = (
             (self.ema_cluster_size + self.ema_epsilon)
@@ -204,13 +207,13 @@ class VectorQuantizer(nn.Module):
             flat.square().sum(dim=1, keepdim=True)
             + self.embedding.weight.square().sum(dim=1)
             - 2.0 * flat @ self.embedding.weight.t()
-        )
-        indices = distances.argmin(dim=1)
+        )  # (N, K), N = B*h*w
+        indices = distances.argmin(dim=1)  # (N,)
         z_q = self.embedding(indices).view(
             z_e.shape[0], z_e.shape[2], z_e.shape[3], self.embedding_dim
         )
         z_q = z_q.permute(0, 3, 1, 2).contiguous()
-        quantization_mse = F.mse_loss(z_e, z_q.detach())
+        quantization_mse = F.mse_loss(z_e, z_q.detach())  # scaler ()
         commitment_loss = self.commitment * quantization_mse
         # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
         z_st = z_e + (z_q - z_e).detach()
@@ -224,7 +227,9 @@ class VectorQuantizer(nn.Module):
             self._update_ema(flat, indices)
         return z_st, index_grid, commitment_loss, diagnostics
 
-    def lookup(self, indices: Tensor) -> Tensor:
+    def indices_to_values(self, indices: Tensor) -> Tensor:
+        """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
+        # indices: (B, h, w), return z_q.detach(): (B, C, h, w), C = embedding_dim
         return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
 
 
@@ -268,19 +273,25 @@ class VQVAE(nn.Module):
     def encode(
         self, images: Tensor
     ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+        # images (B, C_img, H, W) -> quantizer z_st ...
         return self.quantizer(self.encoder(images))
 
     def encode_indices(self, images: Tensor) -> Tensor:
         """Encode images and return only their discrete token grid."""
+        # images (B, C_img, H, W) -> indices (B, h, w)
         return self.encode(images)[1]
 
     def decode_indices(self, indices: Tensor) -> Tensor:
-        return self.decoder(self.quantizer.lookup(indices))
+        # indices (B, h, w) -> gen_images (B, C_img, H, W)
+        return self.decoder(self.quantizer.indices_to_values(indices))
 
     def forward(
         self, images: Tensor
     ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
         z_st, indices, quantizer_loss, diagnostics = self.encode(images)
+        # return:
+        # reconstructions (B, C_img, H, W), indices (B, h, w)
+        # commitment_loss (), diagnostics dict[str, ()]
         return self.decoder(z_st), indices, quantizer_loss, diagnostics
 
 
@@ -293,6 +304,7 @@ class FiniteScalarQuantizer(nn.Module):
 
     levels: Tensor
     basis: Tensor
+    half_width: Tensor
 
     def __init__(self, levels: Sequence[int] = (8, 8, 8)) -> None:
         super().__init__()
@@ -302,34 +314,40 @@ class FiniteScalarQuantizer(nn.Module):
         levels_tensor = torch.tensor(levels, dtype=torch.long)
         basis = torch.ones_like(levels_tensor)
         if len(levels) > 1:
-            basis[1:] = torch.cumprod(levels_tensor[:-1], dim=0)
+            basis[1:] = torch.cumprod(levels_tensor[:-1], dim=0)  # [1, 8, 64]
         self.register_buffer("levels", levels_tensor)
         self.register_buffer("basis", basis)
+        # Derived from levels; keep the checkpoint format unchanged.
+        self.register_buffer("half_width", levels_tensor // 2, persistent=False)
         self.dim = len(levels)
         self.codebook_size = math.prod(levels)
 
     def _digits_to_values(self, digits: Tensor) -> Tensor:
-        half_width = (self.levels // 2).to(dtype=digits.dtype)
+        half_width = self.half_width.to(dtype=digits.dtype)
         return (digits - half_width) / half_width
 
     def bound(self, values: Tensor) -> Tensor:
         """Use the bounding function published in the FSQ paper, Appendix A.1."""
+        # values: encoder output z_e rearranged to (B, H, W, C).
         levels = self.levels.to(dtype=values.dtype)
-        half_range = (levels - 1.0) * (1.0 - 1e-3) / 2.0
-        offset = torch.where(self.levels % 2 == 0, 0.5, 0.0)
-        shift = torch.tan(offset / half_range)
+        half_range = (levels - 1.0) * (1.0 - 1e-3) / 2.0  # a_r
+        offset = torch.where(self.levels % 2 == 0, 0.5, 0.0)  # o_r
+        shift = torch.tan(offset / half_range)  # delta_r = tan(o_r/a_r)
+        # Output: bounded continuous values, same shape; not yet rounded.
         return torch.tanh(values + shift) * half_range - offset
 
     def pack(self, digits: Tensor) -> Tensor:
+        # Pack nonnegative digits (B, H, W, C) into indices (B, H, W).
         return (digits.long() * self.basis).sum(dim=-1)
 
     def unpack(self, indices: Tensor) -> Tensor:
+        # Restore nonnegative digits (B, H, W, C) from indices (B, H, W).
         return (indices[..., None] // self.basis % self.levels).long()
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         bounded = self.bound(z_e.permute(0, 2, 3, 1).contiguous())
         rounded = bounded.round()
-        half_width = (self.levels // 2).to(dtype=bounded.dtype)
+        half_width = self.half_width.to(dtype=bounded.dtype)
         z_st = (bounded + (rounded - bounded).detach()) / half_width
         indices = self.pack(rounded + half_width)
         # FSQ latent MSE is not directly comparable with VQ latent MSE.
@@ -341,6 +359,8 @@ class FiniteScalarQuantizer(nn.Module):
         return z_st.permute(0, 3, 1, 2).contiguous(), indices, diagnostics
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
+        """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
+        # Restore quantized values (B, C, H, W) from indices (B, H, W), C = self.dim.
         digits = self.unpack(indices).to(dtype=torch.float32)
         values = self._digits_to_values(digits)
         return values.permute(0, 3, 1, 2).contiguous()

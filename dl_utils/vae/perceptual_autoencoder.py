@@ -172,7 +172,7 @@ class VQPerceptualAutoencoder(nn.Module):
         return self.encode(images)[1]
 
     def decode_indices(self, indices: Tensor) -> Tensor:
-        return self.decoder(self.quantizer.lookup(indices))
+        return self.decoder(self.quantizer.indices_to_values(indices))
 
     def forward(
         self, images: Tensor

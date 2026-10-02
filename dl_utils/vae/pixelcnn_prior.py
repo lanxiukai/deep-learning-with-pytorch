@@ -162,6 +162,31 @@ class PixelCNNPrior(nn.Module):
         )
 
 
+@torch.inference_mode()
+def sample_pixelcnn_cached(
+    prior: PixelCNNPrior,
+    indices: Tensor,
+    *,
+    labels: Tensor | None,
+    temperature: float,
+) -> Tensor:
+    count, height, width = indices.shape
+    cache = _PixelCNNCache(
+        prior, count, height, width, device=indices.device, labels=labels
+    )
+    if indices.is_cuda:
+        return _sample_with_cuda_graph(cache, indices, temperature)
+    for row in range(height):
+        cache.begin_row(row)
+        for column in range(width):
+            logits = cache.logits(column) / temperature
+            tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
+            indices[:, row, column] = tokens
+            cache.append_token(column, tokens)
+        cache.end_row(row)
+    return indices
+
+
 class _PixelCNNCache:
     """One raster scan over a batch; use inside an inference-mode context."""
 
@@ -329,31 +354,6 @@ def _sample_with_cuda_graph(
                 graph.replay()
             indices[:, row].copy_(sampled_row)
             cache.end_row(row)
-    return indices
-
-
-@torch.inference_mode()
-def sample_pixelcnn_cached(
-    prior: PixelCNNPrior,
-    indices: Tensor,
-    *,
-    labels: Tensor | None,
-    temperature: float,
-) -> Tensor:
-    count, height, width = indices.shape
-    cache = _PixelCNNCache(
-        prior, count, height, width, device=indices.device, labels=labels
-    )
-    if indices.is_cuda:
-        return _sample_with_cuda_graph(cache, indices, temperature)
-    for row in range(height):
-        cache.begin_row(row)
-        for column in range(width):
-            logits = cache.logits(column) / temperature
-            tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
-            indices[:, row, column] = tokens
-            cache.append_token(column, tokens)
-        cache.end_row(row)
     return indices
 
 
