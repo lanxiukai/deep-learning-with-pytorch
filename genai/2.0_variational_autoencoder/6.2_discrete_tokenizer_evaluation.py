@@ -188,12 +188,11 @@ def evaluate_tokenizer(
     prior_nll_sum = 0.0
     examples = 0
     comparison = None
-    for images, labels in loader:
+    for images, _ in loader:
         remaining = images.shape[0] if max_examples is None else max_examples - examples
         if remaining <= 0:
             break
         images = images[:remaining].to(device, non_blocking=True)
-        labels = labels[:remaining].to(device, non_blocking=True)
         reconstruction, indices, diagnostics = system.reconstruct_and_tokens(images)
         if comparison is None:
             comparison = torch.cat(
@@ -208,13 +207,7 @@ def evaluate_tokenizer(
         elements += images.numel()
         quantization_sum += diagnostics["quantization_mse"].item() * images.shape[0]
         prior_nll_sum += (
-            F.cross_entropy(
-                system.prior(
-                    indices, labels=labels if system.prior.num_classes else None
-                ),
-                indices,
-            ).item()
-            * images.shape[0]
+            F.cross_entropy(system.prior(indices), indices).item() * images.shape[0]
         )
         usage.update(indices)
         examples += images.shape[0]

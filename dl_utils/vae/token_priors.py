@@ -46,9 +46,7 @@ class PixelCNNPrior(nn.Module):
     The first convolution uses mask A; later convolutions use mask B on
     already-causal features. The single stream has a receptive-field blind
     spot and does not cover every earlier token, even with sixteen layers.
-    The default prior is unconditional. A positive num_classes explicitly
-    enables class conditioning and requires labels for forward/sampling calls.
-    Former gated-prior checkpoints require retraining.
+    The prior supports only unconditional generation.
     """
 
     def __init__(
@@ -57,17 +55,12 @@ class PixelCNNPrior(nn.Module):
         *,
         hidden_channels: int = 64,
         layers: int = 16,
-        num_classes: int = 0,
     ) -> None:
         super().__init__()
         if layers < 1:
             raise ValueError("PixelCNN needs at least one masked layer.")
         self.vocabulary_size = vocabulary_size
-        self.num_classes = num_classes
         self.embedding = nn.Embedding(vocabulary_size, hidden_channels)
-        self.class_embedding = (
-            nn.Embedding(num_classes, hidden_channels) if num_classes else None
-        )
         self.causal = nn.ModuleList(
             [
                 MaskedConv2d(
@@ -87,15 +80,10 @@ class PixelCNNPrior(nn.Module):
             nn.Conv2d(hidden_channels, vocabulary_size, 1),
         )
 
-    def forward(self, indices: Tensor, *, labels: Tensor | None = None) -> Tensor:
+    def forward(self, indices: Tensor) -> Tensor:
         hidden = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
-        condition: Tensor | float = 0.0
-        if self.class_embedding is not None:
-            if labels is None:
-                raise ValueError("A conditional PixelCNN requires class labels.")
-            condition = self.class_embedding(labels)[:, :, None, None]
         for convolution in self.causal:
-            hidden = F.relu(convolution(hidden) + condition)
+            hidden = F.relu(convolution(hidden))
         return self.head(hidden)
 
     @torch.inference_mode()
@@ -106,7 +94,6 @@ class PixelCNNPrior(nn.Module):
         width: int,
         *,
         device: torch.device,
-        labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
         """Predict one token at a time by recomputing the full grid's logits."""
@@ -117,7 +104,7 @@ class PixelCNNPrior(nn.Module):
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
         for row in range(height):
             for column in range(width):
-                logits = self(indices, labels=labels)[:, :, row, column] / temperature
+                logits = self(indices)[:, :, row, column] / temperature
                 tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
                 indices[:, row, column] = tokens
         return indices

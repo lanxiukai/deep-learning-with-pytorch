@@ -143,8 +143,8 @@ environment or dependency workflow.
   use the parallel forward path. [vae/quantization.py](vae/quantization.py)
   supplies the shared quantizers. Encoders require at least two downsampling
   steps and image dimensions divisible by their compression factor.
-  Both priors default to unconditional generation;
-  class conditioning requires an explicit positive `num_classes`.
+  The VQ-VAE/FSQ PixelCNN prior supports only unconditional generation.
+  The Transformer prior supports class conditioning with a positive `num_classes`.
   Models, lesson entries, and weight loaders share
   `TOKENIZER_DOWNSAMPLE_STEPS=4` for 256x256 inputs and outputs; weight loading
   enforces this configuration. They share a 16x16

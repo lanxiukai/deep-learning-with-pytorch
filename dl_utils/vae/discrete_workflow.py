@@ -466,7 +466,8 @@ def load_prior_weights[T: nn.Module](
     expected_classes = len(
         image_contract(image_size, conditional=conditional)["class_names"]
     )
-    if prior.num_classes != expected_classes:
+    actual_classes = 0 if isinstance(prior, PixelCNNPrior) else prior.num_classes
+    if actual_classes != expected_classes:
         raise ValueError("Prior conditioning differs from the image contract.")
     positions = (image_size // (2**tokenizer.downsample_steps)) ** 2
     # Transformer sequence length is fixed; PixelCNN accepts a grid at sampling.
@@ -487,10 +488,9 @@ def train_pixelcnn_prior_epoch(
     """Train one causal-prior epoch over cached frozen-token grids."""
     prior.train()
     metrics = MetricAccumulator(("nll",), device=device)
-    for batch_index, (indices, labels) in enumerate(loader, 1):
+    for batch_index, (indices, _) in enumerate(loader, 1):
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
-        loss = F.cross_entropy(prior(indices, labels=labels), indices)
+        loss = F.cross_entropy(prior(indices), indices)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -515,10 +515,9 @@ def evaluate_pixelcnn_prior(
     """Measure PixelCNN NLL for one frozen tokenizer."""
     prior.eval()
     metrics = MetricAccumulator(("nll",), device=device)
-    for indices, labels in loader:
+    for indices, _ in loader:
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True) if prior.num_classes else None
-        loss = F.cross_entropy(prior(indices, labels=labels), indices)
+        loss = F.cross_entropy(prior(indices), indices)
         metrics.add_batch_means((loss,), num_examples=indices.shape[0])
     nll = metrics.compute_weighted_means(require_finite=True)["nll"]
     return {
@@ -537,7 +536,6 @@ def sample_pixelcnn_prior_images(
     grid_size: int,
     device: torch.device,
     temperature: float,
-    labels: Tensor | None = None,
 ) -> Tensor:
     """Sample a square token grid and decode it to an image batch."""
     indices = prior.sample(
@@ -545,7 +543,6 @@ def sample_pixelcnn_prior_images(
         grid_size,
         grid_size,
         device=device,
-        labels=labels.to(device) if labels is not None else None,
         temperature=temperature,
     )
     return tokenizer.decode_indices(indices)
@@ -635,7 +632,6 @@ def train_pixelcnn_prior(
         "vocabulary_size": tokenizer.quantizer.codebook_size,
         "hidden_channels": hidden_channels,
         "layers": layers,
-        "num_classes": 0,
     }
     prior = PixelCNNPrior(**config).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=lr)
