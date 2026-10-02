@@ -40,12 +40,12 @@ from dl_utils.vae.discrete_workflow import (
     load_prior_weights,
     load_tokenizer_weights,
 )
-from dl_utils.vae.pixelcnn_prior import PixelCNNPrior
 from dl_utils.vae.quantization import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     VQVAE,
     FSQAutoencoder,
 )
+from dl_utils.vae.token_priors import PixelCNNPrior
 from dl_utils.vae.vae import VAE
 
 PROJECT_ROOT = infer_project_root()

@@ -34,8 +34,8 @@ from dl_utils.training.checkpoints import (
 )
 from dl_utils.training.history import save_metrics_csv
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.pixelcnn_prior import PixelCNNPrior
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VQVAE, FSQAutoencoder
+from dl_utils.vae.token_priors import PixelCNNPrior
 
 
 def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:

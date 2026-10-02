@@ -63,7 +63,7 @@ from dl_utils.vae.perceptual_autoencoder import (
     adaptive_adversarial_weight,
 )
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
-from dl_utils.vae.transformer_prior import CausalTransformerPrior
+from dl_utils.vae.token_priors import CausalTransformerPrior
 
 PROJECT_ROOT = infer_project_root()
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vqgan"
