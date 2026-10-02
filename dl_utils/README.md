@@ -125,7 +125,7 @@ environment or dependency workflow.
   paths, labels, file sizes, and nanosecond modification times; datasets without
   inspectable files are re-encoded. Image and token training loaders retain the
   final partial batch.
-  [vae/pixelcnn_workflow.py](vae/pixelcnn_workflow.py) owns the shared frozen-token
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) owns the shared frozen-token
   PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ,
   using the infrastructure in `discrete_workflow.py`. Read its epoch,
   evaluation, and sampling helpers before the complete `train_pixelcnn_prior`

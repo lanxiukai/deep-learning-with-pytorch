@@ -2,7 +2,7 @@
 
 VQ-VAE, FSQ, and VQGAN reuse this infrastructure. Tokenizer optimization
 and VQGAN objectives remain in the lesson scripts. The frozen-token
-PixelCNN workflow for VQ-VAE and FSQ lives in pixelcnn_workflow.
+PixelCNN workflow for VQ-VAE and FSQ lives in pixelcnn_training.
 Validation / val_* artifact fields store these training-set diagnostics.
 Recovery replays monitoring after an already saved training epoch.
 """

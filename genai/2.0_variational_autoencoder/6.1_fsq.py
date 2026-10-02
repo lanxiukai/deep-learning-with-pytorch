@@ -42,7 +42,7 @@ from dl_utils.vae.discrete_workflow import (
     save_tokenizer_preview,
     seed_epoch_loader,
 )
-from dl_utils.vae.pixelcnn_workflow import train_pixelcnn_prior
+from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior
 from dl_utils.vae.quantization import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     FSQAutoencoder,
