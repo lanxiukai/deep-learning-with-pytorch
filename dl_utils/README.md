@@ -124,10 +124,14 @@ environment or dependency workflow.
   epoch recovery, and best/last artifacts. Token caches also track ordered image
   paths, labels, file sizes, and nanosecond modification times; datasets without
   inspectable files are re-encoded. Image and token training loaders retain the
-  final partial batch. It also owns the shared frozen-token
-  PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ.
+  final partial batch.
+  [vae/pixelcnn_workflow.py](vae/pixelcnn_workflow.py) owns the shared frozen-token
+  PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ,
+  using the infrastructure in `discrete_workflow.py`. Read its epoch,
+  evaluation, and sampling helpers before the complete `train_pixelcnn_prior`
+  workflow.
   Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
-  The lessons import this workflow and the four model modules: quantization,
+  The lessons import these workflows and the four model modules: quantization,
   perceptual autoencoding, PixelCNN, and Transformer. Model modules do not
   import the workflow. Priors consume cached token grids.
   [vae/pixelcnn_prior.py](vae/pixelcnn_prior.py) keeps the gated PixelCNN

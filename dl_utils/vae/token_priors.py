@@ -60,7 +60,7 @@ class PixelCNNPrior(nn.Module):
         if layers < 1:
             raise ValueError("PixelCNN needs at least one masked layer.")
         self.vocabulary_size = vocabulary_size
-        self.embedding = nn.Embedding(vocabulary_size, hidden_channels)
+        self.embedding = nn.Embedding(vocabulary_size, hidden_channels)  # (K, m)
         self.causal = nn.ModuleList(
             [
                 MaskedConv2d(
@@ -72,19 +72,20 @@ class PixelCNNPrior(nn.Module):
                 )
                 for i in range(layers)
             ]
-        )
+        )  # (B, m, h, w)
         self.head = nn.Sequential(
             nn.ReLU(),
             nn.Conv2d(hidden_channels, hidden_channels, 1),
             nn.ReLU(),
             nn.Conv2d(hidden_channels, vocabulary_size, 1),
-        )
+        )  # (B, m, h, w) -> (B, K, h, w)
 
     def forward(self, indices: Tensor) -> Tensor:
+        # indices (B, h, w) -> hidden (B, m, h, w)
         hidden = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
         for convolution in self.causal:
             hidden = F.relu(convolution(hidden))
-        return self.head(hidden)
+        return self.head(hidden)  # logits (B, K, h, w)
 
     @torch.inference_mode()
     def sample(
@@ -101,13 +102,17 @@ class PixelCNNPrior(nn.Module):
             raise ValueError("Sampling temperature must be finite and positive.")
         if min(count, height, width) < 1:
             raise ValueError("Sample count and grid dimensions must be positive.")
+        # indices: (B, h, w)
         indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
-        for row in range(height):
-            for column in range(width):
-                logits = self(indices)[:, :, row, column] / temperature
+        # Each iteration recomputes logits for the entire grid but uses only
+        # the current position's logits.
+        for i in range(height):
+            for j in range(width):
+                logits = self(indices)[:, :, i, j] / temperature  # (B, K)
+                # Sample one token index per batch item; squeeze (B, 1) to (B,).
                 tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
-                indices[:, row, column] = tokens
-        return indices
+                indices[:, i, j] = tokens
+        return indices  # (B, h, w)
 
 
 class CausalTransformerPrior(nn.Module):
