@@ -22,6 +22,7 @@ bash tool_scripts/SCRIPT.sh --help
 
 | Goal | Start with | Main effect |
 |---|---|---|
+| Convert a matching legacy discrete tokenizer/prior pair | `convert_discrete_checkpoint.py` | Writes one final model pair; preserves the inputs |
 | Inspect the local PyTorch/CUDA runtime | `pytorch_test.py` | Read-only |
 | Download or prepare a lesson dataset | `download_dataset.py` | Downloads data and may build derived caches |
 | Create a local visualization | `plot_fashion_mnist.py`, `sgd_animation.py`, or `word_frequency.py` | Downloads data when needed and writes under `output/` |
@@ -178,3 +179,22 @@ continues through the selected sequence after individual provider failures and
 reports all failed datasets at the end. Selecting CelebA always prepares the
 black/blond CycleGAN splits; selecting glasses always classifies, corrects, and
 builds the 256-pixel cache.
+
+## Legacy discrete-model weights
+
+The VQ-VAE, FSQ, and VQGAN lessons save their final tokenizer and prior together
+in `output/vae/<model>/model.pth`. Convert compatible older weight files once:
+
+```bash
+uv run --locked --no-sync python tool_scripts/convert_discrete_checkpoint.py \
+  --model vq_vae \
+  --tokenizer output/vae/vq_vae/vq_vae.pth \
+  --prior output/vae/vq_vae/pixelcnn_prior.pth \
+  --output output/vae/vq_vae/model.pth
+```
+
+Use `--model fsq` or `--model vqgan` with their corresponding weight paths.
+The converter verifies the saved tokenizer snapshot association, preprocessing,
+class names, and dimensions, and loads the weights strictly. It preserves both
+input files. Old training checkpoints and incompatible architectures are not
+converted; the new training loops resume only their own same-recipe latest files.

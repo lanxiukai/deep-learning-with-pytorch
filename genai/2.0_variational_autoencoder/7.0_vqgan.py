@@ -1,41 +1,13 @@
-"""Train a perceptual VQ tokenizer, then its frozen-token Transformer prior.
+"""Train VQGAN's tokenizer, encode images once, then fit its conditional prior.
 
-Stage one combines pixel L1, frozen LPIPS, VQ commitment loss,
-and a delayed PatchGAN hinge objective. After the delay, an adaptive
-last-decoder-layer gradient ratio balances reconstruction and adversarial loss.
-The codebook uses EMA updates independently of the optimizer.
-Stage two fits a class-conditional causal Transformer to cached frozen tokens.
-The tokenizer reconstructs without labels; the prior uses G=0 / NoG=1 labels.
-
-This teaching recipe uses 256px glasses-256 faces
-and downsamples four times to the same 16x16 token grid and 512-entry
-vocabulary as VQ-VAE/FSQ: 256 tokens, or 2,304 fixed-length bits per image.
-Batch size 16 and 30 epochs per stage remain a separate training budget.
-Different conditioning, backbones, objectives and priors prevent a strict ablation.
-Prior preview columns alternate G (with glasses) and NoG (without glasses).
-
-Edit RESUME and TRAIN_TOKENIZER below for recovery or prior-only training.
-Each stage saves latest full state before monitoring, selected best weights,
-one per-epoch CSV, and basic loss curves. Tokenizer/prior snapshots are bound by ID.
-A fixed 128-image training subset selects snapshots on the first epoch,
-every five epochs, and the final epoch;
-the stored validation / val_* fields are training-set diagnostics.
-Run 7.1 for reconstruction and generation diagnostics on the training images.
-
-Outputs under output/vae/vqgan/:
-    tokenizer/{latest,best}.pth, metrics.csv, and loss_curves.png
-    prior/{latest,best}.pth, metrics.csv, and loss_curves.png
-    vqgan.pth and transformer_prior.pth: selected evaluation weights
-    token_cache_train.pth: shared training/monitoring tokens
-    training/*.png: eight fixed reconstructions or conditional prior samples
+Read train() for the stage order and the two step functions for the adversarial
+objective and gradient boundaries. RESUME restores the same configuration at
+an epoch boundary. model.pth stores the final tokenizer/prior pair.
 """
-
-from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
@@ -46,13 +18,13 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
-    TokenizerStage,
+    encode_dataset,
+    epoch_checkpoint,
+    fixed_images,
     glasses_loader,
-    image_contract,
-    load_tokenizer_weights,
-    prepare_token_loaders,
-    save_stage_loss_curves,
-    save_tokenizer_preview,
+    save_loss_curves,
+    save_pair,
+    save_reconstruction,
     seed_epoch_loader,
 )
 from dl_utils.vae.perceptual_autoencoder import (
@@ -65,28 +37,12 @@ from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.token_priors import CausalTransformerPrior
 
 PROJECT_ROOT = infer_project_root()
+DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vqgan"
-TOKENIZER_CHECKPOINT_NAME = "vqgan.pth"
-PRIOR_CHECKPOINT_NAME = "transformer_prior.pth"
-RECONSTRUCTION_SAMPLES = 8
-PROGRESS_INTERVAL = 0.5
-ADAM_BETAS = (0.5, 0.9)
-DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 IMAGE_SIZE = 256
-NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
-LATENT_GRID_SIZE = IMAGE_SIZE // (2**DOWNSAMPLE_STEPS)
-TOKENS_PER_IMAGE = LATENT_GRID_SIZE**2
-NUM_FIXED_SAMPLES = 8
-SAMPLE_GRID_COLUMNS = 4
-
-
-# Edit these defaults to explore the lesson.
-DATA_DIR = DEFAULT_DATA_DIR
-TRAIN_TOKENIZER = True
+NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 RESUME = True
-LOG_EVERY = 100
-MONITOR_SEED = 123
 TOKENIZER_EPOCHS = 30
 PRIOR_EPOCHS = 30
 BATCH_SIZE = 16
@@ -101,6 +57,7 @@ PERCEPTUAL_WEIGHT = 1.0
 VQ_WEIGHT = 1.0
 DISCRIMINATOR_WEIGHT = 1.0
 DISCRIMINATOR_START = 1000
+ADAM_BETAS = (0.5, 0.9)
 PRIOR_DIM = 256
 PRIOR_HEADS = 8
 PRIOR_LAYERS = 4
@@ -108,10 +65,9 @@ PRIOR_DROPOUT = 0.0
 LR = 2e-4
 DISCRIMINATOR_LR = 2e-4
 PRIOR_LR = 3e-4
-TEMPERATURE = 1.0
 SAMPLE_EVERY = 10
-MONITOR_EXAMPLES = 128
-MONITOR_EVERY = 5
+NUM_SAMPLES = 8
+TEMPERATURE = 1.0
 WORKERS = 4
 SEED = 42
 
@@ -175,343 +131,183 @@ def vqgan_discriminator_step(
     return loss.detach()
 
 
-@torch.inference_mode()
-def validate_tokenizer(
-    model: VQPerceptualAutoencoder,
-    perceptual: nn.Module,
-    loader: DataLoader,
-    *,
-    device: torch.device,
-) -> dict[str, float]:
-    model.eval()
-    perceptual.eval()
-    metrics = MetricAccumulator(("pixel_l1", "perceptual_distance"), device=device)
-    for images, _ in loader:
-        images = images.to(device, non_blocking=True)
-        reconstruction = model(images)[0]
-        metrics.add_batch_means(
-            (
-                F.l1_loss(reconstruction, images),
-                perceptual(reconstruction, images),
-            ),
-            num_examples=images.shape[0],
-        )
-    return metrics.compute_weighted_means(require_finite=True)
-
-
-@torch.inference_mode()
-def validate_prior(prior, loader, *, device) -> dict[str, float]:
-    prior.eval()
-    metrics = MetricAccumulator(("nll",), device=device)
-    for indices, labels in loader:
-        indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
-        logits, targets = prior.teacher_forcing(indices, labels)
-        loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-        metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-    return metrics.compute_weighted_means(require_finite=True)
-
-
-def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_protocol):
-    config = {
-        "latent_channels": LATENT_CHANNELS,
-        "codebook_size": CODEBOOK_SIZE,
-        "hidden_channels": HIDDEN_CHANNELS,
-        "commitment": COMMITMENT,
-        "ema_decay": EMA_DECAY,
-        "ema_epsilon": EMA_EPSILON,
-        "downsample_steps": DOWNSAMPLE_STEPS,
-    }
-    model = VQPerceptualAutoencoder(**config).to(device)
+def train_tokenizer(model, loader, device, recipe):
     discriminator = PatchDiscriminator(DISCRIMINATOR_CHANNELS).to(device)
     perceptual = LPIPSPerceptualLoss().to(device)
-    ae_optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
     d_optimizer = torch.optim.Adam(
         discriminator.parameters(), lr=DISCRIMINATOR_LR, betas=ADAM_BETAS
     )
-    stage = TokenizerStage(
-        out_dir / "tokenizer",
-        models={"model": model, "discriminator": discriminator},
-        optimizers={"model": ae_optimizer, "discriminator": d_optimizer},
-        metadata={
-            **image_contract(IMAGE_SIZE, conditional=True),
-            "model_name": "vqgan_tokenizer",
-            "model_config": config,
-            "discriminator_config": {"base_channels": DISCRIMINATOR_CHANNELS},
-            "perceptual_loss": "lpips-v0.1-vgg",
-            "monitor_protocol": monitor_protocol,
-            "selection_metric": "training_subset_pixel_l1_plus_weighted_lpips",
-        },
-        recipe={
-            "lr": LR,
-            "d_lr": DISCRIMINATOR_LR,
-            "betas": ADAM_BETAS,
-            "perceptual_weight": PERCEPTUAL_WEIGHT,
-            "vq_weight": VQ_WEIGHT,
-            "discriminator_weight": DISCRIMINATOR_WEIGHT,
-            "discriminator_start": DISCRIMINATOR_START,
-            "batch_size": BATCH_SIZE,
-            "seed": SEED,
-        },
-        resume=RESUME,
-        metric_names=(
-            "autoencoder",
-            "discriminator",
-            "val_pixel_l1",
-            "val_perceptual_distance",
-        ),
+    checkpoint = epoch_checkpoint(
+        OUTPUT_DIR / "tokenizer_latest.pth",
+        {"tokenizer": model, "discriminator": discriminator},
+        {"tokenizer": optimizer, "discriminator": d_optimizer},
+        recipe,
     )
-    global_step = stage.state.get("global_step", 0)
-    training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
-    for epoch in stage.epochs(TOKENIZER_EPOCHS):
-        if stage.needs_training(epoch):
-            model.train()
-            discriminator.train()
-            seed_epoch_loader(train_loader, SEED, epoch)
-            names = ("autoencoder", "discriminator")
-            metrics_accumulator = MetricAccumulator(names, device=device)
-            with tqdm(
-                train_loader,
-                desc=f"vqgan {epoch}/{TOKENIZER_EPOCHS}",
-                unit="batch",
-                mininterval=PROGRESS_INTERVAL,
-            ) as progress:
-                for batch_index, (images, _) in enumerate(progress, 1):
-                    images = images.to(device, non_blocking=True)
-                    reconstruction, ae_loss = vqgan_autoencoder_step(
-                        model,
-                        discriminator,
-                        perceptual,
-                        images,
-                        ae_optimizer,
-                        step=global_step,
-                        discriminator_start=DISCRIMINATOR_START,
-                        perceptual_weight=PERCEPTUAL_WEIGHT,
-                        vq_weight=VQ_WEIGHT,
-                        discriminator_weight=DISCRIMINATOR_WEIGHT,
-                    )
-                    d_loss = vqgan_discriminator_step(
-                        discriminator,
-                        images,
-                        reconstruction,
-                        d_optimizer,
-                        step=global_step,
-                        discriminator_start=DISCRIMINATOR_START,
-                    )
-                    metrics_accumulator.add_batch_means(
-                        (ae_loss, d_loss),
-                        num_examples=images.shape[0],
-                    )
-                    global_step += 1
-                    if batch_index % LOG_EVERY == 0:
-                        running = metrics_accumulator.compute_weighted_means(
-                            require_finite=True
-                        )
-                        progress.set_postfix(
-                            ae=f"{running['autoencoder']:.4f}",
-                            d=f"{running['discriminator']:.4f}",
-                            refresh=False,
-                        )
-            stage.state["global_step"] = global_step
-            stage.record_training(
-                epoch,
-                {
-                    **metrics_accumulator.compute_weighted_means(require_finite=True),
-                },
-            )
-        if stage.should_monitor(epoch, TOKENIZER_EPOCHS, MONITOR_EVERY):
-            validation = validate_tokenizer(
-                model, perceptual, monitor_loader, device=device
-            )
-            score = (
-                validation["pixel_l1"]
-                + PERCEPTUAL_WEIGHT * validation["perceptual_distance"]
-            )
-            stage.finish_epoch(epoch, validation, score=score)
-        else:
-            stage.finish_epoch(epoch)
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            save_tokenizer_preview(
+    completed, state = checkpoint.resume(
+        checkpoint.path if RESUME and checkpoint.path.is_file() else None,
+        initial_state={"history": [], "global_step": 0},
+    )
+    originals = fixed_images(loader, NUM_SAMPLES)
+    for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
+        model.train()
+        discriminator.train()
+        seed_epoch_loader(loader, SEED, epoch)
+        metrics = MetricAccumulator(("autoencoder", "discriminator"), device=device)
+        for images, _ in tqdm(loader, desc=f"VQGAN {epoch}/{TOKENIZER_EPOCHS}"):
+            images = images.to(device)
+            reconstruction, ae_loss = vqgan_autoencoder_step(
                 model,
-                monitor_loader,
-                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                count=RECONSTRUCTION_SAMPLES,
-                device=device,
+                discriminator,
+                perceptual,
+                images,
+                optimizer,
+                step=state["global_step"],
+                discriminator_start=DISCRIMINATOR_START,
+                perceptual_weight=PERCEPTUAL_WEIGHT,
+                vq_weight=VQ_WEIGHT,
+                discriminator_weight=DISCRIMINATOR_WEIGHT,
             )
-    payload = stage.export_best(out_dir / TOKENIZER_CHECKPOINT_NAME)
-    save_stage_loss_curves(stage)
-    return model.eval().requires_grad_(False), payload
+            d_loss = vqgan_discriminator_step(
+                discriminator,
+                images,
+                reconstruction,
+                d_optimizer,
+                step=state["global_step"],
+                discriminator_start=DISCRIMINATOR_START,
+            )
+            metrics.add_batch_means((ae_loss, d_loss), num_examples=len(images))
+            state["global_step"] += 1
+        losses = metrics.compute_weighted_means(require_finite=True)
+        print(f"Epoch {epoch}: {losses}")
+        state["history"].append(losses)
+        checkpoint.save(epoch, state)
+        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+            save_reconstruction(
+                model,
+                originals,
+                OUTPUT_DIR / "training" / f"tokenizer_epoch_{epoch:03d}.png",
+                device,
+            )
+    save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
-def train_prior(
-    tokenizer,
-    tokenizer_payload,
-    train_loader,
-    monitor_loader,
-    device,
-    out_dir,
-    monitor_protocol,
-):
-    tokenizer.eval().requires_grad_(False)
-    tokenizer_grid_size = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    if tokenizer_grid_size != LATENT_GRID_SIZE:
-        raise ValueError(
-            "The selected tokenizer grid must match the current training configuration."
-        )
-    tokenizer_id = tokenizer_payload["snapshot_id"]
-    tokens, monitor_tokens = prepare_token_loaders(
-        tokenizer,
-        train_loader,
-        monitor_loader,
-        out_dir,
-        tokenizer_id=tokenizer_id,
-        data_dir=DATA_DIR,
-        image_size=IMAGE_SIZE,
-        device=device,
-        conditional=True,
-    )
-    config = {
-        "vocabulary_size": tokenizer.quantizer.codebook_size,
-        "sequence_length": TOKENS_PER_IMAGE,
-        "model_dim": PRIOR_DIM,
-        "heads": PRIOR_HEADS,
-        "layers": PRIOR_LAYERS,
-        "dropout": PRIOR_DROPOUT,
-        "num_classes": NUM_CLASSES,
-    }
-    prior = CausalTransformerPrior(**config).to(device)
+def train_prior(tokenizer, images, device, recipe):
+    prior = CausalTransformerPrior(**recipe["model"]["prior"]).to(device)
     optimizer = torch.optim.AdamW(prior.parameters(), lr=PRIOR_LR)
-    stage = TokenizerStage(
-        out_dir / "prior",
-        models={"model": prior},
-        optimizers={"model": optimizer},
-        metadata={
-            **image_contract(IMAGE_SIZE, conditional=True),
-            "model_name": "vqgan_transformer_prior",
-            "model_config": config,
-            "tokenizer_id": tokenizer_id,
-            "monitor_protocol": monitor_protocol,
-            "selection_metric": "training_subset_nll",
-        },
-        recipe={"lr": PRIOR_LR, "batch_size": BATCH_SIZE, "seed": SEED},
-        resume=RESUME,
-        metric_names=("nll", "val_nll"),
+    checkpoint = epoch_checkpoint(
+        OUTPUT_DIR / "prior_latest.pth",
+        {"tokenizer": tokenizer, "prior": prior},
+        {"prior": optimizer},
+        recipe,
     )
-    training_dir = out_dir / "training"
-    training_dir.mkdir(parents=True, exist_ok=True)
-    for epoch in stage.epochs(PRIOR_EPOCHS):
-        if stage.needs_training(epoch):
-            prior.train()
-            seed_epoch_loader(tokens, SEED, epoch)
-            metrics = MetricAccumulator(("nll",), device=device)
-            with tqdm(
-                tokens,
-                desc=f"Transformer {epoch}/{PRIOR_EPOCHS}",
-                unit="batch",
-                mininterval=PROGRESS_INTERVAL,
-            ) as progress:
-                for batch_index, (indices, labels) in enumerate(progress, 1):
-                    indices = indices.to(
-                        device=device, dtype=torch.long, non_blocking=True
-                    )
-                    labels = labels.to(device, non_blocking=True)
-                    logits, targets = prior.teacher_forcing(indices, labels)
-                    loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-                    optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    optimizer.step()
-                    metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-                    if batch_index % LOG_EVERY == 0:
-                        nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-                        progress.set_postfix(
-                            nll=f"{nll:.4f}",
-                            refresh=False,
-                        )
-            nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-            stage.record_training(epoch, {"nll": nll})
-        if stage.should_monitor(epoch, PRIOR_EPOCHS, MONITOR_EVERY):
-            validation = validate_prior(prior, monitor_tokens, device=device)
-            stage.finish_epoch(epoch, validation, score=validation["nll"])
-        else:
-            stage.finish_epoch(epoch)
+    completed, state = checkpoint.resume(
+        checkpoint.path if RESUME and checkpoint.path.is_file() else None,
+        initial_state={"history": []},
+    )
+    tokenizer.eval().requires_grad_(False)
+    if completed == PRIOR_EPOCHS:
+        save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
+        return prior.eval()
+    tokens = encode_dataset(tokenizer, images, device)
+    side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+    for epoch in range(completed + 1, PRIOR_EPOCHS + 1):
+        prior.train()
+        seed_epoch_loader(tokens, SEED, epoch)
+        metrics = MetricAccumulator(("nll",), device=device)
+        for indices, labels in tqdm(tokens, desc=f"Transformer {epoch}/{PRIOR_EPOCHS}"):
+            indices, labels = indices.to(device), labels.to(device)
+            logits, targets = prior.teacher_forcing(indices, labels)
+            loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            metrics.add_batch_means((loss,), num_examples=len(indices))
+        losses = metrics.compute_weighted_means(require_finite=True)
+        print(f"Epoch {epoch}: {losses}")
+        state["history"].append(losses)
+        checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
             with torch.random.fork_rng(), torch.inference_mode():
                 torch.manual_seed(SEED)
                 prior.eval()
-                labels = torch.arange(NUM_FIXED_SAMPLES, device=device).remainder(
-                    NUM_CLASSES
-                )
+                labels = torch.arange(NUM_SAMPLES, device=device).remainder(NUM_CLASSES)
                 indices = prior.sample(
-                    NUM_FIXED_SAMPLES,
-                    device=device,
-                    labels=labels,
-                    temperature=TEMPERATURE,
+                    NUM_SAMPLES, device=device, labels=labels, temperature=TEMPERATURE
                 )
                 samples = tokenizer.decode_indices(
-                    indices.reshape(
-                        NUM_FIXED_SAMPLES, LATENT_GRID_SIZE, LATENT_GRID_SIZE
-                    )
+                    indices.reshape(NUM_SAMPLES, side, side)
                 )
             save_image(
                 samples.mul(0.5).add(0.5),
-                training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=SAMPLE_GRID_COLUMNS,
+                OUTPUT_DIR / "training" / f"prior_epoch_{epoch:03d}.png",
+                nrow=4,
             )
-    stage.export_best(out_dir / PRIOR_CHECKPOINT_NAME)
-    save_stage_loss_curves(stage)
+    save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
+    return prior.eval()
 
 
-def train() -> None:
+def train():
+    set_seed(SEED)
     device = try_gpu()
-    train_loader, _ = glasses_loader(
+    (OUTPUT_DIR / "training").mkdir(parents=True, exist_ok=True)
+    if not RESUME:
+        (OUTPUT_DIR / "tokenizer_latest.pth").unlink(missing_ok=True)
+        (OUTPUT_DIR / "prior_latest.pth").unlink(missing_ok=True)
+    loader = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
         BATCH_SIZE,
         device,
         shuffle=True,
-        seed=SEED,
         num_workers=WORKERS,
         conditional=True,
     )
-    monitor_loader, protocol = glasses_loader(
-        DATA_DIR,
-        IMAGE_SIZE,
-        BATCH_SIZE,
-        device,
-        max_examples=MONITOR_EXAMPLES,
-        seed=MONITOR_SEED,
-        num_workers=WORKERS,
-        conditional=True,
-    )
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    if TRAIN_TOKENIZER:
-        tokenizer, payload = train_tokenizer(
-            train_loader, monitor_loader, device, OUTPUT_DIR, protocol
-        )
-    else:
-        tokenizer, payload = load_tokenizer_weights(
-            OUTPUT_DIR / TOKENIZER_CHECKPOINT_NAME,
-            VQPerceptualAutoencoder,
-            name="vqgan_tokenizer",
-            image_size=IMAGE_SIZE,
-            device=device,
-            downsample_steps=DOWNSAMPLE_STEPS,
-            conditional=True,
-        )
-    train_prior(
-        tokenizer,
-        payload,
-        train_loader,
-        monitor_loader,
-        device,
-        OUTPUT_DIR,
-        protocol,
-    )
+    config = {
+        "image_size": IMAGE_SIZE,
+        "tokenizer": {
+            "latent_channels": LATENT_CHANNELS,
+            "codebook_size": CODEBOOK_SIZE,
+            "hidden_channels": HIDDEN_CHANNELS,
+            "commitment": COMMITMENT,
+            "ema_decay": EMA_DECAY,
+            "ema_epsilon": EMA_EPSILON,
+            "downsample_steps": DOWNSAMPLE_STEPS,
+        },
+        "prior": {
+            "vocabulary_size": CODEBOOK_SIZE,
+            "sequence_length": (IMAGE_SIZE // 2**DOWNSAMPLE_STEPS) ** 2,
+            "model_dim": PRIOR_DIM,
+            "heads": PRIOR_HEADS,
+            "layers": PRIOR_LAYERS,
+            "dropout": PRIOR_DROPOUT,
+            "num_classes": NUM_CLASSES,
+        },
+    }
+    recipe = {
+        "model": config,
+        "tokenizer_epochs": TOKENIZER_EPOCHS,
+        "prior_epochs": PRIOR_EPOCHS,
+        "lr": LR,
+        "d_lr": DISCRIMINATOR_LR,
+        "prior_lr": PRIOR_LR,
+        "betas": ADAM_BETAS,
+        "d_channels": DISCRIMINATOR_CHANNELS,
+        "perceptual_weight": PERCEPTUAL_WEIGHT,
+        "vq_weight": VQ_WEIGHT,
+        "discriminator_weight": DISCRIMINATOR_WEIGHT,
+        "discriminator_start": DISCRIMINATOR_START,
+        "batch_size": BATCH_SIZE,
+        "seed": SEED,
+    }
+    tokenizer = VQPerceptualAutoencoder(**config["tokenizer"]).to(device)
+    if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
+        train_tokenizer(tokenizer, loader, device, recipe)
+    prior = train_prior(tokenizer, loader, device, recipe)
+    save_pair(OUTPUT_DIR / "model.pth", "vqgan", tokenizer, prior, config)
 
 
-def main() -> None:
-    set_seed(SEED)
+def main():
     train()
 
 

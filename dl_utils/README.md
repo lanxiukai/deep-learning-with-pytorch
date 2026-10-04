@@ -117,53 +117,37 @@ environment or dependency workflow.
   back to 128px. It reuses the RGB encoder/decoder in
   [vae/perceptual_autoencoder.py](vae/perceptual_autoencoder.py); the KL lesson
   also reuses that module's PatchGAN and adaptive adversarial weight.
-- [vae/discrete_workflow.py](vae/discrete_workflow.py) composes existing
-  checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
-  It owns glasses-256 loading, recorded training subsets,
-  shared monitoring and reconstruction previews, snapshot-bound token caches,
-  epoch recovery, and latest/best artifacts. A single training token cache also tracks ordered image
-  paths, labels, file sizes, and nanosecond modification times; datasets without
-  inspectable files are re-encoded. Image and token training loaders retain the
-  final partial batch. Monitoring loaders select rows from the training token cache
-  without a second encoding pass or a separate cache file.
-  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) owns the shared frozen-token
-  PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ,
-  using the infrastructure in `discrete_workflow.py`. Read its epoch,
-  evaluation, and sampling helpers before the complete `train_pixelcnn_prior`
-  workflow.
-  Training records only basic losses in one `<stage>/metrics.csv` and
-  `<stage>/loss_curves.png`. Fixed-subset model selection runs on the first epoch,
-  every five epochs, and the final epoch: 64 images for VQ-VAE/FSQ and 128 for VQGAN.
-  Eight-image previews run on the first epoch, every ten epochs, and the final epoch.
-  The 6.2/7.1 evaluation entries save only reconstruction and generation grids.
+- [vae/discrete_workflow.py](vae/discrete_workflow.py) provides small helpers for
+  glasses-256 loading, fixed preview images, one-time in-memory token encoding,
+  ordinary epoch checkpoints, basic loss curves, and final model pairs.
+  The VQ-VAE/FSQ/VQGAN lessons own the stage order and plain epoch loops.
+  Read each lesson's `train()` first: load images, train the tokenizer, freeze
+  and encode, train the prior, then save the pair. There is no model selection,
+  monitoring subset, disk token cache, history migration, or stage state machine.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares only one PixelCNN
+  training epoch. The prior setup, outer loop, and sampling stay in the lessons.
+  Each stage keeps a short loss history and writes one loss figure. Eight-image
+  previews run on the first epoch, every ten epochs, and the final epoch.
+  `tokenizer_latest.pth` and `prior_latest.pth` provide same-recipe epoch recovery;
+  the latter includes the frozen tokenizer alongside the prior. A final
+  `model.pth` stores both model configurations and both sets of weights together.
+  The 6.2/7.1 evaluations load that pair, reconstruct, sample, and save two grids.
+  [Legacy weight conversion](../tool_scripts/convert_discrete_checkpoint.py)
+  is a separate one-time tool and is not part of the training path.
   VQ models return reconstruction, token indices, and commitment loss; FSQ
-  returns reconstruction and token indices. Quantizers return the corresponding
-  quantized latents instead of reconstructions. No diagnostics dictionaries are built.
-  Resume removes retired history fields and accepts monitoring-policy changes
-  while still checking architecture, preprocessing, conditioning, and optimizer recipe.
-  A changed monitoring subset resets model selection and replays monitoring at
-  the saved epoch without repeating its optimization.
-  Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
-  Model modules do not import the workflow. Priors consume cached token grids.
+  returns reconstruction and token indices. Quantizers return quantized latents
+  instead of reconstructions. Model modules do not import the workflow.
   [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
   autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
   with ReLU and recomputes full-grid logits for each sampled position. Its
   receptive field has a blind spot. The Transformer recomputes the full token
   prefix at each step; its layers are independently initialized. Transformer
-  sampling temporarily disables dropout and restores the previous mode;
-  training and likelihood evaluation use the parallel forward path.
+  sampling temporarily disables dropout and restores the previous mode.
   [vae/quantization.py](vae/quantization.py) supplies the shared quantizers.
-  Encoders require at least two downsampling
-  steps and image dimensions divisible by their compression factor.
-  The VQ-VAE/FSQ PixelCNN prior supports only unconditional generation.
-  The Transformer prior supports class conditioning with a positive `num_classes`.
-  Models, lesson entries, and weight loaders share
-  `TOKENIZER_DOWNSAMPLE_STEPS=4` for 256x256 inputs and outputs; weight loading
-  enforces this configuration. They share a 16x16
-  grid and 512-code vocabulary. VQ-VAE/FSQ ignore the G/NoG folder labels;
-  VQGAN explicitly enables its two-class Transformer prior. Data loading,
-  checkpoints, token caches, and evaluation record this conditioning contract.
-  VQGAN retains its separate backbone, objective, prior, and training budget.
+  The lessons use `TOKENIZER_DOWNSAMPLE_STEPS=4`: 256x256 images map to 16x16
+  grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior
+  uses G=0 and NoG=1. Final-pair loading checks image size, vocabulary, token
+  grid, and class names. VQGAN retains its own backbone, objective, and budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through
