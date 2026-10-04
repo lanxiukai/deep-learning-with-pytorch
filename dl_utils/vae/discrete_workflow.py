@@ -15,7 +15,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 from torch.utils.data import DataLoader, RandomSampler, Subset, TensorDataset
 from torchvision.datasets import ImageFolder
 from torchvision.utils import save_image
@@ -23,6 +23,7 @@ from torchvision.utils import save_image
 from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.data.vision import image_folder_dataset
+from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import (
     TrainingCheckpoint,
     atomic_torch_save,
@@ -31,48 +32,6 @@ from dl_utils.training.checkpoints import (
 from dl_utils.training.history import save_metrics_csv
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
-
-
-class TokenUsageAccumulator:
-    """Accumulate exact token counts over an epoch or evaluation window."""
-
-    def __init__(self, vocabulary_size: int) -> None:
-        self.vocabulary_size = vocabulary_size
-        self.counts: Tensor | None = None
-
-    def update(self, indices: Tensor) -> None:
-        counts = torch.bincount(
-            indices.detach().reshape(-1), minlength=self.vocabulary_size
-        )
-        if self.counts is None:
-            self.counts = torch.zeros_like(counts)
-        self.counts += counts
-
-    def training_metrics(self) -> dict[str, float]:
-        if self.counts is None:
-            raise ValueError("Token usage requires at least one observed batch.")
-        counts = self.counts.float()
-        probabilities = counts / counts.sum().clamp_min(1.0)
-        nonzero = probabilities > 0
-        entropy = -(probabilities[nonzero] * probabilities[nonzero].log()).sum()
-        return {
-            "perplexity": entropy.exp().item(),
-            "active_codes": nonzero.sum().item(),
-            "entropy_bits": entropy.item() / math.log(2),
-        }
-
-    def rate_metrics(self, tokens_per_image: int) -> dict[str, float]:
-        metrics = self.training_metrics()
-        entropy_bits = metrics["entropy_bits"]
-        return {
-            "perplexity": metrics["perplexity"],
-            "active_codes": metrics["active_codes"],
-            "usage_fraction": metrics["active_codes"] / self.vocabulary_size,
-            "marginal_entropy_bits_per_token": entropy_bits,
-            "marginal_entropy_bits_per_image": tokens_per_image * entropy_bits,
-            "fixed_length_bits_per_image": tokens_per_image
-            * math.ceil(math.log2(self.vocabulary_size)),
-        }
 
 
 def image_contract(image_size: int, *, conditional: bool = False) -> dict[str, Any]:
@@ -135,13 +94,6 @@ def glasses_loader(
         "image_ids": [
             Path(dataset.samples[i][0]).relative_to(root).as_posix() for i in indices
         ],
-        "psnr_aggregation": "both mean per-image PSNR and PSNR from pooled MSE; data_range=2",
-        "rate_interpretation": (
-            "conditional token cross-entropy; excludes labels, model weights and coder overhead"
-            if conditional
-            else "unconditional token cross-entropy; excludes model weights and coder overhead"
-        ),
-        "latent_mse_interpretation": "within-tokenizer diagnostic, not comparable across quantizer coordinate systems",
     }
     return loader, protocol
 
@@ -153,12 +105,18 @@ def seed_epoch_loader(loader: DataLoader, seed: int, epoch: int) -> None:
         loader.sampler.generator = torch.Generator().manual_seed(seed + epoch)
 
 
-def _image_manifest(dataset) -> dict[str, object] | None:
-    """Describe the actual ordered files; other dataset types are not cached across calls."""
+def _dataset_indices(dataset):
+    """Resolve nested subsets to their base dataset and ordered indices."""
     indices = list(range(len(dataset)))
     while isinstance(dataset, Subset):
         indices = [dataset.indices[index] for index in indices]
         dataset = dataset.dataset
+    return dataset, indices
+
+
+def _image_manifest(dataset) -> dict[str, object] | None:
+    """Describe the actual ordered files; other dataset types are not cached across calls."""
+    dataset, indices = _dataset_indices(dataset)
     if not isinstance(dataset, ImageFolder):
         return None
     files = []
@@ -248,11 +206,10 @@ def prepare_token_loaders(
     tokenizer_id,
     data_dir,
     image_size,
-    monitor_protocol,
     device,
     conditional=False,
 ) -> tuple[DataLoader, DataLoader]:
-    """Prepare full training tokens and fixed monitoring tokens for either prior."""
+    """Encode training images once; monitoring shares those cached tokens."""
     cache_metadata = {
         **image_contract(image_size, conditional=conditional),
         "source_root": str(data_dir.resolve()),
@@ -266,47 +223,46 @@ def prepare_token_loaders(
         device=device,
         shuffle=True,
     )
-    monitor_tokens = cached_token_loader(
-        tokenizer,
-        monitor_loader,
-        out_dir / "token_cache_monitor.pth",
-        tokenizer_id=tokenizer_id,
-        metadata={**cache_metadata, "protocol": monitor_protocol},
-        device=device,
+    train_base, train_indices = _dataset_indices(train_loader.dataset)
+    monitor_base, monitor_indices = _dataset_indices(monitor_loader.dataset)
+    same_source = train_base is monitor_base
+    if isinstance(train_base, ImageFolder) and isinstance(monitor_base, ImageFolder):
+        same_source = (
+            Path(train_base.root).resolve() == Path(monitor_base.root).resolve()
+            and train_base.samples == monitor_base.samples
+            and repr(train_base.transform) == repr(monitor_base.transform)
+        )
+    if not same_source:
+        raise ValueError("Monitoring must use a subset of the training images.")
+    positions = {index: position for position, index in enumerate(train_indices)}
+    if any(index not in positions for index in monitor_indices):
+        raise ValueError("Monitoring images are missing from the training token cache.")
+    monitor_tokens = make_device_aware_loader(
+        Subset(tokens.dataset, [positions[index] for index in monitor_indices]),
+        monitor_loader.batch_size,
+        device,
         shuffle=False,
+        num_workers=0,
+        drop_last=False,
     )
+    monitor_tokens.generator = torch.Generator().manual_seed(0)
+    (out_dir / "token_cache_monitor.pth").unlink(missing_ok=True)
     return tokens, monitor_tokens
 
 
 @torch.inference_mode()
-def evaluate_mse_tokenizer(
-    model, loader, *, tokens_per_image, device
-) -> dict[str, float]:
+def evaluate_mse_tokenizer(model, loader, *, device) -> dict[str, float]:
     model.eval()
-    vocabulary_size = model.quantizer.codebook_size
-    metrics = MetricAccumulator(
-        ("mse", "mean_psnr_db", "quantization_mse"), device=device
-    )
-    usage = TokenUsageAccumulator(vocabulary_size)
+    metrics = MetricAccumulator(("mse",), device=device)
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
-        reconstruction, indices, *_, diagnostics = model(images)
+        reconstruction = model(images)[0]
         per_image_mse = (reconstruction - images).square().flatten(1).mean(1)
         metrics.add_batch_means(
-            (
-                per_image_mse.mean(),
-                (10 * torch.log10(4 / per_image_mse.clamp_min(1e-12))).mean(),
-                diagnostics["quantization_mse"],
-            ),
+            (per_image_mse.mean(),),
             num_examples=images.shape[0],
         )
-        usage.update(indices)
-    means = metrics.compute_weighted_means(require_finite=True)
-    return {
-        **means,
-        "psnr_from_pooled_mse_db": 10 * math.log10(4 / max(means["mse"], 1e-12)),
-        **usage.rate_metrics(tokens_per_image),
-    }
+    return metrics.compute_weighted_means(require_finite=True)
 
 
 @torch.inference_mode()
@@ -322,7 +278,17 @@ def save_tokenizer_preview(model, loader, path, *, count, device) -> None:
 class TokenizerStage:
     """Persist training and subset monitoring through TrainingCheckpoint."""
 
-    def __init__(self, directory, *, models, optimizers, metadata, recipe, resume):
+    def __init__(
+        self,
+        directory,
+        *,
+        models,
+        optimizers,
+        metadata,
+        recipe,
+        resume,
+        metric_names=None,
+    ):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.models = dict(models)
@@ -337,6 +303,27 @@ class TokenizerStage:
         resume_path = (
             self.checkpoint.path if resume and self.checkpoint.path.is_file() else None
         )
+        previous_protocol = metadata.get("monitor_protocol")
+        if resume_path is not None:
+            saved = torch.load(
+                resume_path, map_location="cpu", weights_only=False, mmap=True
+            )
+            saved_model = saved["metadata"]["model"]
+            stable = {
+                key: value
+                for key, value in metadata.items()
+                if key != "monitor_protocol"
+            }
+            saved_stable = {
+                key: value
+                for key, value in saved_model.items()
+                if key != "monitor_protocol"
+            }
+            if stable != saved_stable:
+                raise ValueError("Checkpoint model metadata mismatch.")
+            # Monitoring policy may change; architecture and recipe still match strictly.
+            self.checkpoint.metadata["model"] = saved_model
+            previous_protocol = saved_model.get("monitor_protocol")
         self.completed_epoch, self.state = self.checkpoint.resume(
             resume_path,
             initial_state={
@@ -347,6 +334,31 @@ class TokenizerStage:
                 "pending_validation": False,
             },
         )
+        self.checkpoint.metadata.update(model=metadata)
+        self.metric_names = metric_names
+        if metric_names is not None:
+            history = []
+            for row in self.history:
+                row = dict(row)
+                if "val_nll_nats_per_token" in row:
+                    row["val_nll"] = row.pop("val_nll_nats_per_token")
+                history.append(
+                    {
+                        key: value
+                        for key, value in row.items()
+                        if key == "epoch" or key in metric_names
+                    }
+                )
+            self.state["history"] = history
+        protocol_keys = ("image_ids", "subset_seed", "examples")
+        if previous_protocol is not None and any(
+            previous_protocol.get(key) != metadata["monitor_protocol"].get(key)
+            for key in protocol_keys
+        ):
+            self.state.update(
+                best_score=math.inf, best_epoch=None, pending_validation=True
+            )
+        (self.directory / "last.pth").unlink(missing_ok=True)
 
     @property
     def history(self):
@@ -363,6 +375,13 @@ class TokenizerStage:
     def needs_training(self, epoch):
         return not (epoch == self.completed_epoch and self.state["pending_validation"])
 
+    def should_monitor(self, epoch, total_epochs, every):
+        return (
+            self.state["best_epoch"] is None
+            or epoch % every == 0
+            or epoch == total_epochs
+        )
+
     def record_training(self, epoch, metrics):
         """Save recoverable state before subset monitoring or plotting."""
         self.history.append({"epoch": epoch, **metrics})
@@ -370,33 +389,34 @@ class TokenizerStage:
         self.completed_epoch = epoch
         self.checkpoint.save(epoch, self.state)
 
-    def record_validation(self, epoch, validation, *, score):
-        """Store training-subset diagnostics in validation / val_* fields."""
-        if not math.isfinite(score):
-            raise FloatingPointError("The model-selection metric must be finite.")
-        payload = {
-            **self.metadata,
-            "epoch": epoch,
-            "validation": validation,
-            "snapshot_id": f"{self.state['run_id']}:{epoch}",
-            "state_dict": self.models["model"].state_dict(),
-            **{
-                f"{name}_state_dict": model.state_dict()
-                for name, model in self.models.items()
-                if name != "model"
-            },
-        }
-        atomic_torch_save(payload, self.directory / "last.pth")
-        if score < self.state["best_score"]:
-            atomic_torch_save(payload, self.directory / "best.pth")
-            self.state.update(best_score=score, best_epoch=epoch)
-        self.history[-1].update(
-            {f"val_{key}": value for key, value in validation.items()}
-        )
+    def finish_epoch(self, epoch, validation=None, *, score=None):
+        """Finish an epoch, optionally selecting weights on the monitoring subset."""
+        if validation is not None:
+            if score is None or not math.isfinite(score):
+                raise FloatingPointError("The model-selection metric must be finite.")
+            if score < self.state["best_score"]:
+                payload = {
+                    **self.metadata,
+                    "epoch": epoch,
+                    "validation": validation,
+                    "snapshot_id": f"{self.state['run_id']}:{epoch}",
+                    "state_dict": self.models["model"].state_dict(),
+                    **{
+                        f"{name}_state_dict": model.state_dict()
+                        for name, model in self.models.items()
+                        if name != "model"
+                    },
+                }
+                atomic_torch_save(payload, self.directory / "best.pth")
+                self.state.update(best_score=score, best_epoch=epoch)
+            self.history[-1].update(
+                {f"val_{key}": value for key, value in validation.items()}
+            )
         self.state["pending_validation"] = False
         self.checkpoint.save(epoch, self.state)
+        keys = dict.fromkeys(key for row in self.history for key in row)
         save_metrics_csv(
-            {key: [row[key] for row in self.history] for key in self.history[0]},
+            {key: [row.get(key, math.nan) for row in self.history] for key in keys},
             self.directory / "metrics.csv",
         )
 
@@ -409,6 +429,15 @@ class TokenizerStage:
         payload = torch.load(
             self.directory / "best.pth", map_location="cpu", weights_only=True
         )
+        if self.metric_names is not None:
+            validation = dict(payload["validation"])
+            if "nll_nats_per_token" in validation:
+                validation["nll"] = validation.pop("nll_nats_per_token")
+            payload["validation"] = {
+                key: value
+                for key, value in validation.items()
+                if f"val_{key}" in self.metric_names
+            }
         expected_id = f"{self.state['run_id']}:{self.state['best_epoch']}"
         if payload["snapshot_id"] != expected_id:
             raise ValueError(
@@ -419,6 +448,30 @@ class TokenizerStage:
             model.load_state_dict(payload[key])
         atomic_torch_save(payload, destination)
         return payload
+
+
+def save_stage_loss_curves(stage: TokenizerStage) -> None:
+    """Render only the basic training losses beside the stage's single CSV."""
+    names = [
+        name
+        for name in (stage.metric_names or stage.history[0])
+        if name != "epoch" and not name.startswith("val_")
+    ]
+    panels = {}
+    for name in names:
+        series = {"training": [row.get(name, math.nan) for row in stage.history]}
+        panels[name.replace("_", " ").capitalize()] = series
+    save_loss_panels(
+        [row["epoch"] for row in stage.history],
+        panels,
+        stage.directory / "loss_curves.png",
+        xlabel="Epoch",
+        ylabel="Loss",
+    )
+    prefix = stage.directory.name
+    (stage.directory.parent / f"{prefix}_metrics.csv").unlink(missing_ok=True)
+    for path in stage.directory.parent.glob(f"{prefix}_metrics_*.png"):
+        path.unlink()
 
 
 def _current_tokenizer_config(

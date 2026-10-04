@@ -15,22 +15,22 @@ Different conditioning, backbones, objectives and priors prevent a strict ablati
 Prior preview columns alternate G (with glasses) and NoG (without glasses).
 
 Edit RESUME and TRAIN_TOKENIZER below for recovery or prior-only training.
-Each stage saves latest full state before validation, best/last weights, and
-per-epoch CSV metrics. The selected tokenizer/prior snapshots are bound by ID.
-A recorded seeded training subset monitors progress and selects snapshots;
+Each stage saves latest full state before monitoring, selected best weights,
+one per-epoch CSV, and basic loss curves. Tokenizer/prior snapshots are bound by ID.
+A fixed 128-image training subset selects snapshots on the first epoch,
+every five epochs, and the final epoch;
 the stored validation / val_* fields are training-set diagnostics.
 Run 7.1 for reconstruction and generation diagnostics on the training images.
 
 Outputs under output/vae/vqgan/:
-    tokenizer/{latest,best,last}.pth and metrics.csv
-    prior/{latest,best,last}.pth and metrics.csv
+    tokenizer/{latest,best}.pth, metrics.csv, and loss_curves.png
+    prior/{latest,best}.pth, metrics.csv, and loss_curves.png
     vqgan.pth and transformer_prior.pth: selected evaluation weights
-    token_cache_*.pth and training/*.png
+    token_cache_train.pth: shared training/monitoring tokens
+    training/*.png: eight fixed reconstructions or conditional prior samples
 """
 
 from __future__ import annotations
-
-import math
 
 import torch
 import torch.nn.functional as F
@@ -44,15 +44,14 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
     TokenizerStage,
-    TokenUsageAccumulator,
     glasses_loader,
     image_contract,
     load_tokenizer_weights,
     prepare_token_loaders,
+    save_stage_loss_curves,
     save_tokenizer_preview,
     seed_epoch_loader,
 )
@@ -71,7 +70,6 @@ TOKENIZER_CHECKPOINT_NAME = "vqgan.pth"
 PRIOR_CHECKPOINT_NAME = "transformer_prior.pth"
 RECONSTRUCTION_SAMPLES = 8
 PROGRESS_INTERVAL = 0.5
-MAX_METRIC_PANELS = 4
 ADAM_BETAS = (0.5, 0.9)
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 IMAGE_SIZE = 256
@@ -111,8 +109,9 @@ LR = 2e-4
 DISCRIMINATOR_LR = 2e-4
 PRIOR_LR = 3e-4
 TEMPERATURE = 1.0
-SAMPLE_EVERY = 5
-MONITOR_EXAMPLES = 1_024
+SAMPLE_EVERY = 10
+MONITOR_EXAMPLES = 128
+MONITOR_EVERY = 5
 WORKERS = 4
 SEED = 42
 
@@ -129,8 +128,8 @@ def vqgan_autoencoder_step(
     perceptual_weight: float,
     vq_weight: float,
     discriminator_weight: float,
-) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-    reconstruction, indices, vq_loss, _ = model(images)
+) -> tuple[Tensor, Tensor]:
+    reconstruction, _, vq_loss = model(images)
     pixel_l1 = F.l1_loss(reconstruction, images)
     perceptual_loss = perceptual(reconstruction, images)
     reconstruction_objective = pixel_l1 + float(perceptual_weight) * perceptual_loss
@@ -153,18 +152,7 @@ def vqgan_autoencoder_step(
     loss.backward()
     optimizer.step()
     discriminator.requires_grad_(True)
-    return (
-        reconstruction.detach(),
-        indices.detach(),
-        {
-            "autoencoder": loss.detach(),
-            "pixel_l1": pixel_l1.detach(),
-            "perceptual": perceptual_loss.detach(),
-            "vq": vq_loss.detach(),
-            "generator_adversarial": adversarial.detach(),
-            "adversarial_scale": adversarial_scale.detach(),
-        },
-    )
+    return reconstruction.detach(), loss.detach()
 
 
 def vqgan_discriminator_step(
@@ -175,71 +163,40 @@ def vqgan_discriminator_step(
     *,
     step: int,
     discriminator_start: int,
-) -> dict[str, Tensor]:
+) -> Tensor:
     if step < discriminator_start:
-        zero = images.new_zeros(())
-        return {"discriminator": zero, "real_logit": zero, "fake_logit": zero}
+        return images.new_zeros(())
     real_logits = discriminator(images)
     fake_logits = discriminator(reconstruction.detach())
     loss = 0.5 * discriminator_hinge_loss(real_logits, fake_logits)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
-    return {
-        "discriminator": loss.detach(),
-        "real_logit": real_logits.mean().detach(),
-        "fake_logit": fake_logits.mean().detach(),
-    }
+    return loss.detach()
 
 
 @torch.inference_mode()
 def validate_tokenizer(
     model: VQPerceptualAutoencoder,
-    discriminator: PatchDiscriminator,
     perceptual: nn.Module,
     loader: DataLoader,
     *,
     device: torch.device,
 ) -> dict[str, float]:
     model.eval()
-    discriminator.eval()
     perceptual.eval()
-    vocabulary_size = model.quantizer.codebook_size
-    metrics = MetricAccumulator(
-        (
-            "pixel_l1",
-            "perceptual_distance",
-            "quantization_mse",
-            "real_logit",
-            "reconstruction_logit",
-        ),
-        device=device,
-    )
-    examples = 0
-    usage = TokenUsageAccumulator(vocabulary_size)
+    metrics = MetricAccumulator(("pixel_l1", "perceptual_distance"), device=device)
     for images, _ in loader:
         images = images.to(device, non_blocking=True)
-        reconstruction, indices, _, diagnostics = model(images)
+        reconstruction = model(images)[0]
         metrics.add_batch_means(
             (
                 F.l1_loss(reconstruction, images),
                 perceptual(reconstruction, images),
-                diagnostics["quantization_mse"],
-                discriminator(images).mean(),
-                discriminator(reconstruction).mean(),
             ),
             num_examples=images.shape[0],
         )
-        usage.update(indices)
-        examples += images.shape[0]
-    if examples == 0:
-        raise ValueError("tokenizer validation observed no examples")
-    values = metrics.compute_weighted_means()
-    return {
-        "examples": float(examples),
-        **values,
-        **usage.rate_metrics(TOKENS_PER_IMAGE),
-    }
+    return metrics.compute_weighted_means(require_finite=True)
 
 
 @torch.inference_mode()
@@ -252,12 +209,7 @@ def validate_prior(prior, loader, *, device) -> dict[str, float]:
         logits, targets = prior.teacher_forcing(indices, labels)
         loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
         metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-    return {
-        "nll_nats_per_token": nll,
-        "bits_per_token": nll / math.log(2),
-        "bits_per_image": TOKENS_PER_IMAGE * nll / math.log(2),
-    }
+    return metrics.compute_weighted_means(require_finite=True)
 
 
 def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_protocol):
@@ -302,6 +254,12 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
             "seed": SEED,
         },
         resume=RESUME,
+        metric_names=(
+            "autoencoder",
+            "discriminator",
+            "val_pixel_l1",
+            "val_perceptual_distance",
+        ),
     )
     global_step = stage.state.get("global_step", 0)
     training_dir = out_dir / "training"
@@ -311,19 +269,8 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
             model.train()
             discriminator.train()
             seed_epoch_loader(train_loader, SEED, epoch)
-            names = (
-                "autoencoder",
-                "pixel_l1",
-                "perceptual",
-                "vq",
-                "generator_adversarial",
-                "adversarial_scale",
-                "discriminator",
-                "real_logit",
-                "fake_logit",
-            )
+            names = ("autoencoder", "discriminator")
             metrics_accumulator = MetricAccumulator(names, device=device)
-            usage = TokenUsageAccumulator(CODEBOOK_SIZE)
             with tqdm(
                 train_loader,
                 desc=f"vqgan {epoch}/{TOKENIZER_EPOCHS}",
@@ -332,7 +279,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
             ) as progress:
                 for batch_index, (images, _) in enumerate(progress, 1):
                     images = images.to(device, non_blocking=True)
-                    reconstruction, indices, metrics = vqgan_autoencoder_step(
+                    reconstruction, ae_loss = vqgan_autoencoder_step(
                         model,
                         discriminator,
                         perceptual,
@@ -344,7 +291,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                         vq_weight=VQ_WEIGHT,
                         discriminator_weight=DISCRIMINATOR_WEIGHT,
                     )
-                    d_metrics = vqgan_discriminator_step(
+                    d_loss = vqgan_discriminator_step(
                         discriminator,
                         images,
                         reconstruction,
@@ -352,12 +299,10 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                         step=global_step,
                         discriminator_start=DISCRIMINATOR_START,
                     )
-                    values = metrics | d_metrics
                     metrics_accumulator.add_batch_means(
-                        tuple(values[name] for name in names),
+                        (ae_loss, d_loss),
                         num_examples=images.shape[0],
                     )
-                    usage.update(indices)
                     global_step += 1
                     if batch_index % LOG_EVERY == 0:
                         running = metrics_accumulator.compute_weighted_means(
@@ -373,21 +318,19 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                 epoch,
                 {
                     **metrics_accumulator.compute_weighted_means(require_finite=True),
-                    **usage.training_metrics(),
                 },
             )
-        validation = validate_tokenizer(
-            model,
-            discriminator,
-            perceptual,
-            monitor_loader,
-            device=device,
-        )
-        score = (
-            validation["pixel_l1"]
-            + PERCEPTUAL_WEIGHT * validation["perceptual_distance"]
-        )
-        stage.record_validation(epoch, validation, score=score)
+        if stage.should_monitor(epoch, TOKENIZER_EPOCHS, MONITOR_EVERY):
+            validation = validate_tokenizer(
+                model, perceptual, monitor_loader, device=device
+            )
+            score = (
+                validation["pixel_l1"]
+                + PERCEPTUAL_WEIGHT * validation["perceptual_distance"]
+            )
+            stage.finish_epoch(epoch, validation, score=score)
+        else:
+            stage.finish_epoch(epoch)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
             save_tokenizer_preview(
                 model,
@@ -397,9 +340,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                 device=device,
             )
     payload = stage.export_best(out_dir / TOKENIZER_CHECKPOINT_NAME)
-    save_training_metrics(
-        stage.history, out_dir, prefix="tokenizer", max_panels=MAX_METRIC_PANELS
-    )
+    save_stage_loss_curves(stage)
     return model.eval().requires_grad_(False), payload
 
 
@@ -427,7 +368,6 @@ def train_prior(
         tokenizer_id=tokenizer_id,
         data_dir=DATA_DIR,
         image_size=IMAGE_SIZE,
-        monitor_protocol=monitor_protocol,
         device=device,
         conditional=True,
     )
@@ -456,6 +396,7 @@ def train_prior(
         },
         recipe={"lr": PRIOR_LR, "batch_size": BATCH_SIZE, "seed": SEED},
         resume=RESUME,
+        metric_names=("nll", "val_nll"),
     )
     training_dir = out_dir / "training"
     training_dir.mkdir(parents=True, exist_ok=True)
@@ -485,17 +426,15 @@ def train_prior(
                         nll = metrics.compute_weighted_means(require_finite=True)["nll"]
                         progress.set_postfix(
                             nll=f"{nll:.4f}",
-                            bpt=f"{nll / math.log(2):.3f}",
                             refresh=False,
                         )
             nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-            stage.record_training(
-                epoch, {"nll": nll, "bits_per_token": nll / math.log(2)}
-            )
-        validation = validate_prior(prior, monitor_tokens, device=device)
-        stage.record_validation(
-            epoch, validation, score=validation["nll_nats_per_token"]
-        )
+            stage.record_training(epoch, {"nll": nll})
+        if stage.should_monitor(epoch, PRIOR_EPOCHS, MONITOR_EVERY):
+            validation = validate_prior(prior, monitor_tokens, device=device)
+            stage.finish_epoch(epoch, validation, score=validation["nll"])
+        else:
+            stage.finish_epoch(epoch)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
             with torch.random.fork_rng(), torch.inference_mode():
                 torch.manual_seed(SEED)
@@ -520,9 +459,7 @@ def train_prior(
                 nrow=SAMPLE_GRID_COLUMNS,
             )
     stage.export_best(out_dir / PRIOR_CHECKPOINT_NAME)
-    save_training_metrics(
-        stage.history, out_dir, prefix="prior", max_panels=MAX_METRIC_PANELS
-    )
+    save_stage_loss_curves(stage)
 
 
 def train() -> None:

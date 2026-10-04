@@ -162,9 +162,7 @@ class VQPerceptualAutoencoder(nn.Module):
             latent_channels, hidden_channels, downsample_steps
         )
 
-    def encode(
-        self, images: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         return self.quantizer(self.encoder(images))
 
     def encode_indices(self, images: Tensor) -> Tensor:
@@ -174,11 +172,9 @@ class VQPerceptualAutoencoder(nn.Module):
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.indices_to_values(indices))
 
-    def forward(
-        self, images: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, quantizer_loss, diagnostics = self.encode(images)
-        return self.decoder(z_st), indices, quantizer_loss, diagnostics
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        z_st, indices, quantizer_loss = self.encode(images)
+        return self.decoder(z_st), indices, quantizer_loss
 
 
 class PatchDiscriminator(nn.Module):

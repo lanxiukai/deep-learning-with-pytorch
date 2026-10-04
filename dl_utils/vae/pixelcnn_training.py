@@ -7,7 +7,6 @@ the complete train_pixelcnn_prior workflow.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -20,12 +19,12 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
-from dl_utils.training.artifacts import save_training_metrics
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
     TokenizerStage,
     image_contract,
     prepare_token_loaders,
+    save_stage_loss_curves,
     seed_epoch_loader,
 )
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
@@ -53,9 +52,7 @@ def train_pixelcnn_prior_epoch(
         metrics.add_batch_means((loss,), num_examples=indices.shape[0])
         if batch_index % log_every == 0:
             nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-            progress.set_postfix(
-                nll=f"{nll:.4f}", bpt=f"{nll / math.log(2):.3f}", refresh=False
-            )
+            progress.set_postfix(nll=f"{nll:.4f}", refresh=False)
         progress.update(1)
     return metrics.compute_weighted_means(require_finite=True)["nll"]
 
@@ -65,7 +62,6 @@ def evaluate_pixelcnn_prior(
     prior: PixelCNNPrior,
     loader: Iterable[tuple[Tensor, Tensor]],
     *,
-    tokens_per_image: int,
     device: torch.device,
 ) -> dict[str, float]:
     """Measure PixelCNN NLL for one frozen tokenizer."""
@@ -75,12 +71,7 @@ def evaluate_pixelcnn_prior(
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
         loss = F.cross_entropy(prior(indices), indices)
         metrics.add_batch_means((loss,), num_examples=indices.shape[0])
-    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-    return {
-        "nll_nats_per_token": nll,
-        "bits_per_token": nll / math.log(2),
-        "bits_per_image": tokens_per_image * nll / math.log(2),
-    }
+    return metrics.compute_weighted_means(require_finite=True)
 
 
 @torch.inference_mode()
@@ -123,13 +114,13 @@ def train_pixelcnn_prior(
     resume: bool,
     seed: int,
     sample_every: int,
+    monitor_every: int,
     log_every: int,
     sample_count: int,
     sample_columns: int,
     temperature: float,
     checkpoint_name: str,
     progress_interval: float,
-    max_metric_panels: int,
 ) -> None:
     grid_size = image_size // (2**tokenizer.downsample_steps)
     tokenizer.eval().requires_grad_(False)
@@ -142,7 +133,6 @@ def train_pixelcnn_prior(
         tokenizer_id=tokenizer_id,
         data_dir=data_dir,
         image_size=image_size,
-        monitor_protocol=monitor_protocol,
         device=device,
     )
     config = {
@@ -166,6 +156,7 @@ def train_pixelcnn_prior(
         },
         recipe={"lr": lr, "batch_size": train_loader.batch_size, "seed": seed},
         resume=resume,
+        metric_names=("nll", "val_nll"),
     )
     training_dir = out_dir / "training"
     training_dir.mkdir(parents=True, exist_ok=True)
@@ -186,18 +177,12 @@ def train_pixelcnn_prior(
                     progress=progress,
                     log_every=log_every,
                 )
-            stage.record_training(
-                epoch, {"nll": nll, "bits_per_token": nll / math.log(2)}
-            )
-        validation = evaluate_pixelcnn_prior(
-            prior,
-            monitor_tokens,
-            tokens_per_image=grid_size**2,
-            device=device,
-        )
-        stage.record_validation(
-            epoch, validation, score=validation["nll_nats_per_token"]
-        )
+            stage.record_training(epoch, {"nll": nll})
+        if stage.should_monitor(epoch, epochs, monitor_every):
+            validation = evaluate_pixelcnn_prior(prior, monitor_tokens, device=device)
+            stage.finish_epoch(epoch, validation, score=validation["nll"])
+        else:
+            stage.finish_epoch(epoch)
         if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
             # Preview randomness must not change the resumed optimization stream.
             with torch.random.fork_rng():
@@ -217,6 +202,4 @@ def train_pixelcnn_prior(
                 nrow=sample_columns,
             )
     stage.export_best(out_dir / checkpoint_name)
-    save_training_metrics(
-        stage.history, out_dir, prefix="prior", max_panels=max_metric_panels
-    )
+    save_stage_loss_curves(stage)

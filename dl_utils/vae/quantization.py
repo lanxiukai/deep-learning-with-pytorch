@@ -201,7 +201,7 @@ class VectorQuantizer(nn.Module):
             )
         )
 
-    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         flat = z_e.permute(0, 2, 3, 1).contiguous().reshape(-1, self.embedding_dim)
         distances = (
             flat.square().sum(dim=1, keepdim=True)
@@ -218,13 +218,10 @@ class VectorQuantizer(nn.Module):
         # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
         z_st = z_e + (z_q - z_e).detach()
         index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
-        diagnostics = {
-            "quantization_mse": quantization_mse.detach(),
-        }
         # This batch uses the pre-update vectors for its outputs and losses.
         if self.training:
             self._update_ema(flat, indices)
-        return z_st, index_grid, commitment_loss, diagnostics
+        return z_st, index_grid, commitment_loss
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
         """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
@@ -269,9 +266,7 @@ class VQVAE(nn.Module):
             downsample_steps=downsample_steps,
         )
 
-    def encode(
-        self, images: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         # images (B, C_img, H, W) -> quantizer z_st ...
         return self.quantizer(self.encoder(images))
 
@@ -284,14 +279,12 @@ class VQVAE(nn.Module):
         # indices (B, h, w) -> gen_images (B, C_img, H, W)
         return self.decoder(self.quantizer.indices_to_values(indices))
 
-    def forward(
-        self, images: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, quantizer_loss, diagnostics = self.encode(images)
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        z_st, indices, quantizer_loss = self.encode(images)
         # return:
         # reconstructions (B, C_img, H, W), indices (B, h, w)
-        # commitment_loss (), diagnostics dict[str, ()]
-        return self.decoder(z_st), indices, quantizer_loss, diagnostics
+        # commitment_loss ()
+        return self.decoder(z_st), indices, quantizer_loss
 
 
 class FiniteScalarQuantizer(nn.Module):
@@ -343,19 +336,13 @@ class FiniteScalarQuantizer(nn.Module):
         # Restore nonnegative digits (B, H, W, C) from indices (B, H, W).
         return (indices[..., None] // self.basis % self.levels).long()
 
-    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor]:
         bounded = self.bound(z_e.permute(0, 2, 3, 1).contiguous())
         rounded = bounded.round()
         half_width = self.half_width.to(dtype=bounded.dtype)
         z_st = (bounded + (rounded - bounded).detach()) / half_width
         indices = self.pack(rounded + half_width)
-        # FSQ latent MSE is not directly comparable with VQ latent MSE.
-        diagnostics = {
-            "quantization_mse": F.mse_loss(
-                bounded / half_width, rounded / half_width
-            ).detach()
-        }
-        return z_st.permute(0, 3, 1, 2).contiguous(), indices, diagnostics
+        return z_st.permute(0, 3, 1, 2).contiguous(), indices
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
         """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
@@ -392,7 +379,7 @@ class FSQAutoencoder(nn.Module):
             downsample_steps=downsample_steps,
         )
 
-    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor]:
         return self.quantizer(self.encoder(images))
 
     def encode_indices(self, images: Tensor) -> Tensor:
@@ -402,9 +389,9 @@ class FSQAutoencoder(nn.Module):
     def decode_indices(self, indices: Tensor) -> Tensor:
         return self.decoder(self.quantizer.indices_to_values(indices))
 
-    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        z_st, indices, diagnostics = self.encode(images)
-        return self.decoder(z_st), indices, diagnostics
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor]:
+        z_st, indices = self.encode(images)
+        return self.decoder(z_st), indices
 
 
 __all__ = [

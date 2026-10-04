@@ -119,21 +119,30 @@ environment or dependency workflow.
   also reuses that module's PatchGAN and adaptive adversarial weight.
 - [vae/discrete_workflow.py](vae/discrete_workflow.py) composes existing
   checkpoint, weight-loading, DataLoader, and CSV helpers for VQ-VAE/FSQ/VQGAN.
-  It owns glasses-256 loading, recorded training subsets, token-usage statistics,
+  It owns glasses-256 loading, recorded training subsets,
   shared monitoring and reconstruction previews, snapshot-bound token caches,
-  epoch recovery, and best/last artifacts. Token caches also track ordered image
+  epoch recovery, and latest/best artifacts. A single training token cache also tracks ordered image
   paths, labels, file sizes, and nanosecond modification times; datasets without
   inspectable files are re-encoded. Image and token training loaders retain the
-  final partial batch.
+  final partial batch. Monitoring loaders select rows from the training token cache
+  without a second encoding pass or a separate cache file.
   [vae/pixelcnn_training.py](vae/pixelcnn_training.py) owns the shared frozen-token
   PixelCNN training, evaluation, and image-sampling helpers for VQ-VAE/FSQ,
   using the infrastructure in `discrete_workflow.py`. Read its epoch,
   evaluation, and sampling helpers before the complete `train_pixelcnn_prior`
   workflow.
-  Training monitors still use token statistics, PSNR, and token-rate estimates;
-  the 6.2/7.1 evaluation entries save only reconstruction and generation grids.
-  VQ commitment loss is returned once as the quantizer loss; the diagnostics
-  dictionary retains its latent quantization MSE.
+  Training records only basic losses in one `<stage>/metrics.csv` and
+  `<stage>/loss_curves.png`. Fixed-subset model selection runs on the first epoch,
+  every five epochs, and the final epoch: 64 images for VQ-VAE/FSQ and 128 for VQGAN.
+  Eight-image previews run on the first epoch, every ten epochs, and the final epoch.
+  The 6.2/7.1 evaluation entries save only reconstruction and generation grids.
+  VQ models return reconstruction, token indices, and commitment loss; FSQ
+  returns reconstruction and token indices. Quantizers return the corresponding
+  quantized latents instead of reconstructions. No diagnostics dictionaries are built.
+  Resume removes retired history fields and accepts monitoring-policy changes
+  while still checking architecture, preprocessing, conditioning, and optimizer recipe.
+  A changed monitoring subset resets model selection and replays monitoring at
+  the saved epoch without repeating its optimization.
   Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
   Model modules do not import the workflow. Priors consume cached token grids.
   [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
