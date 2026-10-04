@@ -4,9 +4,14 @@ The lesson scripts own the stage order; PixelCNN training is shared separately.
 Tokens are encoded once into memory. Final checkpoints store both models together.
 """
 
+from collections.abc import Mapping, Sequence, Sized
+from os import PathLike
 from pathlib import Path
+from typing import Any, cast
 
 import torch
+from torch import Tensor, nn
+from torch.optim import Optimizer
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 from torchvision.utils import save_image
 
@@ -28,15 +33,15 @@ PAIR_FORMAT = "discrete-pair-v1"
 
 
 def glasses_loader(
-    root,
-    image_size,
-    batch_size,
-    device,
+    root: str | Path,
+    image_size: int,
+    batch_size: int,
+    device: torch.device,
     *,
-    shuffle=False,
-    num_workers=0,
-    conditional=False,
-):
+    shuffle: bool = False,
+    num_workers: int = 0,
+    conditional: bool = False,
+) -> DataLoader:
     dataset = image_folder_dataset(
         root, resize=(image_size, image_size), normalize=(0.5, 0.5)
     )
@@ -63,20 +68,28 @@ def seed_epoch_loader(loader: DataLoader, seed: int, epoch: int) -> None:
         loader.sampler.generator = torch.Generator().manual_seed(seed + epoch)
 
 
-def fixed_images(loader, count):
+def fixed_images(loader: DataLoader, count: int) -> Tensor:
     """Read a few fixed originals without advancing the training iterator."""
     return torch.stack(
-        [loader.dataset[index][0] for index in range(min(count, len(loader.dataset)))]
+        [
+            loader.dataset[index][0]
+            for index in range(min(count, len(cast(Sized, loader.dataset))))
+        ]
     )
 
 
 @torch.no_grad()
-def encode_dataset(tokenizer, image_loader, device):
+def encode_dataset(
+    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    image_loader: DataLoader,
+    device: torch.device,
+) -> DataLoader:
     """Freeze the tokenizer and encode each image once, in stable dataset order."""
     tokenizer.eval().requires_grad_(False)
+    batch_size = cast(int, image_loader.batch_size)
     source = make_device_aware_loader(
         image_loader.dataset,
-        image_loader.batch_size,
+        batch_size,
         device,
         shuffle=False,
         num_workers=image_loader.num_workers,
@@ -89,7 +102,7 @@ def encode_dataset(tokenizer, image_loader, device):
         labels.append(batch_labels.cpu())
     return make_device_aware_loader(
         TensorDataset(torch.cat(tokens), torch.cat(labels)),
-        image_loader.batch_size,
+        batch_size,
         device,
         shuffle=True,
         num_workers=0,
@@ -97,17 +110,28 @@ def encode_dataset(tokenizer, image_loader, device):
     )
 
 
-def epoch_checkpoint(path, models, optimizers, recipe):
+def epoch_checkpoint(
+    path: str | PathLike[str],
+    models: Mapping[str, nn.Module],
+    optimizers: Mapping[str, Optimizer],
+    recipe: Mapping[str, Any],
+) -> TrainingCheckpoint:
     """Configure ordinary epoch recovery; the lesson calls resume/save directly."""
     checkpoint = TrainingCheckpoint(
         path, unit="epoch", models=models, optimizers=optimizers
     )
-    checkpoint.metadata.update(recipe=recipe)
+    metadata: dict[str, Any] = checkpoint.metadata
+    metadata.update(recipe=recipe)
     return checkpoint
 
 
 @torch.inference_mode()
-def save_reconstruction(model, originals, path, device):
+def save_reconstruction(
+    model: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    originals: Tensor,
+    path: str | Path,
+    device: torch.device,
+) -> None:
     model.eval()
     images = originals.to(device)
     reconstruction = model(images)[0]
@@ -117,7 +141,9 @@ def save_reconstruction(model, originals, path, device):
     )
 
 
-def save_loss_curves(history, path):
+def save_loss_curves(
+    history: Sequence[Mapping[str, float]], path: str | PathLike[str]
+) -> None:
     """One figure for the basic training losses of one stage."""
     panels = {
         name.replace("_", " ").capitalize(): {name: [row[name] for row in history]}
@@ -128,7 +154,13 @@ def save_loss_curves(history, path):
     )
 
 
-def save_pair(path, name, tokenizer, prior, config):
+def save_pair(
+    path: str | PathLike[str],
+    name: str,
+    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    prior: PixelCNNPrior | CausalTransformerPrior,
+    config: Mapping[str, Any],
+) -> None:
     """Store the exact frozen tokenizer used by this prior in the same file."""
     atomic_torch_save(
         {
@@ -143,7 +175,16 @@ def save_pair(path, name, tokenizer, prior, config):
     )
 
 
-def load_pair(path, name, device, *, image_size=256):
+def load_pair(
+    path: str | PathLike[str],
+    name: str,
+    device: torch.device,
+    *,
+    image_size: int = 256,
+) -> tuple[
+    VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    PixelCNNPrior | CausalTransformerPrior,
+]:
     """Load a final pair and check the image, vocabulary, grid, and label shapes."""
     payload = torch.load(path, map_location=device, weights_only=True)
     if payload.get("format") != PAIR_FORMAT:

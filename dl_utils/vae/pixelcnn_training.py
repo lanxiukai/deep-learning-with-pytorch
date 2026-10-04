@@ -1,7 +1,13 @@
 """Shared PixelCNN prior training for the VQ-VAE and FSQ lessons."""
 
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
 import torch
 import torch.nn.functional as F
+from torch.optim import Optimizer
+from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
@@ -12,10 +18,16 @@ from dl_utils.vae.discrete_workflow import (
     save_loss_curves,
     seed_epoch_loader,
 )
+from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 from dl_utils.vae.token_priors import PixelCNNPrior
 
 
-def train_pixelcnn_prior_epoch(prior, loader, optimizer, device):
+def train_pixelcnn_prior_epoch(
+    prior: PixelCNNPrior,
+    loader: DataLoader,
+    optimizer: Optimizer,
+    device: torch.device,
+) -> float:
     """Fit the next-token distribution on frozen token grids."""
     prior.train()
     metrics = MetricAccumulator(("nll",), device=device)
@@ -30,17 +42,17 @@ def train_pixelcnn_prior_epoch(prior, loader, optimizer, device):
 
 
 def train_pixelcnn_prior(
-    tokenizer,
-    images,
-    device,
-    recipe,
-    output_dir,
+    tokenizer: VQVAE | FSQAutoencoder,
+    images: DataLoader,
+    device: torch.device,
+    recipe: Mapping[str, Any],
+    output_dir: Path,
     *,
-    resume=True,
-    sample_every=10,
-    num_samples=8,
-    temperature=1.0,
-):
+    resume: bool = True,
+    sample_every: int = 10,
+    num_samples: int = 8,
+    temperature: float = 1.0,
+) -> PixelCNNPrior:
     """Train the same unconditional prior for either frozen tokenizer."""
     epochs = recipe["prior_epochs"]
     seed = recipe["seed"]

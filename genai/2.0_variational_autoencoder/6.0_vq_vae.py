@@ -6,8 +6,12 @@ Outputs: model.pth (the final pair), tokenizer_latest.pth, prior_latest.pth,
 two loss figures, and training/*.png. There is no validation or model selection.
 """
 
+from collections.abc import Mapping
+from typing import Any
+
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from dl_utils.filesystem.project_root import infer_project_root
@@ -52,7 +56,12 @@ NUM_SAMPLES = 8
 TEMPERATURE = 1.0
 
 
-def train_tokenizer(model, loader, device, recipe):
+def train_tokenizer(
+    model: VQVAE,
+    loader: DataLoader,
+    device: torch.device,
+    recipe: Mapping[str, Any],
+) -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     checkpoint = epoch_checkpoint(
         OUTPUT_DIR / "tokenizer_latest.pth",
@@ -92,7 +101,7 @@ def train_tokenizer(model, loader, device, recipe):
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
-def train():
+def train() -> None:
     set_seed(SEED)
     device = try_gpu()
     (OUTPUT_DIR / "training").mkdir(parents=True, exist_ok=True)
@@ -145,7 +154,7 @@ def train():
     save_pair(OUTPUT_DIR / "model.pth", "vq_vae", tokenizer, prior, config)
 
 
-def main():
+def main() -> None:
     train()
 
 

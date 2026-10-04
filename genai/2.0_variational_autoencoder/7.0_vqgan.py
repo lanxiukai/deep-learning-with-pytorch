@@ -5,9 +5,13 @@ objective and gradient boundaries. RESUME restores the same configuration at
 an epoch boundary. model.pth stores the final tokenizer/prior pair.
 """
 
+from collections.abc import Mapping
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
@@ -131,7 +135,12 @@ def vqgan_discriminator_step(
     return loss.detach()
 
 
-def train_tokenizer(model, loader, device, recipe):
+def train_tokenizer(
+    model: VQPerceptualAutoencoder,
+    loader: DataLoader,
+    device: torch.device,
+    recipe: Mapping[str, Any],
+) -> None:
     discriminator = PatchDiscriminator(DISCRIMINATOR_CHANNELS).to(device)
     perceptual = LPIPSPerceptualLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
@@ -192,7 +201,12 @@ def train_tokenizer(model, loader, device, recipe):
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
-def train_prior(tokenizer, images, device, recipe):
+def train_prior(
+    tokenizer: VQPerceptualAutoencoder,
+    images: DataLoader,
+    device: torch.device,
+    recipe: Mapping[str, Any],
+) -> CausalTransformerPrior:
     prior = CausalTransformerPrior(**recipe["model"]["prior"]).to(device)
     optimizer = torch.optim.AdamW(prior.parameters(), lr=PRIOR_LR)
     checkpoint = epoch_checkpoint(
@@ -247,7 +261,7 @@ def train_prior(tokenizer, images, device, recipe):
     return prior.eval()
 
 
-def train():
+def train() -> None:
     set_seed(SEED)
     device = try_gpu()
     (OUTPUT_DIR / "training").mkdir(parents=True, exist_ok=True)
@@ -307,7 +321,7 @@ def train():
     save_pair(OUTPUT_DIR / "model.pth", "vqgan", tokenizer, prior, config)
 
 
-def main():
+def main() -> None:
     train()
 
 
