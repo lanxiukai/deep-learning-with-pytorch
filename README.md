@@ -27,7 +27,7 @@ by [`pyproject.toml`](pyproject.toml), and exact resolution by
 | Follow the generative-model lessons | [`genai/`](genai/), then the [GAN](genai/1.0_generative_adversarial_network/0.0-ROADMAP.md), [VAE](genai/2.0_variational_autoencoder/0.0-ROADMAP.md), [diffusion/flow foundations](genai/3.0_diffusion_model/0.0-ROADMAP.md), or [modern visual generation](genai/4.0_modern_visual_generation/0.0-ROADMAP.md) roadmap |
 | Find or modify shared utilities | [`dl_utils/README.md`](dl_utils/README.md) |
 | Prepare datasets or run repository tools | [`tool_scripts/README.md`](tool_scripts/README.md) |
-| Check supported GPUs and prepare a cloud host | [`tool_scripts/README.md`](tool_scripts/README.md#gpu-targets) |
+| Check supported GPUs and prepare a cloud host | [`tool_scripts/cloud_gpu/README.md`](tool_scripts/cloud_gpu/README.md) |
 | Inspect dependencies and tooling | [`pyproject.toml`](pyproject.toml) |
 
 Lesson directories and files are numbered in suggested reading order; their
