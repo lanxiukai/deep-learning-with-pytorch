@@ -1,7 +1,7 @@
 """VQGAN tokenizer, LPIPS loss, and reusable perceptual image blocks.
 
-Latent diffusion reuses the RGB encoder/decoder, PatchGAN, and adaptive
-adversarial weight. Its KL model and VGG loss live in diffusion.kl_autoencoder.
+These RGB blocks, PatchGAN, and adaptive adversarial weight serve the VAE
+lessons. The independent KL codec lives in modern.kl_autoencoder.
 Each lesson keeps its objectives and optimizer updates in the script.
 """
 

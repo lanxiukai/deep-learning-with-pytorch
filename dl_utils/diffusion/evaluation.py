@@ -7,22 +7,24 @@ from pathlib import Path
 
 import torch
 
-from dl_utils.diffusion.checkpoints import codec_for_generation, load_model
-from dl_utils.diffusion.data import data_config, make_loader
+from dl_utils.diffusion.checkpoints import load_model
+from dl_utils.diffusion.data import data_config, low_resolution, make_loader
 from dl_utils.diffusion.lesson_utils import DATA_DIR, OUTPUT_ROOT, preview
 from dl_utils.diffusion.quality import CleanFeatures, evaluate_generation
 from dl_utils.diffusion.sampling import make_sampler
-from dl_utils.diffusion.sr3 import low_resolution
 
 
-def parser_for(default_name):
+def parser_for(default_name, *, modern=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--checkpoint", type=Path, default=OUTPUT_ROOT / default_name / "latest.pth"
     )
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--autoencoder-checkpoint", type=Path)
+    if modern:
+        parser.add_argument("--autoencoder-checkpoint", type=Path)
+    else:
+        parser.set_defaults(autoencoder_checkpoint=None)
     parser.add_argument(
         "--class-evaluator",
         type=Path,
@@ -33,11 +35,14 @@ def parser_for(default_name):
         type=Path,
         help="VP guidance classifier, separate from the evaluator.",
     )
-    parser.add_argument(
-        "--low-checkpoint",
-        type=Path,
-        help="128px conditional DDPM for a generated-condition SR cascade.",
-    )
+    if modern:
+        parser.add_argument(
+            "--low-checkpoint",
+            type=Path,
+            help="128px conditional DDPM for a generated-condition SR cascade.",
+        )
+    else:
+        parser.set_defaults(low_checkpoint=None)
     parser.add_argument("--split", choices=("validation", "test"), default="test")
     parser.add_argument("--examples", dest="eval_examples", type=int, default=25250)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -45,7 +50,10 @@ def parser_for(default_name):
     parser.add_argument("--steps", type=int, nargs="+")
     parser.add_argument("--solvers", nargs="+")
     parser.add_argument("--guidance", type=float, nargs="+", default=[1.0])
-    parser.add_argument("--augmentation-level", type=float, default=0.0)
+    if modern:
+        parser.add_argument("--augmentation-level", type=float, default=0.0)
+    else:
+        parser.set_defaults(augmentation_level=0.0)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument(
         "--nearest-examples",
@@ -64,9 +72,19 @@ def parser_for(default_name):
     return parser
 
 
-def evaluate(args, expected_tasks=None):
+def evaluate(
+    args,
+    expected_tasks=None,
+    *,
+    load_checkpoint=load_model,
+    codec_loader=None,
+    sampler_factory=make_sampler,
+    solver_choices=None,
+    quality_evaluator=evaluate_generation,
+):
+    """Common evaluation loop with constructors selected by the lesson family."""
     device = torch.device(args.device)
-    model, state = load_model(args.checkpoint, device)
+    model, state = load_checkpoint(args.checkpoint, device)
     task = state["algorithm"]["task"]
     if expected_tasks is not None and task not in expected_tasks:
         raise ValueError(f"Expected {expected_tasks}, received {task}.")
@@ -75,10 +93,14 @@ def evaluate(args, expected_tasks=None):
         raise ValueError("Evaluation dataset differs from the training contract.")
     root = args.output_dir or args.checkpoint.parent / f"evaluation_{args.split}"
     root.mkdir(parents=True, exist_ok=True)
-    codec, scale = codec_for_generation(state, device, args.autoencoder_checkpoint)
+    codec, scale = (
+        codec_loader(state, device, args.autoencoder_checkpoint)
+        if codec_loader
+        else (None, 1.0)
+    )
     classifier = evaluator = None
     if args.noisy_classifier:
-        classifier, classifier_state = load_model(args.noisy_classifier, device)
+        classifier, classifier_state = load_checkpoint(args.noisy_classifier, device)
         if (
             classifier_state["algorithm"]["task"] != "noisy_classifier"
             or classifier_state["data_config"] != state["data_config"]
@@ -94,7 +116,7 @@ def evaluate(args, expected_tasks=None):
                 "Noisy classifier and score must use the same VP schedule."
             )
     if args.class_evaluator:
-        evaluator, evaluator_state = load_model(args.class_evaluator, device)
+        evaluator, evaluator_state = load_checkpoint(args.class_evaluator, device)
         if (
             evaluator_state["algorithm"]["task"] != "class_evaluator"
             or evaluator_state["data_config"] != state["data_config"]
@@ -111,14 +133,14 @@ def evaluate(args, expected_tasks=None):
         )
     if task == "vp" and classifier is None:
         args.guidance = [0.0]
-    sampler = make_sampler(
+    sampler = sampler_factory(
         model, state, codec=codec, latent_scale=scale, classifier=classifier
     )
     low_sampler, low_model = None, None
     if args.low_checkpoint:
         if task not in ("sr3", "sr_regression"):
             raise ValueError("A low-resolution model is only used by SR lessons.")
-        low_model, low_state = load_model(args.low_checkpoint, device)
+        low_model, low_state = load_checkpoint(args.low_checkpoint, device)
         expected = copy.deepcopy(state["data_config"])
         expected["image_size"] //= 2
         if (
@@ -133,23 +155,14 @@ def evaluate(args, expected_tasks=None):
             raise ValueError(
                 "Category cascades require --class-evaluator to measure class preservation."
             )
-        base_sampler = make_sampler(low_model, low_state)
+        base_sampler = sampler_factory(low_model, low_state)
         low_sampler = lambda count, labels: base_sampler(
             count, labels=labels, steps=50, solver="ddim"
         )
-    allowed = {
+    allowed = solver_choices or {
         "ddpm": ["ddpm", "ddim"],
-        "ldm": ["ddim", "dpmpp_2m"],
-        "dit": ["ddpm", "ddim"],
         "vp": ["reverse_sde", "euler", "heun"],
         "cfm": ["euler", "heun"],
-        "sit": ["euler", "heun", "sde"],
-        "edm": ["euler", "heun", "dpmpp_2m"],
-        "sr3": ["ancestral"],
-        "sr_regression": ["regression"],
-        "consistency": ["consistency"],
-        "dmd2": ["student"],
-        "imf": ["interval"],
     }
     solvers = args.solvers or allowed[task]
     if any(s not in allowed[task] for s in solvers):
@@ -217,7 +230,7 @@ def evaluate(args, expected_tasks=None):
                         counted["classifier_forward_plus_input_gradient"] = classifier
                     if low_model:
                         counted["low_generator"] = low_model
-                    record = evaluate_generation(
+                    record = quality_evaluator(
                         current,
                         model,
                         state,

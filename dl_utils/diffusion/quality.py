@@ -124,6 +124,7 @@ def evaluate_generation(
     low_sampler=None,
     augmentation_level=0.0,
     count_modules=None,
+    perceptual=None,
 ):
     device = next(model.parameters()).device
     features = features or CleanFeatures(device)
@@ -155,11 +156,10 @@ def evaluate_generation(
         "observation_l1": 0.0,
         "bicubic_psnr": 0.0,
     }
-    perceptual = None
-    if paired and low_sampler is None and full:
-        from dl_utils.diffusion.kl_autoencoder import PerceptualLoss
-
-        perceptual = PerceptualLoss().to(device)
+    if paired and low_sampler is None and full and perceptual is None:
+        raise ValueError(
+            "Full paired-image evaluation requires a supplied perceptual metric."
+        )
     was_training = model.training
     model.eval()
     try:
@@ -169,7 +169,7 @@ def evaluate_generation(
             torch.manual_seed(getattr(args, "seed", 123) + count)
             low = None
             if paired:
-                from dl_utils.diffusion.sr3 import low_resolution
+                from dl_utils.diffusion.data import low_resolution
 
                 low = low_resolution(images)
             if count == 0:
@@ -219,7 +219,7 @@ def evaluate_generation(
                     )
                 requested.append(labels.cpu())
                 if paired:
-                    from dl_utils.diffusion.sr3 import upsample
+                    from dl_utils.diffusion.data import upsample
 
                     with torch.no_grad():
                         low_predictions.append(
@@ -230,7 +230,7 @@ def evaluate_generation(
                             .cpu()
                         )
             if paired:
-                from dl_utils.diffusion.sr3 import low_resolution
+                from dl_utils.diffusion.data import low_resolution
 
                 reconstruction["observation_l1"] += (
                     (low_resolution(generated) - low)
@@ -241,7 +241,7 @@ def evaluate_generation(
                     .item()
                 )
                 if low_sampler is None:
-                    from dl_utils.diffusion.sr3 import upsample
+                    from dl_utils.diffusion.data import upsample
 
                     bicubic_mse = (
                         ((upsample(low, images.shape[-2:]).clamp(-1, 1) - images) / 2)
@@ -266,7 +266,7 @@ def evaluate_generation(
                             perceptual(generated, images).sum().item()
                         )
             if paired and count == 0:
-                from dl_utils.diffusion.sr3 import upsample
+                from dl_utils.diffusion.data import upsample
 
                 panels = [upsample(low, images.shape[-2:]), generated]
                 if low_sampler is None:

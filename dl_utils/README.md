@@ -17,7 +17,7 @@ environment or dependency workflow.
 |---|---|---|
 | [d2l/](d2l/) | D2L-style textbook helpers | The relevant lesson call site |
 | [data/](data/) | Downloads, datasets, image preparation, and loaders | [datasets/](data/datasets/) and [vision.py](data/vision.py) |
-| [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
+| [diffusion/](diffusion/), [modern/](modern/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
 | [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
 | [evaluation/](evaluation/) | Supervised evaluation, image features, distribution metrics, and reconstruction metrics | [supervised.py](evaluation/supervised.py), [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
 | [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [precision.py](training/precision.py), [checkpoints.py](training/checkpoints.py), [metrics.py](training/metrics.py), and [history.py](training/history.py) |
@@ -59,16 +59,18 @@ environment or dependency workflow.
   Existing D2L and EBM imports through `training.metrics` and `plot.figures`
   remain available; new callers use the focused modules above.
 
-- The [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) covers
-  the A/B curriculum on one Food-101 split at 256px: DDPM/CFG, VP score with
-  classifier guidance, linear CFM/RF, LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD,
-  DMD2, and iMF. Training and post-training evaluation have separate numbered
-  entry points. Model targets and optimizer updates stay visible in the lessons.
-  [data.py](diffusion/data.py) owns the 101-class sample manifest;
-  [checkpoints.py](diffusion/checkpoints.py) validates model and codec contracts.
-  [quality.py](diffusion/quality.py) uses Clean-FID's full Inception features,
-  KID, precision/recall, category compliance and actual network evaluations.
-  This protocol is distinct from the existing GAN/VAE feature protocols.
+- The [foundation roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) covers
+  DDPM/CFG, VP score with classifier guidance and linear CFM/RF in
+  [diffusion/](diffusion/). The sibling
+  [modern roadmap](../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) covers
+  LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD, DMD2 and iMF in [modern/](modern/).
+  Each series has separate numbered training and evaluation entries.
+  [data.py](diffusion/data.py) owns the shared 256px Food-101 manifest;
+  [quality.py](diffusion/quality.py) supplies Clean-FID features, distribution,
+  category and cost metrics. Modern code reuses foundation utilities; foundation
+  imports do not load the modern package. Each family owns its model assembly,
+  while checkpoint I/O and evaluation loops are shared explicitly.
+  The metric protocol remains distinct from existing GAN/VAE protocols.
 - GANs use one module per algorithm. [progan.py](gan/progan.py),
   [stylegan.py](gan/stylegan.py), and [stylegan2.py](gan/stylegan2.py) keep their
   model definitions and continuation adapters together; StyleGAN2 also keeps
@@ -102,7 +104,7 @@ environment or dependency workflow.
   [vae/vae_common.py](vae/vae_common.py). Focused modules cover 256x256 RGB
   hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior,
   and perceptual-autoencoder blocks for the 256x256 glasses-256 lessons.
-- [diffusion/kl_autoencoder.py](diffusion/kl_autoencoder.py) independently owns
+- [modern/kl_autoencoder.py](modern/kl_autoencoder.py) independently owns
   the KL codec, learned LPIPS wrapper, and reconstruction PatchGAN. Its f=8
   configuration maps 256px RGB to 4x32x32 latents. The codec's posterior scale
   is calibrated on training images and frozen for LDM, DiT, SiT and iMF;

@@ -10,7 +10,15 @@ from dl_utils.diffusion.sampling import make_sampler
 
 
 def monitor_generation(
-    args, model, metadata, epoch, *, codec=None, latent_scale=1.0, classifier=None
+    args,
+    model,
+    metadata,
+    epoch,
+    *,
+    codec=None,
+    latent_scale=1.0,
+    classifier=None,
+    sampler_factory=make_sampler,
 ):
     pictures = args.sample_every and epoch % args.sample_every == 0
     quality = args.eval_every and epoch % args.eval_every == 0
@@ -18,7 +26,7 @@ def monitor_generation(
         return
     device = next(model.parameters()).device
     devices = [device.index or 0] if device.type == "cuda" else []
-    sampler = make_sampler(
+    sampler = sampler_factory(
         model, metadata, codec=codec, latent_scale=latent_scale, classifier=classifier
     )
     task = metadata["algorithm"]["task"]
@@ -42,7 +50,7 @@ def monitor_generation(
                 images = []
                 low = None
                 if task in ("sr3", "sr_regression"):
-                    from dl_utils.diffusion.sr3 import low_resolution
+                    from dl_utils.diffusion.data import low_resolution
 
                     source, labels = next(
                         iter(make_loader(args, "validation", limit=44))

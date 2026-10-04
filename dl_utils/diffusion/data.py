@@ -4,6 +4,7 @@ import json
 import random
 from pathlib import Path
 
+import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -114,3 +115,15 @@ def data_config(args):
         "range": [-1, 1],
         "split_sizes": {k: len(v) for k, v in manifest["splits"].items()},
     }
+
+
+def low_resolution(images):
+    return F.interpolate(
+        images, scale_factor=0.5, mode="bicubic", align_corners=False, antialias=True
+    )
+
+
+def upsample(low, size):
+    return F.interpolate(
+        low, size=size, mode="bicubic", align_corners=False, antialias=True
+    )
