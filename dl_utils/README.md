@@ -123,7 +123,7 @@ environment or dependency workflow.
   The VQ-VAE/FSQ/VQGAN lessons own the stage order and plain epoch loops.
   Read each lesson's `train()` first: load images, train the tokenizer, freeze
   and encode, train the prior, then save the pair. There is no model selection,
-  monitoring subset, disk token cache, history migration, or stage state machine.
+  monitoring subset, disk token cache, or stage state machine.
   [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares only one PixelCNN
   training epoch. The prior setup, outer loop, and sampling stay in the lessons.
   Each stage keeps a short loss history and writes one loss figure. Eight-image
@@ -132,8 +132,6 @@ environment or dependency workflow.
   the latter includes the frozen tokenizer alongside the prior. A final
   `model.pth` stores both model configurations and both sets of weights together.
   The 6.2/7.1 evaluations load that pair, reconstruct, sample, and save two grids.
-  [Legacy weight conversion](../tool_scripts/convert_discrete_checkpoint.py)
-  is a separate one-time tool and is not part of the training path.
   VQ models return reconstruction, token indices, and commitment loss; FSQ
   returns reconstruction and token indices. Quantizers return quantized latents
   instead of reconstructions. Model modules do not import the workflow.

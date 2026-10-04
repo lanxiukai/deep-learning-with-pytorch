@@ -147,9 +147,7 @@ def load_pair(path, name, device, *, image_size=256):
     """Load a final pair and check the image, vocabulary, grid, and label shapes."""
     payload = torch.load(path, map_location=device, weights_only=True)
     if payload.get("format") != PAIR_FORMAT:
-        raise ValueError(
-            "Expected discrete-pair-v1; convert legacy weights with tool_scripts/convert_discrete_checkpoint.py."
-        )
+        raise ValueError("Expected a discrete-pair-v1 checkpoint.")
     config = payload["config"]
     classes = list(GLASSES_CLASS_NAMES) if name == "vqgan" else []
     if (
