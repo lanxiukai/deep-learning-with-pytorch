@@ -1,7 +1,7 @@
 """Small data, checkpoint, and image helpers for the discrete-tokenizer lessons.
 
-The lesson scripts own both epoch loops and their order. Tokens are encoded
-once into memory. Final checkpoints store the tokenizer and prior together.
+The lesson scripts own the stage order; PixelCNN training is shared separately.
+Tokens are encoded once into memory. Final checkpoints store both models together.
 """
 
 from pathlib import Path

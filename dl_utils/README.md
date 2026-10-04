@@ -120,12 +120,14 @@ environment or dependency workflow.
 - [vae/discrete_workflow.py](vae/discrete_workflow.py) provides small helpers for
   glasses-256 loading, fixed preview images, one-time in-memory token encoding,
   ordinary epoch checkpoints, basic loss curves, and final model pairs.
-  The VQ-VAE/FSQ/VQGAN lessons own the stage order and plain epoch loops.
+  The VQ-VAE/FSQ/VQGAN lessons own the stage order and tokenizer epoch loops.
   Read each lesson's `train()` first: load images, train the tokenizer, freeze
   and encode, train the prior, then save the pair. There is no model selection,
   monitoring subset, disk token cache, or stage state machine.
-  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares only one PixelCNN
-  training epoch. The prior setup, outer loop, and sampling stay in the lessons.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares the identical
+  PixelCNN prior setup, epoch loop, recovery, and sampling for VQ-VAE and FSQ.
+  Their tokenizer losses stay explicit in the lesson scripts; VQGAN also keeps
+  its own Transformer training loop.
   Each stage keeps a short loss history and writes one loss figure. Eight-image
   previews run on the first epoch, every ten epochs, and the final epoch.
   `tokenizer_latest.pth` and `prior_latest.pth` provide same-recipe epoch recovery;

@@ -10,7 +10,6 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
 from dl_utils.filesystem.project_root import infer_project_root
@@ -18,7 +17,6 @@ from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
-    encode_dataset,
     epoch_checkpoint,
     fixed_images,
     glasses_loader,
@@ -27,9 +25,8 @@ from dl_utils.vae.discrete_workflow import (
     save_reconstruction,
     seed_epoch_loader,
 )
-from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior_epoch
+from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, FSQAutoencoder
-from dl_utils.vae.token_priors import PixelCNNPrior
 
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
@@ -93,49 +90,6 @@ def train_tokenizer(model, loader, device, recipe):
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
-def train_prior(tokenizer, images, device, recipe):
-    prior = PixelCNNPrior(**recipe["model"]["prior"]).to(device)
-    optimizer = torch.optim.Adam(prior.parameters(), lr=PRIOR_LR)
-    # The prior's checkpoint also restores the frozen tokenizer it was trained on.
-    checkpoint = epoch_checkpoint(
-        OUTPUT_DIR / "prior_latest.pth",
-        {"tokenizer": tokenizer, "prior": prior},
-        {"prior": optimizer},
-        recipe,
-    )
-    completed, state = checkpoint.resume(
-        checkpoint.path if RESUME and checkpoint.path.is_file() else None,
-        initial_state={"history": []},
-    )
-    tokenizer.eval().requires_grad_(False)
-    if completed == PRIOR_EPOCHS:
-        save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
-        return prior.eval()
-    tokens = encode_dataset(tokenizer, images, device)
-    side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    for epoch in range(completed + 1, PRIOR_EPOCHS + 1):
-        seed_epoch_loader(tokens, SEED, epoch)
-        nll = train_pixelcnn_prior_epoch(prior, tokens, optimizer, device)
-        print(f"Prior {epoch}/{PRIOR_EPOCHS}: NLL={nll:.4f}")
-        state["history"].append({"nll": nll})
-        checkpoint.save(epoch, state)
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
-            with torch.random.fork_rng(), torch.inference_mode():
-                torch.manual_seed(SEED)
-                prior.eval()
-                indices = prior.sample(
-                    NUM_SAMPLES, side, side, device=device, temperature=TEMPERATURE
-                )
-                samples = tokenizer.decode_indices(indices)
-            save_image(
-                samples.mul(0.5).add(0.5),
-                OUTPUT_DIR / "training" / f"prior_epoch_{epoch:03d}.png",
-                nrow=4,
-            )
-    save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
-    return prior.eval()
-
-
 def train():
     set_seed(SEED)
     device = try_gpu()
@@ -171,7 +125,17 @@ def train():
     tokenizer = FSQAutoencoder(**config["tokenizer"]).to(device)
     if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
         train_tokenizer(tokenizer, loader, device, recipe)
-    prior = train_prior(tokenizer, loader, device, recipe)
+    prior = train_pixelcnn_prior(
+        tokenizer,
+        loader,
+        device,
+        recipe,
+        OUTPUT_DIR,
+        resume=RESUME,
+        sample_every=SAMPLE_EVERY,
+        num_samples=NUM_SAMPLES,
+        temperature=TEMPERATURE,
+    )
     save_pair(OUTPUT_DIR / "model.pth", "fsq", tokenizer, prior, config)
 
 
