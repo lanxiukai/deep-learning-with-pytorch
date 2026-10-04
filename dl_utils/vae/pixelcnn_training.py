@@ -79,7 +79,7 @@ def train_pixelcnn_prior(
     if completed == epochs:
         save_loss_curves(state["history"], output_dir / "prior_loss.png")
         return prior.eval()
-    tokens = encode_dataset(tokenizer, images, device)
+    tokens = encode_dataset(tokenizer, images, device)  # (B, h, w)
     side = recipe["model"]["image_size"] // (2**tokenizer.downsample_steps)
     for epoch in range(completed + 1, epochs + 1):
         seed_epoch_loader(tokens, seed, epoch)
