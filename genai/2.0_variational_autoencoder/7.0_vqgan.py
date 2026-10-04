@@ -170,14 +170,20 @@ def train_tokenizer(
         initial_state={"history": [], "global_step": 0},
     )
     originals = fixed_images(loader, NUM_SAMPLES)
-    for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
-        model.train()
-        discriminator.train()
-        seed_epoch_loader(loader, SEED, epoch)
-        metrics = MetricAccumulator(("autoencoder", "discriminator"), device=device)
-        with tqdm(
-            total=len(loader), desc=f"VQGAN {epoch}/{TOKENIZER_EPOCHS}"
-        ) as progress:
+    with tqdm(
+        total=TOKENIZER_EPOCHS * len(loader),
+        initial=completed * len(loader),
+        desc="Stage 1/2: VQGAN tokenizer",
+        unit="batch",
+    ) as progress:
+        for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
+            model.train()
+            discriminator.train()
+            seed_epoch_loader(loader, SEED, epoch)
+            metrics = MetricAccumulator(("autoencoder", "discriminator"), device=device)
+            progress.set_description(
+                f"Stage 1/2: VQGAN tokenizer {epoch}/{TOKENIZER_EPOCHS}", refresh=False
+            )
             for images, _ in loader:
                 images = images.to(device)
                 reconstruction, ae_loss = vqgan_autoencoder_step(
@@ -209,16 +215,16 @@ def train_tokenizer(
                 d=f"{losses['discriminator']:.4f}",
                 refresh=False,
             )
-        state["history"].append(losses)
-        checkpoint.save(epoch, state)
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            training_dir = OUTPUT_DIR / "training"
-            save_reconstruction(
-                model,
-                originals,
-                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                device,
-            )
+            state["history"].append(losses)
+            checkpoint.save(epoch, state)
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+                training_dir = OUTPUT_DIR / "training"
+                save_reconstruction(
+                    model,
+                    originals,
+                    training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                    device,
+                )
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
@@ -246,13 +252,19 @@ def train_prior(
         return prior.eval()
     tokens = encode_dataset(tokenizer, images, device)
     side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    for epoch in range(completed + 1, PRIOR_EPOCHS + 1):
-        prior.train()
-        seed_epoch_loader(tokens, SEED, epoch)
-        metrics = MetricAccumulator(("nll",), device=device)
-        with tqdm(
-            total=len(tokens), desc=f"Transformer {epoch}/{PRIOR_EPOCHS}"
-        ) as progress:
+    with tqdm(
+        total=PRIOR_EPOCHS * len(tokens),
+        initial=completed * len(tokens),
+        desc="Stage 2/2: Transformer prior",
+        unit="batch",
+    ) as progress:
+        for epoch in range(completed + 1, PRIOR_EPOCHS + 1):
+            prior.train()
+            seed_epoch_loader(tokens, SEED, epoch)
+            metrics = MetricAccumulator(("nll",), device=device)
+            progress.set_description(
+                f"Stage 2/2: Transformer prior {epoch}/{PRIOR_EPOCHS}", refresh=False
+            )
             for indices, labels in tokens:
                 indices, labels = indices.to(device), labels.to(device)
                 logits, targets = prior.teacher_forcing(indices, labels)
@@ -264,25 +276,30 @@ def train_prior(
                 progress.update(1)
             losses = metrics.compute_weighted_means(require_finite=True)
             progress.set_postfix(nll=f"{losses['nll']:.4f}", refresh=False)
-        state["history"].append(losses)
-        checkpoint.save(epoch, state)
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
-            with torch.random.fork_rng(), torch.inference_mode():
-                torch.manual_seed(SEED)
-                prior.eval()
-                labels = torch.arange(NUM_SAMPLES, device=device).remainder(NUM_CLASSES)
-                indices = prior.sample(
-                    NUM_SAMPLES, device=device, labels=labels, temperature=TEMPERATURE
+            state["history"].append(losses)
+            checkpoint.save(epoch, state)
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:
+                with torch.random.fork_rng(), torch.inference_mode():
+                    torch.manual_seed(SEED)
+                    prior.eval()
+                    labels = torch.arange(NUM_SAMPLES, device=device).remainder(
+                        NUM_CLASSES
+                    )
+                    indices = prior.sample(
+                        NUM_SAMPLES,
+                        device=device,
+                        labels=labels,
+                        temperature=TEMPERATURE,
+                    )
+                    samples = tokenizer.decode_indices(
+                        indices.reshape(NUM_SAMPLES, side, side)
+                    )
+                training_dir = OUTPUT_DIR / "training"
+                save_image(
+                    samples.mul(0.5).add(0.5),
+                    training_dir / f"prior_epoch_{epoch:03d}.png",
+                    nrow=4,
                 )
-                samples = tokenizer.decode_indices(
-                    indices.reshape(NUM_SAMPLES, side, side)
-                )
-            training_dir = OUTPUT_DIR / "training"
-            save_image(
-                samples.mul(0.5).add(0.5),
-                training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=4,
-            )
     save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
     return prior.eval()
 

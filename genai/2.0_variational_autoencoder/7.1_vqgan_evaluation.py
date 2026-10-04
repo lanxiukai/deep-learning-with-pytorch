@@ -45,26 +45,29 @@ def evaluate():
     reset_dir(OUTPUT_DIR)
     set_seed(SEED)
     device = try_gpu()
-    tokenizer, prior = load_pair(CHECKPOINT, "vqgan", device, image_size=IMAGE_SIZE)
-    assert isinstance(prior, CausalTransformerPrior)
-    loader = glasses_loader(
-        DATA_DIR, IMAGE_SIZE, RECONSTRUCTION_SAMPLES, device, conditional=True
-    )
-    originals = next(iter(loader))[0].to(device)
-    reconstruction = tokenizer(originals)[0]
-    labels = torch.arange(len(GLASSES_CLASS_NAMES), device=device).repeat_interleave(
-        SAMPLES_PER_CLASS
-    )
-    side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    save_image_row_grid(
-        [originals, reconstruction],
-        ["Original", "VQGAN"],
-        OUTPUT_DIR / "vqgan_real_and_reconstruction.png",
-        title="Same training images: reconstruction",
-        dpi=160,
-    )
-    with tqdm(TEMPERATURES, desc="Generate VQGAN", unit="temperature") as progress:
-        for temperature in progress:
+    with tqdm(
+        total=1 + len(TEMPERATURES), desc="Evaluate VQGAN", unit="grid"
+    ) as progress:
+        tokenizer, prior = load_pair(CHECKPOINT, "vqgan", device, image_size=IMAGE_SIZE)
+        assert isinstance(prior, CausalTransformerPrior)
+        loader = glasses_loader(
+            DATA_DIR, IMAGE_SIZE, RECONSTRUCTION_SAMPLES, device, conditional=True
+        )
+        originals = next(iter(loader))[0].to(device)
+        reconstruction = tokenizer(originals)[0]
+        labels = torch.arange(
+            len(GLASSES_CLASS_NAMES), device=device
+        ).repeat_interleave(SAMPLES_PER_CLASS)
+        side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+        save_image_row_grid(
+            [originals, reconstruction],
+            ["Original", "VQGAN"],
+            OUTPUT_DIR / "vqgan_real_and_reconstruction.png",
+            title="Same training images: reconstruction",
+            dpi=160,
+        )
+        progress.update(1)
+        for temperature in TEMPERATURES:
             progress.set_postfix(temperature=temperature, refresh=False)
             with torch.random.fork_rng():
                 torch.manual_seed(SEED)
@@ -81,6 +84,7 @@ def evaluate():
                 title=f"Independent class-conditional prior samples: temperature={temperature}",
                 dpi=160,
             )
+            progress.update(1)
 
 
 if __name__ == "__main__":

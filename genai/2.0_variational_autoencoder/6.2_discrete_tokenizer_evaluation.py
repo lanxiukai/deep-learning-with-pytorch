@@ -1,4 +1,4 @@
-"""Compare VAE, VQ-VAE, and FSQ with reconstruction and temperature sample grids.
+"""Compare each discrete tokenizer with VAE in separate evaluation directories.
 
 Run 1.0, 6.0, and 6.1 first. Reconstructions use the same training images;
 generation rows are independent unconditional samples, with no matched identities.
@@ -25,7 +25,6 @@ from dl_utils.vae.vae import VAE
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-OUTPUT_DIR = OUTPUT_ROOT / "evaluation" / "discrete_tokenizer"
 VAE_CHECKPOINT = OUTPUT_ROOT / "vae" / "vae.pth"
 PAIR_CHECKPOINTS = {
     "vq_vae": OUTPUT_ROOT / "vq_vae" / "model.pth",
@@ -48,7 +47,6 @@ def evaluate():
         for temperature in TEMPERATURES
     ):
         raise ValueError("TEMPERATURES must contain finite, positive values.")
-    reset_dir(OUTPUT_DIR)
     set_seed(SEED)
     device = try_gpu()
     loader = glasses_loader(DATA_DIR, IMAGE_SIZE, NUM_SAMPLES, device)
@@ -70,41 +68,40 @@ def evaluate():
     with torch.random.fork_rng():
         torch.manual_seed(SEED)
         vae_samples = vae.decoder(torch.randn(NUM_SAMPLES, vae.z_dim, device=device))
-    reconstructions = [originals, reconstruction.mul(2).sub(1)]
-    pairs = {}
     for name, path in PAIR_CHECKPOINTS.items():
-        tokenizer, prior = load_pair(path, name, device, image_size=IMAGE_SIZE)
-        assert isinstance(prior, PixelCNNPrior)
-        reconstructions.append(tokenizer(originals)[0])
-        pairs[name] = (tokenizer, prior)
-    save_image_row_grid(
-        reconstructions,
-        ["Original", "VAE (mean)", "VQ-VAE", "FSQ"],
-        OUTPUT_DIR / "vae_vq_vae_fsq_reconstructions.png",
-        title="Same training images: reconstruction",
-        dpi=160,
-    )
-    with tqdm(
-        TEMPERATURES, desc="Generate VQ-VAE / FSQ", unit="temperature"
-    ) as progress:
-        for temperature in progress:
-            progress.set_postfix(temperature=temperature, refresh=False)
-            generations = [vae_samples.mul(2).sub(1)]
-            for tokenizer, prior in pairs.values():
-                side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+        output_dir = path.parent / "evaluation"
+        reset_dir(output_dir)
+        model_label = {"vq_vae": "VQ-VAE", "fsq": "FSQ"}[name]
+        with tqdm(
+            total=1 + len(TEMPERATURES), desc=f"Evaluate {model_label}", unit="grid"
+        ) as progress:
+            tokenizer, prior = load_pair(path, name, device, image_size=IMAGE_SIZE)
+            assert isinstance(prior, PixelCNNPrior)
+            save_image_row_grid(
+                [originals, reconstruction.mul(2).sub(1), tokenizer(originals)[0]],
+                ["Original", "VAE (mean)", model_label],
+                output_dir / f"vae_{name}_reconstructions.png",
+                title="Same training images: reconstruction",
+                dpi=160,
+            )
+            progress.update(1)
+            side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+            for temperature in TEMPERATURES:
+                progress.set_postfix(temperature=temperature, refresh=False)
                 with torch.random.fork_rng():
                     torch.manual_seed(SEED)
                     indices = prior.sample(
                         NUM_SAMPLES, side, side, device=device, temperature=temperature
                     )
-                    generations.append(tokenizer.decode_indices(indices))
-            save_image_row_grid(
-                generations,
-                ["VAE", "VQ-VAE", "FSQ"],
-                OUTPUT_DIR / f"vae_vq_vae_fsq_samples_temperature_{temperature}.png",
-                title=f"Independent unconditional prior samples: temperature={temperature}",
-                dpi=160,
-            )
+                    samples = tokenizer.decode_indices(indices)
+                save_image_row_grid(
+                    [vae_samples.mul(2).sub(1), samples],
+                    ["VAE", model_label],
+                    output_dir / f"vae_{name}_samples_temperature_{temperature}.png",
+                    title=f"Independent unconditional prior samples: temperature={temperature}",
+                    dpi=160,
+                )
+                progress.update(1)
 
 
 if __name__ == "__main__":

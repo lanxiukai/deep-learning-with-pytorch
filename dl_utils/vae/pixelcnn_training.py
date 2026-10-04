@@ -28,22 +28,21 @@ def train_pixelcnn_prior_epoch(
     optimizer: Optimizer,
     device: torch.device,
     *,
-    desc: str = "PixelCNN",
+    progress: tqdm,
 ) -> float:
     """Fit the next-token distribution on frozen token grids."""
     prior.train()
     metrics = MetricAccumulator(("nll",), device=device)
-    with tqdm(total=len(loader), desc=desc) as progress:
-        for indices, _ in loader:
-            indices = indices.to(device)
-            loss = F.cross_entropy(prior(indices), indices)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            metrics.add_batch_means((loss,), num_examples=len(indices))
-            progress.update(1)
-        nll = metrics.compute_weighted_means(require_finite=True)["nll"]
-        progress.set_postfix(nll=f"{nll:.4f}", refresh=False)
+    for indices, _ in loader:
+        indices = indices.to(device)
+        loss = F.cross_entropy(prior(indices), indices)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        metrics.add_batch_means((loss,), num_examples=len(indices))
+        progress.update(1)
+    nll = metrics.compute_weighted_means(require_finite=True)["nll"]
+    progress.set_postfix(nll=f"{nll:.4f}", refresh=False)
     return nll
 
 
@@ -81,26 +80,35 @@ def train_pixelcnn_prior(
         return prior.eval()
     tokens = encode_dataset(tokenizer, images, device)  # (B, h, w)
     side = recipe["model"]["image_size"] // (2**tokenizer.downsample_steps)
-    for epoch in range(completed + 1, epochs + 1):
-        seed_epoch_loader(tokens, seed, epoch)
-        nll = train_pixelcnn_prior_epoch(
-            prior, tokens, optimizer, device, desc=f"PixelCNN {epoch}/{epochs}"
-        )
-        state["history"].append({"nll": nll})
-        checkpoint.save(epoch, state)
-        if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
-            with torch.random.fork_rng(), torch.inference_mode():
-                torch.manual_seed(seed)
-                prior.eval()
-                indices = prior.sample(
-                    num_samples, side, side, device=device, temperature=temperature
-                )
-                samples = tokenizer.decode_indices(indices)
-            training_dir = output_dir / "training"
-            save_image(
-                samples.mul(0.5).add(0.5),
-                training_dir / f"prior_epoch_{epoch:03d}.png",
-                nrow=4,
+    with tqdm(
+        total=epochs * len(tokens),
+        initial=completed * len(tokens),
+        desc="Stage 2/2: PixelCNN prior",
+        unit="batch",
+    ) as progress:
+        for epoch in range(completed + 1, epochs + 1):
+            progress.set_description(
+                f"Stage 2/2: PixelCNN prior {epoch}/{epochs}", refresh=False
             )
+            seed_epoch_loader(tokens, seed, epoch)
+            nll = train_pixelcnn_prior_epoch(
+                prior, tokens, optimizer, device, progress=progress
+            )
+            state["history"].append({"nll": nll})
+            checkpoint.save(epoch, state)
+            if epoch == 1 or epoch % sample_every == 0 or epoch == epochs:
+                with torch.random.fork_rng(), torch.inference_mode():
+                    torch.manual_seed(seed)
+                    prior.eval()
+                    indices = prior.sample(
+                        num_samples, side, side, device=device, temperature=temperature
+                    )
+                    samples = tokenizer.decode_indices(indices)
+                training_dir = output_dir / "training"
+                save_image(
+                    samples.mul(0.5).add(0.5),
+                    training_dir / f"prior_epoch_{epoch:03d}.png",
+                    nrow=4,
+                )
     save_loss_curves(state["history"], output_dir / "prior_loss.png")
     return prior.eval()

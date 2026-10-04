@@ -84,13 +84,19 @@ def train_tokenizer(
         initial_state={"history": []},
     )
     originals = fixed_images(loader, NUM_SAMPLES)
-    for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
-        model.train()
-        seed_epoch_loader(loader, SEED, epoch)
-        metrics = MetricAccumulator(("mse", "commitment_loss"), device=device)
-        with tqdm(
-            total=len(loader), desc=f"vq_vae {epoch}/{TOKENIZER_EPOCHS}"
-        ) as progress:
+    with tqdm(
+        total=TOKENIZER_EPOCHS * len(loader),
+        initial=completed * len(loader),
+        desc="Stage 1/2: VQ-VAE tokenizer",
+        unit="batch",
+    ) as progress:
+        for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
+            model.train()
+            seed_epoch_loader(loader, SEED, epoch)
+            metrics = MetricAccumulator(("mse", "commitment_loss"), device=device)
+            progress.set_description(
+                f"Stage 1/2: VQ-VAE tokenizer {epoch}/{TOKENIZER_EPOCHS}", refresh=False
+            )
             for images, _ in loader:
                 images = images.to(device)
                 reconstruction, _, commitment = model(images)
@@ -107,16 +113,16 @@ def train_tokenizer(
                 commitment=f"{losses['commitment_loss']:.4f}",
                 refresh=False,
             )
-        state["history"].append(losses)
-        checkpoint.save(epoch, state)
-        if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
-            training_dir = OUTPUT_DIR / "training"
-            save_reconstruction(
-                model,
-                originals,
-                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
-                device,
-            )
+            state["history"].append(losses)
+            checkpoint.save(epoch, state)
+            if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+                training_dir = OUTPUT_DIR / "training"
+                save_reconstruction(
+                    model,
+                    originals,
+                    training_dir / f"tokenizer_epoch_{epoch:03d}.png",
+                    device,
+                )
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
