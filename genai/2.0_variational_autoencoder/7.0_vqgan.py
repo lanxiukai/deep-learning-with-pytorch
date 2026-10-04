@@ -163,32 +163,40 @@ def train_tokenizer(
         discriminator.train()
         seed_epoch_loader(loader, SEED, epoch)
         metrics = MetricAccumulator(("autoencoder", "discriminator"), device=device)
-        for images, _ in tqdm(loader, desc=f"VQGAN {epoch}/{TOKENIZER_EPOCHS}"):
-            images = images.to(device)
-            reconstruction, ae_loss = vqgan_autoencoder_step(
-                model,
-                discriminator,
-                perceptual,
-                images,
-                optimizer,
-                step=state["global_step"],
-                discriminator_start=DISCRIMINATOR_START,
-                perceptual_weight=PERCEPTUAL_WEIGHT,
-                vq_weight=VQ_WEIGHT,
-                discriminator_weight=DISCRIMINATOR_WEIGHT,
+        with tqdm(
+            total=len(loader), desc=f"VQGAN {epoch}/{TOKENIZER_EPOCHS}"
+        ) as progress:
+            for images, _ in loader:
+                images = images.to(device)
+                reconstruction, ae_loss = vqgan_autoencoder_step(
+                    model,
+                    discriminator,
+                    perceptual,
+                    images,
+                    optimizer,
+                    step=state["global_step"],
+                    discriminator_start=DISCRIMINATOR_START,
+                    perceptual_weight=PERCEPTUAL_WEIGHT,
+                    vq_weight=VQ_WEIGHT,
+                    discriminator_weight=DISCRIMINATOR_WEIGHT,
+                )
+                d_loss = vqgan_discriminator_step(
+                    discriminator,
+                    images,
+                    reconstruction,
+                    d_optimizer,
+                    step=state["global_step"],
+                    discriminator_start=DISCRIMINATOR_START,
+                )
+                metrics.add_batch_means((ae_loss, d_loss), num_examples=len(images))
+                state["global_step"] += 1
+                progress.update(1)
+            losses = metrics.compute_weighted_means(require_finite=True)
+            progress.set_postfix(
+                ae=f"{losses['autoencoder']:.4f}",
+                d=f"{losses['discriminator']:.4f}",
+                refresh=False,
             )
-            d_loss = vqgan_discriminator_step(
-                discriminator,
-                images,
-                reconstruction,
-                d_optimizer,
-                step=state["global_step"],
-                discriminator_start=DISCRIMINATOR_START,
-            )
-            metrics.add_batch_means((ae_loss, d_loss), num_examples=len(images))
-            state["global_step"] += 1
-        losses = metrics.compute_weighted_means(require_finite=True)
-        print(f"Epoch {epoch}: {losses}")
         state["history"].append(losses)
         checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
@@ -229,16 +237,20 @@ def train_prior(
         prior.train()
         seed_epoch_loader(tokens, SEED, epoch)
         metrics = MetricAccumulator(("nll",), device=device)
-        for indices, labels in tqdm(tokens, desc=f"Transformer {epoch}/{PRIOR_EPOCHS}"):
-            indices, labels = indices.to(device), labels.to(device)
-            logits, targets = prior.teacher_forcing(indices, labels)
-            loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            metrics.add_batch_means((loss,), num_examples=len(indices))
-        losses = metrics.compute_weighted_means(require_finite=True)
-        print(f"Epoch {epoch}: {losses}")
+        with tqdm(
+            total=len(tokens), desc=f"Transformer {epoch}/{PRIOR_EPOCHS}"
+        ) as progress:
+            for indices, labels in tokens:
+                indices, labels = indices.to(device), labels.to(device)
+                logits, targets = prior.teacher_forcing(indices, labels)
+                loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                metrics.add_batch_means((loss,), num_examples=len(indices))
+                progress.update(1)
+            losses = metrics.compute_weighted_means(require_finite=True)
+            progress.set_postfix(nll=f"{losses['nll']:.4f}", refresh=False)
         state["history"].append(losses)
         checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == PRIOR_EPOCHS:

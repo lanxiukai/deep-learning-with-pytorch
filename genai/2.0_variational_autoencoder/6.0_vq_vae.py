@@ -78,17 +78,25 @@ def train_tokenizer(
         model.train()
         seed_epoch_loader(loader, SEED, epoch)
         metrics = MetricAccumulator(("mse", "commitment_loss"), device=device)
-        for images, _ in tqdm(loader, desc=f"vq_vae {epoch}/{TOKENIZER_EPOCHS}"):
-            images = images.to(device)
-            reconstruction, _, commitment = model(images)
-            mse = F.mse_loss(reconstruction, images)
-            loss = mse + commitment
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            metrics.add_batch_means((mse, commitment), num_examples=len(images))
-        losses = metrics.compute_weighted_means(require_finite=True)
-        print(f"Epoch {epoch}: {losses}")
+        with tqdm(
+            total=len(loader), desc=f"vq_vae {epoch}/{TOKENIZER_EPOCHS}"
+        ) as progress:
+            for images, _ in loader:
+                images = images.to(device)
+                reconstruction, _, commitment = model(images)
+                mse = F.mse_loss(reconstruction, images)
+                loss = mse + commitment
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                metrics.add_batch_means((mse, commitment), num_examples=len(images))
+                progress.update(1)
+            losses = metrics.compute_weighted_means(require_finite=True)
+            progress.set_postfix(
+                mse=f"{losses['mse']:.4f}",
+                commitment=f"{losses['commitment_loss']:.4f}",
+                refresh=False,
+            )
         state["history"].append(losses)
         checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
