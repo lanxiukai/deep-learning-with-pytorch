@@ -1,12 +1,49 @@
-"""Compare each discrete tokenizer with VAE in separate evaluation directories.
+"""Inspect VQ-VAE and FSQ reconstructions and unconditional prior samples.
 
-Run 1.0, 6.0, and 6.1 first. Reconstructions use the same training images;
-generation rows are independent unconditional samples, with no matched identities.
-TEMPERATURES controls the discrete priors; the VAE row stays fixed for comparison.
+Reconstruction and generation flow:
+    VQ-VAE: x -> nearest codebook tokens -> decoder
+    FSQ:    x -> bounded scalar rounding -> decoder
+    Both discrete generators: PixelCNN -> token grid -> tokenizer decoder
+Each tokenizer gets a two-row reconstruction grid (original, reconstruction)
+and a 2x8 unconditional sample grid per temperature, in its own directory.
+Both tokenizers reconstruct the same inputs. Generated samples are independent
+of those inputs; columns do not imply matching identities across temperatures.
+
+Temperature divides the discrete prior logits before categorical sampling.
+The seed is reset for each temperature so the random stream is controlled,
+but neither identities nor token sequences are guaranteed to match. These are
+visual training-set diagnostics, without numerical metrics or a held-out split.
+The tokenizers differ in bottleneck dimensions and objectives. See
+dl_utils/vae/discrete_workflow.py for pair loading.
+
+Data:
+    data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
+    Read the first 8 training images without shuffling; class labels are ignored.
+    Discrete inputs are resized to 256x256 RGB and normalized to [-1, 1].
+
+Checkpoints:
+    output/vae/vq_vae/model.pth: VQ-VAE/PixelCNN pair; run 6.0 first
+    output/vae/fsq/model.pth: FSQ/PixelCNN pair; run 6.1 first
+    Model dimensions are loaded from each checkpoint.
+
+Outputs:
+    Under output/vae/<name>/evaluation/, name = vq_vae or fsq:
+    <name>_reconstructions.png: original/tokenizer rows
+    <name>_samples_temperature_<temperature>.png: tokenizer sample grid
+    Each evaluation directory is reset before writing its four grids.
+
+Evaluation defaults:
+    Reconstruction images: 8 shared training inputs; one batch.
+    Generated images:      16 per model and temperature; 2 rows of 8; 256x256 RGB.
+    Discrete token grid:   16x16 with the default four downsampling stages.
+    Prior temperatures:    0.6, 1.0, 1.3.
+    Seed:                  123 for controlled prior sampling.
+
+Run without arguments after training 6.0 and 6.1; edit the constants
+below to change the checkpoints, sample count, or temperature sweep.
 """
 
 import math
-from typing import cast
 
 import torch
 from tqdm.auto import tqdm
@@ -16,16 +53,13 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
-from dl_utils.training.checkpoints import load_model_weights
 from dl_utils.vae.discrete_workflow import glasses_loader, load_pair
 from dl_utils.vae.token_priors import PixelCNNPrior
-from dl_utils.vae.vae import VAE
 
 # Paths and checkpoints
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
-VAE_CHECKPOINT = OUTPUT_ROOT / "vae" / "vae.pth"
 PAIR_CHECKPOINTS = {
     "vq_vae": OUTPUT_ROOT / "vq_vae" / "model.pth",
     "fsq": OUTPUT_ROOT / "fsq" / "model.pth",
@@ -33,10 +67,12 @@ PAIR_CHECKPOINTS = {
 
 # Image configuration
 IMAGE_SIZE = 256
-NUM_SAMPLES = 8
+RECONSTRUCTION_SAMPLES = 8
+NUM_SAMPLES = 16
+SAMPLE_GRID_COLUMNS = 8
 
 # Sampling configuration
-TEMPERATURES = (0.7, 1.0, 1.3)
+TEMPERATURES = (0.6, 1.0, 1.3)
 SEED = 123
 
 
@@ -49,25 +85,8 @@ def evaluate():
         raise ValueError("TEMPERATURES must contain finite, positive values.")
     set_seed(SEED)
     device = try_gpu()
-    loader = glasses_loader(DATA_DIR, IMAGE_SIZE, NUM_SAMPLES, device)
+    loader = glasses_loader(DATA_DIR, IMAGE_SIZE, RECONSTRUCTION_SAMPLES, device)
     originals = next(iter(loader))[0].to(device)
-    vae, _ = load_model_weights(
-        VAE_CHECKPOINT,
-        VAE,
-        device=device,
-        expected_metadata={
-            "model_name": "vae",
-            "backbone": VAE.backbone,
-            "dataset": "glasses-256",
-            "value_range": [0.0, 1.0],
-            "beta": 1.0,
-        },
-    )
-    vae = cast(VAE, vae)
-    reconstruction = vae.reconstruct(originals.mul(0.5).add(0.5), sample=False)[2]
-    with torch.random.fork_rng():
-        torch.manual_seed(SEED)
-        vae_samples = vae.decoder(torch.randn(NUM_SAMPLES, vae.z_dim, device=device))
     for name, path in PAIR_CHECKPOINTS.items():
         output_dir = path.parent / "evaluation"
         reset_dir(output_dir)
@@ -78,9 +97,9 @@ def evaluate():
             tokenizer, prior = load_pair(path, name, device, image_size=IMAGE_SIZE)
             assert isinstance(prior, PixelCNNPrior)
             save_image_row_grid(
-                [originals, reconstruction.mul(2).sub(1), tokenizer(originals)[0]],
-                ["Original", "VAE (mean)", model_label],
-                output_dir / f"vae_{name}_reconstructions.png",
+                [originals, tokenizer(originals)[0]],
+                ["Original", model_label],
+                output_dir / f"{name}_reconstructions.png",
                 title="Same training images: reconstruction",
                 dpi=160,
             )
@@ -94,10 +113,11 @@ def evaluate():
                         NUM_SAMPLES, side, side, device=device, temperature=temperature
                     )
                     samples = tokenizer.decode_indices(indices)
+                sample_rows = samples.split(SAMPLE_GRID_COLUMNS)
                 save_image_row_grid(
-                    [vae_samples.mul(2).sub(1), samples],
-                    ["VAE", model_label],
-                    output_dir / f"vae_{name}_samples_temperature_{temperature}.png",
+                    sample_rows,
+                    [model_label] * len(sample_rows),
+                    output_dir / f"{name}_samples_temperature_{temperature}.png",
                     title=f"Independent unconditional prior samples: temperature={temperature}",
                     dpi=160,
                 )

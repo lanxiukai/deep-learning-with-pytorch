@@ -1,9 +1,61 @@
-"""Train fsq's tokenizer, encode images once, then train a PixelCNN prior.
+"""FSQ tokenizer with fixed scalar levels and an unconditional PixelCNN prior.
 
-Follow train() for the complete order. RESUME restores the same configuration
-at an epoch boundary; previews show eight training images or prior samples.
-Outputs: model.pth (the final pair), tokenizer_latest.pth, prior_latest.pth,
-two loss figures, and training/*.png. There is no validation or model selection.
+Reconstruction and generation flow (k is a raster-ordered token grid):
+    encoder(x)       -> z_e -> bounded, rounded scalar values z_q
+    pack(z_q)        -> mixed-radix indices k
+    decoder(z_q)     -> reconstruction
+    PixelCNN(k_<t)   -> logits for k_t -> sample k_t
+    unpack(k)        -> z_q -> decoder -> generated image
+model(x) returns (reconstruction, indices). Three eight-level scalars give
+8 * 8 * 8 = 512 possible tokens per spatial position. The scalar grid is fixed;
+there is no learned codebook, EMA update, or commitment loss. Rounding uses
+straight-through gradients. See dl_utils/vae/quantization.py and token_priors.py.
+
+Stage 1 minimizes mean RGB MSE. Stage 2 freezes the tokenizer, encodes every
+image once into memory, and fits p(k) = product_t p(k_t | k_<t) with mean token
+cross-entropy. The PixelCNN matches 6.0 and has the same receptive-field blind
+spot. Sampling visits all 256 positions sequentially, then decodes the grid.
+The image blocks match VQ-VAE, but the three-channel bottleneck changes capacity.
+
+RESUME=True restores the same recipe at an epoch boundary, including optimizer
+state and loss history. A prior checkpoint also restores its frozen tokenizer.
+The final checkpoint stores the tokenizer/prior pair and model configuration.
+There is no validation split or model selection.
+
+Data:
+    data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
+    Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].
+    Use all 4,500 training images; class labels are ignored.
+
+Outputs:
+    output/vae/fsq/model.pth: final tokenizer/prior pair
+    output/vae/fsq/tokenizer_latest.pth: stage-1 recovery checkpoint
+    output/vae/fsq/prior_latest.pth: stage-2 recovery checkpoint
+    output/vae/fsq/tokenizer_loss.png: MSE curve
+    output/vae/fsq/prior_loss.png: token cross-entropy curve
+    output/vae/fsq/training/tokenizer_epoch_*.png: original/reconstruction rows
+    output/vae/fsq/training/prior_epoch_*.png: unconditional sample grids
+
+Training data -- glasses-256 (fresh run):
+Training images:          4,500
+Batch size:                  16
+Samples per epoch:        4,500 (281 full batches + 4 images; drop_last=False)
+Tokenizer/prior epochs:     100 / 100
+Optimizer updates:       28,200 per stage; 56,400 total
+
+Default dimensions:
+Training/generated image: 256x256 RGB in [-1, 1]
+Token grid:               16x16; four 2x downsampling stages
+Scalar levels:            (8, 8, 8); 3 latent channels; 512 possible tokens
+Quantized scalar values:  [-4, -3, ..., 3] / 4 for each eight-level channel
+Encoder/decoder width:    128 channels; first/last image stage: 64 channels
+PixelCNN:                 128 channels, 16 masked layers, 512 output logits
+Model size:               tokenizer 2.126 M / prior 3.165 M parameters
+Optimizer:                Adam, betas (0.9, 0.999), constant 2e-4 for both stages
+Previews:                 8 images; epochs 1, every 10, and final; temperature 0.6
+
+Run without arguments; edit the constants below to experiment. Matching the
+VQ-VAE vocabulary and prior does not guarantee equal token use or sample quality.
 """
 
 import math
@@ -44,7 +96,8 @@ HIDDEN_CHANNELS = 128
 LEVELS = (8, 8, 8)
 
 # Prior configuration
-PRIOR_HIDDEN_CHANNELS = 64
+# A wider prior improves sample coherence within the same epoch budget.
+PRIOR_HIDDEN_CHANNELS = 128
 PRIOR_LAYERS = 16
 
 # Training configuration
@@ -60,7 +113,8 @@ SEED = 42
 # Preview configuration
 SAMPLE_EVERY = 10
 NUM_SAMPLES = 8
-TEMPERATURE = 1.0
+# Trade some diversity for cleaner teaching previews.
+TEMPERATURE = 0.6
 
 
 def train_tokenizer(

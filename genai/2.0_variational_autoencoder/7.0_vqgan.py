@@ -1,8 +1,70 @@
-"""Train VQGAN's tokenizer, encode images once, then fit its conditional prior.
+"""VQGAN perceptual tokenizer with a class-conditional causal Transformer prior.
 
-Read train() for the stage order and the two step functions for the adversarial
-objective and gradient boundaries. RESUME restores the same configuration at
-an epoch boundary. model.pth stores the final tokenizer/prior pair.
+Reconstruction and generation flow (k is a raster-ordered token sequence):
+    encoder(x)           -> z_e -> EMA codebook vectors z_q, indices k
+    decoder(z_q)         -> reconstruction -> perceptual and PatchGAN losses
+    Transformer(k_<t, c) -> logits for k_t -> sample k_t
+    codebook(k)          -> z_q -> decoder -> generated image
+model(x) returns (reconstruction, indices, commitment_loss). The tokenizer is
+unconditional; only the prior uses c, with G=0 and NoG=1. See
+dl_utils/vae/perceptual_autoencoder.py and token_priors.py for the model paths.
+
+Stage 1 minimizes mean RGB L1 + frozen VGG LPIPS + commitment loss + an
+adaptively weighted generator hinge loss. The adversarial weight matches
+gradient norms at the decoder's last layer and is detached. PatchGAN is frozen
+during the autoencoder update; its own hinge update uses detached reconstructions.
+Adversarial training starts at zero-based batch step 1,000. The codebook uses
+EMA rather than autograd, with straight-through gradients to the encoder.
+
+Stage 2 freezes the tokenizer and encodes every image once into memory. The
+Transformer fits p(k | c) = product_t p(k_t | k_<t, c) with shifted BOS inputs,
+a causal mask, and mean token cross-entropy. Training predicts all positions
+in parallel; generation samples 256 tokens sequentially before decoding.
+
+RESUME=True restores the same recipe at an epoch boundary, including optimizer
+state, loss history, and the stage-1 global step. A prior checkpoint also
+restores its frozen tokenizer. The final file stores the tokenizer/prior pair,
+model configuration, and class order. There is no validation or model selection.
+
+Data:
+    data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
+    Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].
+    Use all 4,500 training images: 2,543 G and 1,957 NoG.
+    Stage 1 ignores labels; stage 2 uses them for conditional token prediction.
+
+Outputs:
+    output/vae/vqgan/model.pth: final tokenizer/prior pair
+    output/vae/vqgan/tokenizer_latest.pth: tokenizer/discriminator recovery
+    output/vae/vqgan/prior_latest.pth: conditional prior recovery
+    output/vae/vqgan/tokenizer_loss.png: autoencoder and discriminator curves
+    output/vae/vqgan/prior_loss.png: token cross-entropy curve
+    output/vae/vqgan/training/tokenizer_epoch_*.png: original/reconstruction rows
+    output/vae/vqgan/training/prior_epoch_*.png: alternating G/NoG samples
+
+Training data -- glasses-256 (fresh run):
+Training images:          4,500
+Batch size:                  16
+Samples per epoch:        4,500 (281 full batches + 4 images; drop_last=False)
+Tokenizer/prior epochs:      30 / 30
+Optimizer updates:        8,460 each for tokenizer and prior; 7,460 for PatchGAN
+
+Default dimensions:
+Training/generated image: 256x256 RGB in [-1, 1]
+Token grid / sequence:    16x16 / 256 tokens; four 2x downsampling stages
+Codebook:                 512 vectors, 64 values each; commitment coefficient 0.25
+Tokenizer/PatchGAN width: 128 / 64 channels
+Transformer:              256 values, 8 heads, 4 layers, 2 classes, dropout 0.0
+Model size:               tokenizer 2.681 M / prior 3.488 M / PatchGAN 1.251 M
+                          Counts exclude LPIPS; tokenizer includes frozen codebook.
+EMA decay / epsilon:      0.99 / 1e-5
+Loss weights:             perceptual 1.0, VQ 1.0, adversarial scale 1.0
+Optimizer:                tokenizer/PatchGAN Adam, betas (0.5, 0.9), constant 2e-4
+                          Prior AdamW, constant 3e-4.
+Previews:                 8 images; epochs 1, every 10, and final; temperature 1.0
+
+Run without arguments; edit the constants below to experiment. LPIPS uses
+pretrained VGG weights. Comparison with 6.0 changes architecture, objective,
+prior, conditioning, and training budget together.
 """
 
 from collections.abc import Mapping

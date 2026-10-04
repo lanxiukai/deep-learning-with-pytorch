@@ -1,8 +1,47 @@
-"""Load the final VQGAN pair and save reconstruction and conditional sample grids.
+"""Inspect VQGAN reconstructions and class-conditional generation after training.
 
-Run 7.0 first. Eight training images are reconstructed. Four independent G
-samples and four NoG samples are labeled by row; columns do not match identities.
-TEMPERATURES selects the prior temperatures; each gets a separate sample grid.
+Reconstruction and generation flow:
+    x -> encoder -> nearest codebook tokens -> decoder -> reconstruction
+    c -> causal Transformer -> sampled token sequence -> codebook -> decoder
+The saved tokenizer is unconditional; the Transformer prior supplies G/NoG
+conditioning. A two-row reconstruction grid compares each original with its
+own reconstruction. Each temperature gets a separate two-row prior grid,
+with four G samples followed by four NoG samples. Generation columns do not
+match identities across classes and are independent of the reconstruction inputs.
+
+Temperature divides prior logits before categorical sampling. The seed is
+reset for every temperature to control the random stream, without guaranteeing
+matched identities or token sequences. These visual training-set diagnostics
+do not compute numerical reconstruction, likelihood, or generation metrics.
+See dl_utils/vae/discrete_workflow.py for pair loading and token-grid checks.
+
+Data:
+    data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
+    Read the first 8 training images without shuffling.
+    Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].
+    Class order is G=0 (with glasses), NoG=1 (without glasses).
+    Reconstruction inputs do not need a class label; prior samples do.
+
+Checkpoint:
+    output/vae/vqgan/model.pth: final tokenizer/conditional Transformer pair.
+    Run 7.0 first. Model dimensions and class order are loaded and checked.
+    Recovery files tokenizer_latest.pth and prior_latest.pth are not used here.
+
+Outputs:
+    output/vae/vqgan/evaluation/vqgan_real_and_reconstruction.png
+    output/vae/vqgan/evaluation/vqgan_prior_samples_temperature_<temperature>.png
+    The evaluation directory is reset before writing its four grids.
+
+Evaluation defaults:
+    Reconstruction images: 8 training inputs; one batch.
+    Generated images:      4 per class, 8 per temperature; 256x256 RGB.
+    Token grid / sequence: 16x16 / 256 tokens with default four downsampling stages.
+    Prior temperatures:    0.7, 1.0, 1.3.
+    Seed:                  123 for controlled conditional sampling.
+    Model dimensions:      loaded from the checkpoint produced by 7.0.
+
+Run without arguments after training 7.0; edit the constants below to change
+the checkpoint, reconstruction count, class sample count, or temperature sweep.
 """
 
 import math
