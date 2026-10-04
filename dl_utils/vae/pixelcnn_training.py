@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.optim import Optimizer
+from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
@@ -43,7 +46,7 @@ def train_pixelcnn_prior_epoch(
     metrics = MetricAccumulator(("nll",), device=device)
     for batch_index, (indices, _) in enumerate(loader, 1):
         indices = indices.to(device=device, dtype=torch.long, non_blocking=True)
-        loss = F.cross_entropy(prior(indices), indices)
+        loss = F.cross_entropy(prior(indices), indices)  # scaler ()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
@@ -98,36 +101,36 @@ def sample_pixelcnn_prior_images(
         device=device,
         temperature=temperature,
     )
-    return tokenizer.decode_indices(indices)
+    return tokenizer.decode_indices(indices)  # Gen_images
 
 
 def train_pixelcnn_prior(
-    tokenizer,
-    tokenizer_payload,
-    train_loader,
-    monitor_loader,
-    device,
-    out_dir,
-    monitor_protocol,
+    tokenizer: VQVAE | FSQAutoencoder,
+    tokenizer_payload: dict[str, Any],
+    train_loader: DataLoader,
+    monitor_loader: DataLoader,
+    device: torch.device,
+    out_dir: Path,
+    monitor_protocol: dict[str, Any],
     *,
-    model_name,
-    data_dir,
-    image_size,
-    hidden_channels,
-    layers,
-    lr,
-    epochs,
-    resume,
-    seed,
-    sample_every,
-    log_every,
-    sample_count,
-    sample_columns,
-    temperature,
-    checkpoint_name,
-    progress_interval,
-    max_metric_panels,
-):
+    model_name: str,
+    data_dir: Path,
+    image_size: int,
+    hidden_channels: int,
+    layers: int,
+    lr: float,
+    epochs: int,
+    resume: bool,
+    seed: int,
+    sample_every: int,
+    log_every: int,
+    sample_count: int,
+    sample_columns: int,
+    temperature: float,
+    checkpoint_name: str,
+    progress_interval: float,
+    max_metric_panels: int,
+) -> None:
     grid_size = image_size // (2**tokenizer.downsample_steps)
     tokenizer.eval().requires_grad_(False)
     tokenizer_id = tokenizer_payload["snapshot_id"]

@@ -130,22 +130,21 @@ environment or dependency workflow.
   using the infrastructure in `discrete_workflow.py`. Read its epoch,
   evaluation, and sampling helpers before the complete `train_pixelcnn_prior`
   workflow.
+  Training monitors still use token statistics, PSNR, and token-rate estimates;
+  the 6.2/7.1 evaluation entries save only reconstruction and generation grids.
+  VQ commitment loss is returned once as the quantizer loss; the diagnostics
+  dictionary retains its latent quantization MSE.
   Tokenizer optimization and VQGAN objectives remain explicit in the lessons.
-  The lessons import these workflows and the four model modules: quantization,
-  perceptual autoencoding, PixelCNN, and Transformer. Model modules do not
-  import the workflow. Priors consume cached token grids.
-  [vae/pixelcnn_prior.py](vae/pixelcnn_prior.py) keeps the gated PixelCNN
-  and its cached token sampler together. Two masked streams
-  generate tokens; inference caches vertical features once per row and short
-  horizontal history once per token. CUDA replays a one-token CUDA Graph,
-  while CPU executes eager steps.
-  [vae/transformer_prior.py](vae/transformer_prior.py) keeps the VQGAN prior
-  and its KV-cache sampler together. Its independently initialized layers use
-  their own PyTorch weights without D2L dependencies. CUDA replays a fixed-shape
-  token step with an explicit valid-prefix mask; CPU uses eager prefix slices.
-  Sampling temporarily disables dropout; training and likelihood evaluation
-  use the parallel forward path. [vae/quantization.py](vae/quantization.py)
-  supplies the shared quantizers. Encoders require at least two downsampling
+  Model modules do not import the workflow. Priors consume cached token grids.
+  [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
+  autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
+  with ReLU and recomputes full-grid logits for each sampled position. Its
+  receptive field has a blind spot. The Transformer recomputes the full token
+  prefix at each step; its layers are independently initialized. Transformer
+  sampling temporarily disables dropout and restores the previous mode;
+  training and likelihood evaluation use the parallel forward path.
+  [vae/quantization.py](vae/quantization.py) supplies the shared quantizers.
+  Encoders require at least two downsampling
   steps and image dimensions divisible by their compression factor.
   The VQ-VAE/FSQ PixelCNN prior supports only unconditional generation.
   The Transformer prior supports class conditioning with a positive `num_classes`.

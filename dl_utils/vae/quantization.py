@@ -219,7 +219,6 @@ class VectorQuantizer(nn.Module):
         z_st = z_e + (z_q - z_e).detach()
         index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
         diagnostics = {
-            "commitment_loss": commitment_loss.detach(),
             "quantization_mse": quantization_mse.detach(),
         }
         # This batch uses the pre-update vectors for its outputs and losses.

@@ -145,7 +145,7 @@ def train_tokenizer(train_loader, monitor_loader, device, out_dir, monitor_proto
                             loss,
                             distortion,
                             diagnostics["quantization_mse"],
-                            diagnostics["commitment_loss"],
+                            quantizer_loss.detach(),
                         ),
                         num_examples=images.shape[0],
                     )

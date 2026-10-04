@@ -31,19 +31,6 @@ from dl_utils.training.checkpoints import (
 from dl_utils.training.history import save_metrics_csv
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
-from dl_utils.vae.token_priors import PixelCNNPrior
-
-
-def _token_usage_from_counts(counts: Tensor) -> dict[str, Tensor]:
-    probabilities = counts / counts.sum().clamp_min(1.0)
-    nonzero = probabilities > 0
-    entropy = -(probabilities[nonzero] * probabilities[nonzero].log()).sum()
-    return {
-        "perplexity": entropy.exp().detach(),
-        "active_codes": nonzero.sum().detach(),
-        "usage_fraction": nonzero.float().mean().detach(),
-        "token_entropy_nats": entropy.detach(),
-    }
 
 
 class TokenUsageAccumulator:
@@ -61,26 +48,26 @@ class TokenUsageAccumulator:
             self.counts = torch.zeros_like(counts)
         self.counts += counts
 
-    def statistics(self) -> dict[str, Tensor]:
+    def training_metrics(self) -> dict[str, float]:
         if self.counts is None:
             raise ValueError("Token usage requires at least one observed batch.")
-        return _token_usage_from_counts(self.counts.float())
-
-    def training_metrics(self) -> dict[str, float]:
-        statistics = self.statistics()
+        counts = self.counts.float()
+        probabilities = counts / counts.sum().clamp_min(1.0)
+        nonzero = probabilities > 0
+        entropy = -(probabilities[nonzero] * probabilities[nonzero].log()).sum()
         return {
-            "perplexity": statistics["perplexity"].item(),
-            "active_codes": statistics["active_codes"].item(),
-            "entropy_bits": statistics["token_entropy_nats"].item() / math.log(2),
+            "perplexity": entropy.exp().item(),
+            "active_codes": nonzero.sum().item(),
+            "entropy_bits": entropy.item() / math.log(2),
         }
 
     def rate_metrics(self, tokens_per_image: int) -> dict[str, float]:
-        statistics = self.statistics()
-        entropy_bits = statistics["token_entropy_nats"].item() / math.log(2)
+        metrics = self.training_metrics()
+        entropy_bits = metrics["entropy_bits"]
         return {
-            "perplexity": statistics["perplexity"].item(),
-            "active_codes": statistics["active_codes"].item(),
-            "usage_fraction": statistics["usage_fraction"].item(),
+            "perplexity": metrics["perplexity"],
+            "active_codes": metrics["active_codes"],
+            "usage_fraction": metrics["active_codes"] / self.vocabulary_size,
             "marginal_entropy_bits_per_token": entropy_bits,
             "marginal_entropy_bits_per_image": tokens_per_image * entropy_bits,
             "fixed_length_bits_per_image": tokens_per_image
@@ -498,10 +485,8 @@ def load_prior_weights[T: nn.Module](
     )
     if prior.vocabulary_size != tokenizer.quantizer.codebook_size:
         raise ValueError("Prior vocabulary differs from the frozen tokenizer.")
-    expected_classes = len(
-        image_contract(image_size, conditional=conditional)["class_names"]
-    )
-    actual_classes = 0 if isinstance(prior, PixelCNNPrior) else prior.num_classes
+    expected_classes = len(GLASSES_CLASS_NAMES) if conditional else 0
+    actual_classes = getattr(prior, "num_classes", 0)
     if actual_classes != expected_classes:
         raise ValueError("Prior conditioning differs from the image contract.")
     positions = (image_size // (2**tokenizer.downsample_steps)) ** 2
