@@ -59,25 +59,16 @@ environment or dependency workflow.
   Existing D2L and EBM imports through `training.metrics` and `plot.figures`
   remain available; new callers use the focused modules above.
 
-- Foundation lessons import the [DDPM](diffusion/diffusion_ddpm.py),
-  score-SDE, flow-matching, and U-Net modules directly. The
-  [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) follows the
-  128px CelebA main line: discrete denoising, continuous score learning, then
-  direct velocity learning. `diffusion/flow_matching.py` owns conditional
-  Gaussian paths and Euler/midpoint/Heun integration from noise to data;
-  `diffusion/checkpoints.py` keeps score and velocity contracts distinct.
-  Improved DDPM, EDM, and DPM solvers serve optional extension lessons.
-  `diffusion/lesson_utils.py` shares data, binned losses, and checkpoint
-  handling while objectives and optimization remain in scripts;
-  `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
-  using shared [image features](evaluation/image_features.py) and
-  [distribution metrics](evaluation/distribution_metrics.py).
-  [gan/continuation.py](gan/continuation.py) retains its CelebA generator evaluation
-  protocol and seeded 256D projection; diffusion monitoring retains full
-  2048D features, sampling callbacks, and NFE accounting. Sharing primitives
-  does not make these evaluation protocols interchangeable.
-  [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
-  SSIM, including for the latent-diffusion first stage.
+- The [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) covers
+  the A/B curriculum on one Food-101 split at 256px: DDPM/CFG, VP score with
+  classifier guidance, linear CFM/RF, LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD,
+  DMD2, and iMF. Training and post-training evaluation have separate numbered
+  entry points. Model targets and optimizer updates stay visible in the lessons.
+  [data.py](diffusion/data.py) owns the 101-class sample manifest;
+  [checkpoints.py](diffusion/checkpoints.py) validates model and codec contracts.
+  [quality.py](diffusion/quality.py) uses Clean-FID's full Inception features,
+  KID, precision/recall, category compliance and actual network evaluations.
+  This protocol is distinct from the existing GAN/VAE feature protocols.
 - GANs use one module per algorithm. [progan.py](gan/progan.py),
   [stylegan.py](gan/stylegan.py), and [stylegan2.py](gan/stylegan2.py) keep their
   model definitions and continuation adapters together; StyleGAN2 also keeps
@@ -111,12 +102,11 @@ environment or dependency workflow.
   [vae/vae_common.py](vae/vae_common.py). Focused modules cover 256x256 RGB
   hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior,
   and perceptual-autoencoder blocks for the 256x256 glasses-256 lessons.
-- [diffusion/kl_autoencoder.py](diffusion/kl_autoencoder.py) owns the KL
-  perceptual autoencoder and frozen VGG feature loss for latent diffusion.
-  Its f=8 default maps 128px RGB to 4x16x16 continuous latents and decodes
-  back to 128px. It reuses the RGB encoder/decoder in
-  [vae/perceptual_autoencoder.py](vae/perceptual_autoencoder.py); the KL lesson
-  also reuses that module's PatchGAN and adaptive adversarial weight.
+- [diffusion/kl_autoencoder.py](diffusion/kl_autoencoder.py) independently owns
+  the KL codec, learned LPIPS wrapper, and reconstruction PatchGAN. Its f=8
+  configuration maps 256px RGB to 4x32x32 latents. The codec's posterior scale
+  is calibrated on training images and frozen for LDM, DiT, SiT and iMF;
+  diffusion lessons do not import the GAN or VAE model-family packages.
 - [vae/discrete_workflow.py](vae/discrete_workflow.py) provides small helpers for
   glasses-256 loading, fixed preview images, one-time in-memory token encoding,
   ordinary epoch checkpoints, basic loss curves, and final model pairs.

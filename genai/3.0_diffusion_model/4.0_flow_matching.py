@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train cfm on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -26,7 +26,7 @@ from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("cfm")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
     return parser.parse_args()
@@ -39,7 +39,7 @@ def main(args):
     codec, scale = None, 1.0
     data = data_config(args)
     algorithm = {
-        "task": "ddpm",
+        "task": "cfm",
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
@@ -56,7 +56,8 @@ def main(args):
         class_conditioning="additive",
     ).to(device)
     model, kind = network, "unet"
-    diffusion = GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
+    algorithm["time_direction"] = "noise_to_data"
+    GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     loader = make_loader(args)
@@ -93,12 +94,13 @@ def main(args):
                 )
             optimizer.zero_grad(set_to_none=True)
             with autocast(args):
-                time = torch.randint(diffusion.num_steps, (len(clean),), device=device)
+                time = torch.rand(len(clean), device=device)
                 noise = torch.randn_like(clean)
-                noisy = diffusion.q_sample(clean, time, noise)
-                prediction = model(noisy, time, labels).float()
-                per_image = (prediction - noise).square().flatten(1).mean(1)
-                coordinate = time.float() / diffusion.num_steps
+                t = time[:, None, None, None]
+                noisy, target = (1 - t) * noise + t * clean, clean - noise
+                prediction = model(noisy, time * 1000, labels).float()
+                per_image = (prediction - target).square().flatten(1).mean(1)
+                coordinate = time
                 loss = per_image.mean()
             if not torch.isfinite(loss):
                 raise FloatingPointError(

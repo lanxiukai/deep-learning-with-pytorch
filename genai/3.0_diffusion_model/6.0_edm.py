@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train edm on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -12,6 +12,7 @@ from tqdm import tqdm
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
+from dl_utils.diffusion.edm import EDMPreconditioner
 from dl_utils.diffusion.lesson_utils import (
     BinnedLoss,
     autocast,
@@ -26,7 +27,7 @@ from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("edm")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
     return parser.parse_args()
@@ -34,12 +35,12 @@ def parse_args():
 
 def main(args):
     device = setup(args)
-    conditional = False
+    conditional = True
     latent = False
     codec, scale = None, 1.0
     data = data_config(args)
     algorithm = {
-        "task": "ddpm",
+        "task": "edm",
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
@@ -56,7 +57,15 @@ def main(args):
         class_conditioning="additive",
     ).to(device)
     model, kind = network, "unet"
-    diffusion = GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
+    model, kind = EDMPreconditioner(network).to(device), "edm"
+    algorithm.update(
+        sigma_min=0.002,
+        sigma_max=80.0,
+        log_sigma_mean=-1.2,
+        log_sigma_std=1.2,
+        condition_dropout=0.0,
+    )
+    GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     loader = make_loader(args)
@@ -93,12 +102,16 @@ def main(args):
                 )
             optimizer.zero_grad(set_to_none=True)
             with autocast(args):
-                time = torch.randint(diffusion.num_steps, (len(clean),), device=device)
-                noise = torch.randn_like(clean)
-                noisy = diffusion.q_sample(clean, time, noise)
-                prediction = model(noisy, time, labels).float()
-                per_image = (prediction - noise).square().flatten(1).mean(1)
-                coordinate = time.float() / diffusion.num_steps
+                log_sigma = -1.2 + 1.2 * torch.randn(len(clean), device=device)
+                sigma = log_sigma.exp()
+                s = sigma[:, None, None, None]
+                noisy = clean + s * torch.randn_like(clean)
+                prediction = model(noisy, sigma, labels).float()
+                weight = (sigma.square() + model.sigma_data**2) / (
+                    sigma * model.sigma_data
+                ).square()
+                per_image = weight * (prediction - clean).square().flatten(1).mean(1)
+                coordinate = ((log_sigma + 6.2) / 10.6).clamp(0, 1)
                 loss = per_image.mean()
             if not torch.isfinite(loss):
                 raise FloatingPointError(

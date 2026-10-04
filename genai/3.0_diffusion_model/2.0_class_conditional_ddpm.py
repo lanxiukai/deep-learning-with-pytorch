@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train class_conditional_ddpm on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -26,7 +26,7 @@ from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("class_conditional_ddpm")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
     return parser.parse_args()
@@ -34,7 +34,7 @@ def parse_args():
 
 def main(args):
     device = setup(args)
-    conditional = False
+    conditional = True
     latent = False
     codec, scale = None, 1.0
     data = data_config(args)

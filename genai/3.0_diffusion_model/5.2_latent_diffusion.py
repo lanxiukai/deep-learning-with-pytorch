@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train ldm on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -9,6 +9,7 @@ import copy
 import torch
 from tqdm import tqdm
 
+from dl_utils.diffusion.checkpoints import load_codec
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
@@ -26,20 +27,25 @@ from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("ldm")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--unconditional",
+        action="store_true",
+        help="Train a separate no-label baseline.",
+    )
     return parser.parse_args()
 
 
 def main(args):
     device = setup(args)
-    conditional = False
-    latent = False
+    conditional = True
+    latent = True
     codec, scale = None, 1.0
     data = data_config(args)
     algorithm = {
-        "task": "ddpm",
+        "task": "ldm",
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
@@ -48,12 +54,21 @@ def main(args):
         "ema_decay": args.ema_decay,
     }
     channels, size = 3, args.image_size
+    conditional = not args.unconditional
+    algorithm["conditional"] = conditional
+    codec, scale, codec_state = load_codec(args.autoencoder_checkpoint, device, data)
+    algorithm.update(
+        codec_checkpoint=str(args.autoencoder_checkpoint.resolve()),
+        codec_id=codec_state["checkpoint_id"],
+        latent_scale=scale,
+    )
+    channels, size = codec.latent_channels, codec.latent_size
     network = DiffusionUNet(
         image_size=size,
         in_channels=channels,
         hidden_dims=args.hidden_dims,
         num_classes=NUM_CLASSES if conditional else None,
-        class_conditioning="additive",
+        class_conditioning="cross_attention",
     ).to(device)
     model, kind = network, "unet"
     diffusion = GaussianDiffusion(num_steps=args.diffusion_steps).to(device)

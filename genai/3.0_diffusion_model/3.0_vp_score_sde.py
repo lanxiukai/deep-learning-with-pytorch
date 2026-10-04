@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train vp on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
 from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
+from dl_utils.diffusion.diffusion_score_sde import VPSDE
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.lesson_utils import (
     BinnedLoss,
@@ -26,7 +27,7 @@ from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("vp")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
     return parser.parse_args()
@@ -39,7 +40,7 @@ def main(args):
     codec, scale = None, 1.0
     data = data_config(args)
     algorithm = {
-        "task": "ddpm",
+        "task": "vp",
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
@@ -56,7 +57,11 @@ def main(args):
         class_conditioning="additive",
     ).to(device)
     model, kind = network, "unet"
-    diffusion = GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
+    sde = VPSDE()
+    algorithm.update(
+        sde={"beta_min": sde.beta_min, "beta_max": sde.beta_max}, time_epsilon=1e-3
+    )
+    GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     loader = make_loader(args)
@@ -84,21 +89,20 @@ def main(args):
                     if latent
                     else images
                 )
-            labels = classes if conditional else None
             if conditional and algorithm["condition_dropout"]:
-                labels = torch.where(
+                torch.where(
                     torch.rand(len(classes), device=device) < args.condition_dropout,
                     NUM_CLASSES,
                     classes,
                 )
             optimizer.zero_grad(set_to_none=True)
             with autocast(args):
-                time = torch.randint(diffusion.num_steps, (len(clean),), device=device)
+                time = 1e-3 + (1 - 1e-3) * torch.rand(len(clean), device=device)
                 noise = torch.randn_like(clean)
-                noisy = diffusion.q_sample(clean, time, noise)
-                prediction = model(noisy, time, labels).float()
-                per_image = (prediction - noise).square().flatten(1).mean(1)
-                coordinate = time.float() / diffusion.num_steps
+                noisy, _, sigma = sde.marginal_sample(clean, time, noise)
+                score = model(noisy, time * 1000).float()
+                per_image = (sigma * score + noise).square().flatten(1).mean(1)
+                coordinate = time
                 loss = per_image.mean()
             if not torch.isfinite(loss):
                 raise FloatingPointError(

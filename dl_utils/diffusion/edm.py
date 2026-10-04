@@ -26,8 +26,6 @@ class EDMPreconditioner(nn.Module):
         super().__init__()
         if sigma_data <= 0.0 or noise_embedding_scale <= 0.0:
             raise ValueError("EDM scales must be positive")
-        if network.num_classes is not None:
-            raise ValueError("this EDM lesson uses an unconditional base network")
         self.network = network
         self.sigma_data = sigma_data
         self.noise_embedding_scale = noise_embedding_scale
@@ -39,7 +37,9 @@ class EDMPreconditioner(nn.Module):
             "noise_embedding_scale": self.noise_embedding_scale,
         }
 
-    def forward(self, noisy: Tensor, sigma: Tensor) -> Tensor:
+    def forward(
+        self, noisy: Tensor, sigma: Tensor, labels=None, *, return_features=False
+    ) -> Tensor:
         if sigma.shape != (noisy.shape[0],):
             raise ValueError("sigma must have shape [batch]")
         sigma_image = sigma.reshape(noisy.shape[0], 1, 1, 1)
@@ -55,7 +55,12 @@ class EDMPreconditioner(nn.Module):
         residual = self.network(
             c_in * noisy,
             c_noise * self.noise_embedding_scale,
+            labels,
+            return_features=return_features,
         )
+        if return_features:
+            residual, features = residual
+            return c_skip * noisy + c_out * residual, features
         return c_skip * noisy + c_out * residual
 
 
@@ -92,6 +97,7 @@ def sample_edm(
     solver: Literal["euler", "heun"] = "heun",
     initial_noise: Tensor | None = None,
     generator: torch.Generator | None = None,
+    labels=None,
     return_trajectory: bool = False,
     trajectory_frames: int = 8,
 ) -> tuple[Tensor, list[Tensor], int]:
@@ -125,7 +131,7 @@ def sample_edm(
             sigma = sigmas[index]
             sigma_next = sigmas[index + 1]
             sigma_batch = sigma.expand(shape[0])
-            denoised = model(state, sigma_batch)
+            denoised = model(state, sigma_batch, labels)
             function_evaluations += 1
             derivative = (state - denoised) / sigma
             step = sigma_next - sigma
@@ -133,7 +139,7 @@ def sample_edm(
 
             if solver == "heun" and sigma_next > 0:
                 next_batch = sigma_next.expand(shape[0])
-                denoised_next = model(euler, next_batch)
+                denoised_next = model(euler, next_batch, labels)
                 function_evaluations += 1
                 next_derivative = (euler - denoised_next) / sigma_next
                 state = state + 0.5 * step * (derivative + next_derivative)

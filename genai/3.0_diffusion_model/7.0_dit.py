@@ -1,4 +1,4 @@
-"""Train ddpm on the common Food-101 split; evaluation has a separate numbered entry.
+"""Train dit on the common Food-101 split; evaluation has a separate numbered entry.
 
 The target, loss, optimizer update and EMA are visible below. All reported
 training evidence must come from an actual run, not this source file.
@@ -9,9 +9,9 @@ import copy
 import torch
 from tqdm import tqdm
 
+from dl_utils.diffusion.checkpoints import load_codec
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
-from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
-from dl_utils.diffusion.diffusion_unet import DiffusionUNet
+from dl_utils.diffusion.learned_variance import LearnedVarianceDiffusion
 from dl_utils.diffusion.lesson_utils import (
     BinnedLoss,
     autocast,
@@ -22,24 +22,36 @@ from dl_utils.diffusion.lesson_utils import (
     training_parser,
 )
 from dl_utils.diffusion.monitoring import monitor_generation
+from dl_utils.diffusion.transformer import DiffusionTransformer
 from dl_utils.training.ema import update_ema
 
 
 def parse_args():
-    parser = training_parser("ddpm")
+    parser = training_parser("dit")
     parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
+    parser.add_argument(
+        "--unconditional",
+        action="store_true",
+        help="Train a separate no-label baseline.",
+    )
+    parser.add_argument("--dim", type=int, default=384)
+    parser.add_argument("--depth", type=int, default=12)
+    parser.add_argument("--heads", type=int, default=6)
+    parser.add_argument("--patch-size", type=int, default=2)
+    parser.add_argument("--rope", action="store_true")
+    parser.add_argument("--qk-norm", action="store_true")
     return parser.parse_args()
 
 
 def main(args):
     device = setup(args)
-    conditional = False
-    latent = False
+    conditional = True
+    latent = True
     codec, scale = None, 1.0
     data = data_config(args)
     algorithm = {
-        "task": "ddpm",
+        "task": "dit",
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
@@ -48,19 +60,37 @@ def main(args):
         "ema_decay": args.ema_decay,
     }
     channels, size = 3, args.image_size
-    network = DiffusionUNet(
+    conditional = not args.unconditional
+    algorithm["conditional"] = conditional
+    codec, scale, codec_state = load_codec(args.autoencoder_checkpoint, device, data)
+    algorithm.update(
+        codec_checkpoint=str(args.autoencoder_checkpoint.resolve()),
+        codec_id=codec_state["checkpoint_id"],
+        latent_scale=scale,
+    )
+    channels, size = codec.latent_channels, codec.latent_size
+    model = DiffusionTransformer(
         image_size=size,
         in_channels=channels,
-        hidden_dims=args.hidden_dims,
-        num_classes=NUM_CLASSES if conditional else None,
-        class_conditioning="additive",
+        out_channels=channels * 2,
+        dim=args.dim,
+        depth=args.depth,
+        heads=args.heads,
+        patch_size=args.patch_size,
+        num_classes=NUM_CLASSES,
+        rope=args.rope,
+        qk_norm=args.qk_norm,
     ).to(device)
-    model, kind = network, "unet"
-    diffusion = GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
+    for block in model.blocks:
+        block.attention.collect_diagnostics = True
+    kind = "dit"
+    diffusion = LearnedVarianceDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     loader = make_loader(args)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
+    for block in ema.blocks:
+        block.attention.collect_diagnostics = False
     optimizer = torch.optim.AdamW(parameters, lr=args.learning_rate, weight_decay=0.0)
     metadata = {
         "kind": kind,
@@ -94,10 +124,22 @@ def main(args):
             optimizer.zero_grad(set_to_none=True)
             with autocast(args):
                 time = torch.randint(diffusion.num_steps, (len(clean),), device=device)
-                noise = torch.randn_like(clean)
-                noisy = diffusion.q_sample(clean, time, noise)
-                prediction = model(noisy, time, labels).float()
-                per_image = (prediction - noise).square().flatten(1).mean(1)
+                per_image, simple, vb = diffusion.training_losses(
+                    model, clean, time, torch.randn_like(clean), labels
+                )
+                diagnostics = {
+                    "epsilon_mse": simple.mean().item(),
+                    "vb_sum_nats": vb.mean().item(),
+                    "variance_fraction_min": diffusion.last_variance_fraction[0],
+                    "variance_fraction_max": diffusion.last_variance_fraction[1],
+                    "attention_max_logit": max(
+                        b.attention.last_max_logit for b in model.blocks
+                    ),
+                    "attention_entropy": sum(
+                        b.attention.last_entropy for b in model.blocks
+                    )
+                    / len(model.blocks),
+                }
                 coordinate = time.float() / diffusion.num_steps
                 loss = per_image.mean()
             if not torch.isfinite(loss):
