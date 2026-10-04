@@ -19,13 +19,18 @@ from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.discrete_workflow import glasses_loader, load_pair
 from dl_utils.vae.token_priors import CausalTransformerPrior
 
+# Paths and checkpoints
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 CHECKPOINT = PROJECT_ROOT / "output" / "vae" / "vqgan" / "model.pth"
 OUTPUT_DIR = CHECKPOINT.parent / "evaluation"
+
+# Image configuration
 IMAGE_SIZE = 256
 RECONSTRUCTION_SAMPLES = 8
 SAMPLES_PER_CLASS = 4
+
+# Sampling configuration
 TEMPERATURES = (0.7, 1.0, 1.3)
 SEED = 123
 
@@ -37,6 +42,7 @@ def evaluate():
         for temperature in TEMPERATURES
     ):
         raise ValueError("TEMPERATURES must contain finite, positive values.")
+    reset_dir(OUTPUT_DIR)
     set_seed(SEED)
     device = try_gpu()
     tokenizer, prior = load_pair(CHECKPOINT, "vqgan", device, image_size=IMAGE_SIZE)
@@ -50,7 +56,6 @@ def evaluate():
         SAMPLES_PER_CLASS
     )
     side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    reset_dir(str(OUTPUT_DIR))
     save_image_row_grid(
         [originals, reconstruction],
         ["Original", "VQGAN"],

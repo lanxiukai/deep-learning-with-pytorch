@@ -96,9 +96,10 @@ def train_pixelcnn_prior(
                     num_samples, side, side, device=device, temperature=temperature
                 )
                 samples = tokenizer.decode_indices(indices)
+            training_dir = output_dir / "training"
             save_image(
                 samples.mul(0.5).add(0.5),
-                output_dir / "training" / f"prior_epoch_{epoch:03d}.png",
+                training_dir / f"prior_epoch_{epoch:03d}.png",
                 nrow=4,
             )
     save_loss_curves(state["history"], output_dir / "prior_loss.png")

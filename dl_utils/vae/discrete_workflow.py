@@ -18,6 +18,7 @@ from torchvision.utils import save_image
 from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.data.vision import image_folder_dataset
+from dl_utils.filesystem.directories import reset_dir
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import TrainingCheckpoint, atomic_torch_save
 from dl_utils.vae.perceptual_autoencoder import VQPerceptualAutoencoder
@@ -30,6 +31,34 @@ MODEL_TYPES = {
     "vqgan": (VQPerceptualAutoencoder, CausalTransformerPrior),
 }
 PAIR_FORMAT = "discrete-pair-v1"
+
+
+def prepare_training_output(
+    output_dir: Path, *, resume: bool, recipe: Mapping[str, Any]
+) -> None:
+    """Keep the output root and reset planned previews once at startup."""
+    write_previews = True
+    if resume:
+        for name in ("prior_latest.pth", "tokenizer_latest.pth"):
+            path = output_dir / name
+            if path.is_file():
+                checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+                if checkpoint["metadata"] != {"unit": "epoch", "recipe": dict(recipe)}:
+                    raise ValueError(
+                        "Checkpoint metadata mismatch; use the same recipe."
+                    )
+                write_previews = (
+                    name != "prior_latest.pth"
+                    or checkpoint["epoch"] < recipe["prior_epochs"]
+                )
+                break
+    if not output_dir.exists():
+        reset_dir(output_dir)
+    if not resume:
+        (output_dir / "tokenizer_latest.pth").unlink(missing_ok=True)
+        (output_dir / "prior_latest.pth").unlink(missing_ok=True)
+    if write_previews:
+        reset_dir(output_dir / "training")
 
 
 def glasses_loader(
@@ -132,10 +161,10 @@ def save_reconstruction(
     path: str | Path,
     device: torch.device,
 ) -> None:
+    """Save into the training directory initialized by the lesson."""
     model.eval()
     images = originals.to(device)
     reconstruction = model(images)[0]
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
     save_image(
         torch.cat((images, reconstruction)).mul(0.5).add(0.5), path, nrow=len(images)
     )

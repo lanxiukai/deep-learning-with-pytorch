@@ -26,6 +26,7 @@ from dl_utils.vae.discrete_workflow import (
     epoch_checkpoint,
     fixed_images,
     glasses_loader,
+    prepare_training_output,
     save_loss_curves,
     save_pair,
     save_reconstruction,
@@ -40,40 +41,51 @@ from dl_utils.vae.perceptual_autoencoder import (
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.token_priors import CausalTransformerPrior
 
+# Paths and data
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vqgan"
 IMAGE_SIZE = 256
+
+# Tokenizer configuration
 DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
-NUM_CLASSES = len(GLASSES_CLASS_NAMES)
-RESUME = True
-TOKENIZER_EPOCHS = 30
-PRIOR_EPOCHS = 30
-BATCH_SIZE = 16
 HIDDEN_CHANNELS = 128
 LATENT_CHANNELS = 64
 CODEBOOK_SIZE = 512
 COMMITMENT = 0.25
 EMA_DECAY = 0.99
 EMA_EPSILON = 1e-5
+
+# Adversarial objective
 DISCRIMINATOR_CHANNELS = 64
 PERCEPTUAL_WEIGHT = 1.0
 VQ_WEIGHT = 1.0
 DISCRIMINATOR_WEIGHT = 1.0
 DISCRIMINATOR_START = 1000
-ADAM_BETAS = (0.5, 0.9)
+
+# Prior configuration
+NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 PRIOR_DIM = 256
 PRIOR_HEADS = 8
 PRIOR_LAYERS = 4
 PRIOR_DROPOUT = 0.0
+
+# Training configuration
+RESUME = True
+TOKENIZER_EPOCHS = 30
+PRIOR_EPOCHS = 30
+BATCH_SIZE = 16
+ADAM_BETAS = (0.5, 0.9)
 LR = 2e-4
 DISCRIMINATOR_LR = 2e-4
 PRIOR_LR = 3e-4
+WORKERS = 4
+SEED = 42
+
+# Preview configuration
 SAMPLE_EVERY = 10
 NUM_SAMPLES = 8
 TEMPERATURE = 1.0
-WORKERS = 4
-SEED = 42
 
 
 def vqgan_autoencoder_step(
@@ -200,10 +212,11 @@ def train_tokenizer(
         state["history"].append(losses)
         checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+            training_dir = OUTPUT_DIR / "training"
             save_reconstruction(
                 model,
                 originals,
-                OUTPUT_DIR / "training" / f"tokenizer_epoch_{epoch:03d}.png",
+                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
                 device,
             )
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
@@ -264,9 +277,10 @@ def train_prior(
                 samples = tokenizer.decode_indices(
                     indices.reshape(NUM_SAMPLES, side, side)
                 )
+            training_dir = OUTPUT_DIR / "training"
             save_image(
                 samples.mul(0.5).add(0.5),
-                OUTPUT_DIR / "training" / f"prior_epoch_{epoch:03d}.png",
+                training_dir / f"prior_epoch_{epoch:03d}.png",
                 nrow=4,
             )
     save_loss_curves(state["history"], OUTPUT_DIR / "prior_loss.png")
@@ -274,21 +288,6 @@ def train_prior(
 
 
 def train() -> None:
-    set_seed(SEED)
-    device = try_gpu()
-    (OUTPUT_DIR / "training").mkdir(parents=True, exist_ok=True)
-    if not RESUME:
-        (OUTPUT_DIR / "tokenizer_latest.pth").unlink(missing_ok=True)
-        (OUTPUT_DIR / "prior_latest.pth").unlink(missing_ok=True)
-    loader = glasses_loader(
-        DATA_DIR,
-        IMAGE_SIZE,
-        BATCH_SIZE,
-        device,
-        shuffle=True,
-        num_workers=WORKERS,
-        conditional=True,
-    )
     config = {
         "image_size": IMAGE_SIZE,
         "tokenizer": {
@@ -326,6 +325,18 @@ def train() -> None:
         "batch_size": BATCH_SIZE,
         "seed": SEED,
     }
+    prepare_training_output(OUTPUT_DIR, resume=RESUME, recipe=recipe)
+    set_seed(SEED)
+    device = try_gpu()
+    loader = glasses_loader(
+        DATA_DIR,
+        IMAGE_SIZE,
+        BATCH_SIZE,
+        device,
+        shuffle=True,
+        num_workers=WORKERS,
+        conditional=True,
+    )
     tokenizer = VQPerceptualAutoencoder(**config["tokenizer"]).to(device)
     if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
         train_tokenizer(tokenizer, loader, device, recipe)

@@ -21,6 +21,7 @@ from dl_utils.vae.discrete_workflow import glasses_loader, load_pair
 from dl_utils.vae.token_priors import PixelCNNPrior
 from dl_utils.vae.vae import VAE
 
+# Paths and checkpoints
 PROJECT_ROOT = infer_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output" / "vae"
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
@@ -30,8 +31,12 @@ PAIR_CHECKPOINTS = {
     "vq_vae": OUTPUT_ROOT / "vq_vae" / "model.pth",
     "fsq": OUTPUT_ROOT / "fsq" / "model.pth",
 }
+
+# Image configuration
 IMAGE_SIZE = 256
 NUM_SAMPLES = 8
+
+# Sampling configuration
 TEMPERATURES = (0.7, 1.0, 1.3)
 SEED = 123
 
@@ -43,6 +48,7 @@ def evaluate():
         for temperature in TEMPERATURES
     ):
         raise ValueError("TEMPERATURES must contain finite, positive values.")
+    reset_dir(OUTPUT_DIR)
     set_seed(SEED)
     device = try_gpu()
     loader = glasses_loader(DATA_DIR, IMAGE_SIZE, NUM_SAMPLES, device)
@@ -71,7 +77,6 @@ def evaluate():
         assert isinstance(prior, PixelCNNPrior)
         reconstructions.append(tokenizer(originals)[0])
         pairs[name] = (tokenizer, prior)
-    reset_dir(str(OUTPUT_DIR))
     save_image_row_grid(
         reconstructions,
         ["Original", "VAE (mean)", "VQ-VAE", "FSQ"],

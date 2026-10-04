@@ -23,6 +23,7 @@ from dl_utils.vae.discrete_workflow import (
     epoch_checkpoint,
     fixed_images,
     glasses_loader,
+    prepare_training_output,
     save_loss_curves,
     save_pair,
     save_reconstruction,
@@ -31,23 +32,32 @@ from dl_utils.vae.discrete_workflow import (
 from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior
 from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, FSQAutoencoder
 
+# Paths and data
 PROJECT_ROOT = infer_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "glasses-256"
 OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "fsq"
 IMAGE_SIZE = 256
+
+# Tokenizer configuration
 DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
+HIDDEN_CHANNELS = 128
+LEVELS = (8, 8, 8)
+
+# Prior configuration
+PRIOR_HIDDEN_CHANNELS = 64
+PRIOR_LAYERS = 16
+
+# Training configuration
 RESUME = True
 TOKENIZER_EPOCHS = 100
 PRIOR_EPOCHS = 100
-HIDDEN_CHANNELS = 128
-LEVELS = (8, 8, 8)
-PRIOR_HIDDEN_CHANNELS = 64
-PRIOR_LAYERS = 16
 BATCH_SIZE = 16
 LR = 2e-4
 PRIOR_LR = 2e-4
 WORKERS = 4
 SEED = 42
+
+# Preview configuration
 SAMPLE_EVERY = 10
 NUM_SAMPLES = 8
 TEMPERATURE = 1.0
@@ -93,25 +103,17 @@ def train_tokenizer(
         state["history"].append(losses)
         checkpoint.save(epoch, state)
         if epoch == 1 or epoch % SAMPLE_EVERY == 0 or epoch == TOKENIZER_EPOCHS:
+            training_dir = OUTPUT_DIR / "training"
             save_reconstruction(
                 model,
                 originals,
-                OUTPUT_DIR / "training" / f"tokenizer_epoch_{epoch:03d}.png",
+                training_dir / f"tokenizer_epoch_{epoch:03d}.png",
                 device,
             )
     save_loss_curves(state["history"], OUTPUT_DIR / "tokenizer_loss.png")
 
 
 def train() -> None:
-    set_seed(SEED)
-    device = try_gpu()
-    (OUTPUT_DIR / "training").mkdir(parents=True, exist_ok=True)
-    if not RESUME:
-        (OUTPUT_DIR / "tokenizer_latest.pth").unlink(missing_ok=True)
-        (OUTPUT_DIR / "prior_latest.pth").unlink(missing_ok=True)
-    loader = glasses_loader(
-        DATA_DIR, IMAGE_SIZE, BATCH_SIZE, device, shuffle=True, num_workers=WORKERS
-    )
     config = {
         "image_size": IMAGE_SIZE,
         "tokenizer": {
@@ -134,6 +136,12 @@ def train() -> None:
         "batch_size": BATCH_SIZE,
         "seed": SEED,
     }
+    prepare_training_output(OUTPUT_DIR, resume=RESUME, recipe=recipe)
+    set_seed(SEED)
+    device = try_gpu()
+    loader = glasses_loader(
+        DATA_DIR, IMAGE_SIZE, BATCH_SIZE, device, shuffle=True, num_workers=WORKERS
+    )
     tokenizer = FSQAutoencoder(**config["tokenizer"]).to(device)
     if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
         train_tokenizer(tokenizer, loader, device, recipe)
