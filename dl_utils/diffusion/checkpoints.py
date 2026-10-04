@@ -18,9 +18,7 @@ def build_model(kind, config):
 def load_model(path, device="cpu", *, ema=True, model_builder=None):
     state = torch.load(path, map_location="cpu", weights_only=True)
     if state.get("format_version") != 4:
-        raise ValueError(
-            "Expected a Food-101 format-4 checkpoint; retrain the old CelebA lessons."
-        )
+        raise ValueError("Expected a Food-101 format-4 checkpoint.")
     model = (model_builder or build_model)(state["kind"], state["model_config"])
     model.load_state_dict(state["ema" if ema else "model"])
     return model.to(device).eval().requires_grad_(False), state

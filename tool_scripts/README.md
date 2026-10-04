@@ -153,7 +153,7 @@ uv run --locked --no-sync python tool_scripts/download_dataset.py
 ```
 
 The default sequence is `mnist`, `fashion-mnist`, `house-prices`, `time-machine`,
-`celeba`, `anime-face`, `glasses`, `airfoil`, `fra-eng`, `pokemon`.
+`celeba`, `anime-face`, `glasses`, `airfoil`, `fra-eng`, `pokemon`, `food101`.
 
 Select one or several datasets by listing them after `--dataset`. Selections
 run in the order given, and duplicates are ignored after their first
@@ -178,3 +178,38 @@ continues through the selected sequence after individual provider failures and
 reports all failed datasets at the end. Selecting CelebA always prepares the
 black/blond CycleGAN splits; selecting glasses always classifies, corrects, and
 builds the 256-pixel cache.
+
+### Food-101 for diffusion and modern generation
+
+Download and preprocess the shared dataset once:
+
+```bash
+uv run --locked --no-sync python tool_scripts/download_dataset.py --dataset food101
+```
+
+This keeps the official archive and extracted images in `data/food101/` and
+writes 101,000 RGB PNG images to `data/food101-256/images/<class>/`. Preparation
+uses bicubic short-edge resizing followed by a 256x256 center crop. Lossless
+PNG preserves the resized pixels without a second JPEG compression. Repeating
+the command verifies existing cache images and prepares missing ones; individual
+images and the completed manifest are published atomically.
+
+`data/food101-256/diffusion_manifest.json` retains the official image IDs and
+alphabetical 101-class mapping. Split seed 42 gives 70,700 training, 5,050
+validation, and 25,250 official test images. All training and evaluation
+entries in the [foundation](../genai/3.0_diffusion_model/0.0-ROADMAP.md) and
+[modern](../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) series default to
+this prepared directory. They read the cached 256x256 images directly; training
+adds horizontal flips and normalization. SR conditions and explicit 128px
+experiments downsample the same cached images.
+
+For an existing download, custom locations, or a different worker count, use
+the shared [preparation lesson](../genai/3.0_diffusion_model/0.1_prepare_data.py):
+
+```bash
+uv run --locked --no-sync python genai/3.0_diffusion_model/0.1_prepare_data.py \
+  --source-dir data/food101 --data-dir data/food101-256 --workers 8
+```
+
+Add `--download` if the source is missing. Only the prepared directory is needed
+on the training host; pass its location through `--data-dir` in either series.

@@ -1,4 +1,4 @@
-"""Reconstruct an explicit lesson model; reject old dataset/codec contracts."""
+"""Reconstruct lesson models and validate their dataset and frozen-codec contracts."""
 
 from pathlib import Path
 

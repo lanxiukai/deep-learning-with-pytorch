@@ -124,6 +124,17 @@ def _download_airfoil() -> None:
     print(f"The Airfoil Self-Noise Dataset has been downloaded: {data.shape}")
 
 
+def _download_food101() -> None:
+    from dl_utils.diffusion.preparation import prepare_food101_cache
+
+    prepare_food101_cache(
+        DATA_DIR / "food101",
+        DATA_DIR / "food101-256",
+        download=True,
+        workers=min(8, os.cpu_count() or 1),
+    )
+
+
 def _download_fra_eng() -> None:
     data_dir = download_extract("fra-eng", data_root=DATA_DIR)
     print(f"The English-French Dataset has been downloaded: {data_dir}")
@@ -145,6 +156,7 @@ DOWNLOADERS: dict[str, Callable[[], None]] = {
     "airfoil": _download_airfoil,
     "fra-eng": _download_fra_eng,
     "pokemon": _download_pokemon,
+    "food101": _download_food101,
 }
 DATASET_ORDER = tuple(DOWNLOADERS)
 

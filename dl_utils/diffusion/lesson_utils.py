@@ -16,7 +16,7 @@ from torchvision.utils import save_image
 from dl_utils.filesystem.project_root import infer_project_root
 
 PROJECT_ROOT = infer_project_root()
-DATA_DIR = PROJECT_ROOT / "data/food101"
+DATA_DIR = PROJECT_ROOT / "data/food101-256"
 OUTPUT_ROOT = Path(os.environ.get("DL_OUTPUT_ROOT", PROJECT_ROOT / "output/diffusion"))
 
 
@@ -206,9 +206,7 @@ def resume_training(args, model, ema, optimizers, metadata):
             expected = {k: v for k, v in expected.items() if k not in locations}
             actual = {k: v for k, v in actual.items() if k not in locations}
         if actual != expected:
-            raise ValueError(
-                f"Incompatible checkpoint {key}; old CelebA weights cannot be resumed."
-            )
+            raise ValueError(f"Checkpoint {key} differs from the current run.")
     model.load_state_dict(state["model"])
     ema.load_state_dict(state["ema"])
     for optimizer, saved in zip(optimizers, state["optimizers"], strict=True):

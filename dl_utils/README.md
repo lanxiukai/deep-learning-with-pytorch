@@ -65,7 +65,9 @@ environment or dependency workflow.
   [modern roadmap](../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) covers
   LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD, DMD2 and iMF in [modern/](modern/).
   Each series has separate numbered training and evaluation entries.
-  [data.py](diffusion/data.py) owns the shared 256px Food-101 manifest;
+  [preparation.py](diffusion/preparation.py) builds the shared lossless 256px
+  Food-101 cache, and [data.py](diffusion/data.py) loads it directly using the
+  shared manifest. Both series default to `data/food101-256/`;
   [quality.py](diffusion/quality.py) supplies Clean-FID features, distribution,
   category and cost metrics. Modern code reuses foundation utilities; foundation
   imports do not load the modern package. Each family owns its model assembly,

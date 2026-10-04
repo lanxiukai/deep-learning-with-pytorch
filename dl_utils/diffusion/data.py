@@ -1,4 +1,4 @@
-"""One Food-101 manifest for every lesson: 700/50/250 images per class."""
+"""Shared prepared Food-101 images: 700/50/250 images per class."""
 
 import json
 import random
@@ -8,10 +8,37 @@ import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from torchvision.transforms import InterpolationMode
 
 NUM_CLASSES = 101
 SPLIT_SEED = 42
+CACHE_SPEC = {
+    "version": 1,
+    "image_size": 256,
+    "mode": "RGB",
+    "format": "PNG",
+    "geometry": "bicubic short-edge resize; center crop",
+}
+
+
+def prepared_manifest(root):
+    path = Path(root) / "diffusion_manifest.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Prepared Food-101 manifest not found: {path}. Run "
+            "tool_scripts/download_dataset.py --dataset food101 first."
+        )
+    manifest = json.loads(path.read_text())
+    if (
+        manifest.get("dataset") != "Food-101"
+        or len(manifest.get("classes", [])) != NUM_CLASSES
+        or manifest.get("cache") != CACHE_SPEC
+    ):
+        raise ValueError(
+            "Expected the prepared Food-101 256px PNG cache. Run "
+            "tool_scripts/download_dataset.py --dataset food101 and point "
+            "--data-dir to data/food101-256, not the original archive directory."
+        )
+    return manifest
 
 
 def prepare_food101(root, *, download=False):
@@ -32,6 +59,11 @@ def prepare_food101(root, *, download=False):
         ids = sorted(train[name])
         if len(ids) != 750 or len(test[name]) != 250:
             raise ValueError(f"Incomplete official split for {name}.")
+        all_ids = ids + test[name]
+        if len(set(all_ids)) != 1000 or any(
+            Path(item).parts != (name, Path(item).name) for item in all_ids
+        ):
+            raise ValueError(f"Invalid or duplicate official image IDs for {name}.")
         rng.shuffle(ids)
         for split, selected in (
             ("validation", ids[:50]),
@@ -55,22 +87,18 @@ def prepare_food101(root, *, download=False):
 class FoodImages(Dataset):
     def __init__(self, root, split="train", image_size=256, augment=False, limit=None):
         self.root = Path(root)
-        manifest = json.loads((self.root / "diffusion_manifest.json").read_text())
+        if image_size not in (128, 256):
+            raise ValueError("Expected 256px images or derived 128px observations.")
+        self.image_size = image_size
+        manifest = prepared_manifest(self.root)
         self.classes = manifest["classes"]
-        if manifest["dataset"] != "Food-101" or len(self.classes) != NUM_CLASSES:
-            raise ValueError("Prepare the shared Food-101 manifest first.")
         self.records = manifest["splits"][split]
         if limit is not None:
             groups = [
                 [r for r in self.records if r[1] == c] for c in range(NUM_CLASSES)
             ]
             self.records = [r for row in zip(*groups) for r in row][:limit]
-        operations = [
-            transforms.Resize(
-                image_size, interpolation=InterpolationMode.BICUBIC, antialias=True
-            ),
-            transforms.CenterCrop(image_size),
-        ]
+        operations = []
         if augment:
             operations.append(transforms.RandomHorizontalFlip())
         self.transform = transforms.Compose(
@@ -82,8 +110,14 @@ class FoodImages(Dataset):
 
     def __getitem__(self, index):
         sample, label = self.records[index]
-        with Image.open(self.root / "food-101/images" / sample) as image:
-            return self.transform(image.convert("RGB")), label
+        path = self.root / "images" / Path(sample).with_suffix(".png")
+        with Image.open(path) as image:
+            if image.size != (256, 256) or image.mode != "RGB":
+                raise ValueError(f"Expected a prepared 256x256 RGB image: {path}")
+            tensor = self.transform(image)
+        if self.image_size == 128:
+            tensor = low_resolution(tensor.unsqueeze(0)).squeeze(0)
+        return tensor, label
 
 
 def make_loader(args, split="train", *, augment=None, shuffle=None, limit=None):
@@ -105,13 +139,17 @@ def make_loader(args, split="train", *, augment=None, shuffle=None, limit=None):
 
 
 def data_config(args):
-    manifest = json.loads((Path(args.data_dir) / "diffusion_manifest.json").read_text())
+    manifest = prepared_manifest(args.data_dir)
     return {
         "dataset": "Food-101",
         "classes": manifest["classes"],
         "split_seed": manifest["split_seed"],
         "image_size": args.image_size,
-        "preprocessing": "bicubic short-edge resize; center crop; train horizontal flip",
+        "preprocessing": {
+            "cache": dict(manifest["cache"]),
+            "training_augmentation": "horizontal flip",
+            "input_128px": "antialiased bicubic tensor downsample from the 256px cache",
+        },
         "range": [-1, 1],
         "split_sizes": {k: len(v) for k, v in manifest["splits"].items()},
     }
