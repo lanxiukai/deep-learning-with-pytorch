@@ -2,9 +2,13 @@
 
 Run 7.0 first. Eight training images are reconstructed. Four independent G
 samples and four NoG samples are labeled by row; columns do not match identities.
+TEMPERATURES selects the prior temperatures; each gets a separate sample grid.
 """
 
+import math
+
 import torch
+from tqdm.auto import tqdm
 
 from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.filesystem.directories import reset_dir
@@ -22,12 +26,17 @@ OUTPUT_DIR = CHECKPOINT.parent / "evaluation"
 IMAGE_SIZE = 256
 RECONSTRUCTION_SAMPLES = 8
 SAMPLES_PER_CLASS = 4
-TEMPERATURE = 1.0
+TEMPERATURES = (0.7, 1.0, 1.3)
 SEED = 123
 
 
 @torch.inference_mode()
 def evaluate():
+    if not TEMPERATURES or any(
+        not math.isfinite(temperature) or temperature <= 0
+        for temperature in TEMPERATURES
+    ):
+        raise ValueError("TEMPERATURES must contain finite, positive values.")
     set_seed(SEED)
     device = try_gpu()
     tokenizer, prior = load_pair(CHECKPOINT, "vqgan", device, image_size=IMAGE_SIZE)
@@ -41,10 +50,6 @@ def evaluate():
         SAMPLES_PER_CLASS
     )
     side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-    indices = prior.sample(
-        len(labels), device=device, labels=labels, temperature=TEMPERATURE
-    )
-    samples = tokenizer.decode_indices(indices.reshape(len(labels), side, side))
     reset_dir(str(OUTPUT_DIR))
     save_image_row_grid(
         [originals, reconstruction],
@@ -53,13 +58,24 @@ def evaluate():
         title="Same training images: reconstruction",
         dpi=160,
     )
-    save_image_row_grid(
-        samples.split(SAMPLES_PER_CLASS),
-        ["G (with glasses)", "NoG (without glasses)"],
-        OUTPUT_DIR / "vqgan_prior_samples.png",
-        title="Independent class-conditional prior samples",
-        dpi=160,
-    )
+    with tqdm(TEMPERATURES, desc="Generate VQGAN", unit="temperature") as progress:
+        for temperature in progress:
+            progress.set_postfix(temperature=temperature, refresh=False)
+            with torch.random.fork_rng():
+                torch.manual_seed(SEED)
+                indices = prior.sample(
+                    len(labels), device=device, labels=labels, temperature=temperature
+                )
+                samples = tokenizer.decode_indices(
+                    indices.reshape(len(labels), side, side)
+                )
+            save_image_row_grid(
+                samples.split(SAMPLES_PER_CLASS),
+                ["G (with glasses)", "NoG (without glasses)"],
+                OUTPUT_DIR / f"vqgan_prior_samples_temperature_{temperature}.png",
+                title=f"Independent class-conditional prior samples: temperature={temperature}",
+                dpi=160,
+            )
 
 
 if __name__ == "__main__":

@@ -1,12 +1,15 @@
-"""Compare VAE, VQ-VAE, and FSQ using two eight-image grids.
+"""Compare VAE, VQ-VAE, and FSQ with reconstruction and temperature sample grids.
 
 Run 1.0, 6.0, and 6.1 first. Reconstructions use the same training images;
 generation rows are independent unconditional samples, with no matched identities.
+TEMPERATURES controls the discrete priors; the VAE row stays fixed for comparison.
 """
 
+import math
 from typing import cast
 
 import torch
+from tqdm.auto import tqdm
 
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.filesystem.project_root import infer_project_root
@@ -29,12 +32,17 @@ PAIR_CHECKPOINTS = {
 }
 IMAGE_SIZE = 256
 NUM_SAMPLES = 8
-TEMPERATURE = 1.0
+TEMPERATURES = (0.7, 1.0, 1.3)
 SEED = 123
 
 
 @torch.inference_mode()
 def evaluate():
+    if not TEMPERATURES or any(
+        not math.isfinite(temperature) or temperature <= 0
+        for temperature in TEMPERATURES
+    ):
+        raise ValueError("TEMPERATURES must contain finite, positive values.")
     set_seed(SEED)
     device = try_gpu()
     loader = glasses_loader(DATA_DIR, IMAGE_SIZE, NUM_SAMPLES, device)
@@ -57,18 +65,12 @@ def evaluate():
         torch.manual_seed(SEED)
         vae_samples = vae.decoder(torch.randn(NUM_SAMPLES, vae.z_dim, device=device))
     reconstructions = [originals, reconstruction.mul(2).sub(1)]
-    generations = [vae_samples.mul(2).sub(1)]
+    pairs = {}
     for name, path in PAIR_CHECKPOINTS.items():
         tokenizer, prior = load_pair(path, name, device, image_size=IMAGE_SIZE)
         assert isinstance(prior, PixelCNNPrior)
         reconstructions.append(tokenizer(originals)[0])
-        side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
-        with torch.random.fork_rng():
-            torch.manual_seed(SEED)
-            indices = prior.sample(
-                NUM_SAMPLES, side, side, device=device, temperature=TEMPERATURE
-            )
-            generations.append(tokenizer.decode_indices(indices))
+        pairs[name] = (tokenizer, prior)
     reset_dir(str(OUTPUT_DIR))
     save_image_row_grid(
         reconstructions,
@@ -77,13 +79,27 @@ def evaluate():
         title="Same training images: reconstruction",
         dpi=160,
     )
-    save_image_row_grid(
-        generations,
-        ["VAE", "VQ-VAE", "FSQ"],
-        OUTPUT_DIR / "vae_vq_vae_fsq_samples.png",
-        title="Independent unconditional prior samples",
-        dpi=160,
-    )
+    with tqdm(
+        TEMPERATURES, desc="Generate VQ-VAE / FSQ", unit="temperature"
+    ) as progress:
+        for temperature in progress:
+            progress.set_postfix(temperature=temperature, refresh=False)
+            generations = [vae_samples.mul(2).sub(1)]
+            for tokenizer, prior in pairs.values():
+                side = IMAGE_SIZE // (2**tokenizer.downsample_steps)
+                with torch.random.fork_rng():
+                    torch.manual_seed(SEED)
+                    indices = prior.sample(
+                        NUM_SAMPLES, side, side, device=device, temperature=temperature
+                    )
+                    generations.append(tokenizer.decode_indices(indices))
+            save_image_row_grid(
+                generations,
+                ["VAE", "VQ-VAE", "FSQ"],
+                OUTPUT_DIR / f"vae_vq_vae_fsq_samples_temperature_{temperature}.png",
+                title=f"Independent unconditional prior samples: temperature={temperature}",
+                dpi=160,
+            )
 
 
 if __name__ == "__main__":
