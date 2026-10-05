@@ -44,8 +44,9 @@ class PixelCNNPrior(nn.Module):
     """Token embeddings, masked convolutions with ReLU, and a 1x1 class head.
 
     The first convolution uses mask A; later convolutions use mask B on
-    already-causal features. The single stream has a receptive-field blind
-    spot and does not cover every earlier token, even with sixteen layers.
+    already-causal features. A small first kernel leaves an above-right blind
+    spot even in a deep stack. For a square grid of side length s, a first
+    kernel of size 2*s-1 sees every earlier token directly.
     The prior supports only unconditional generation.
     """
 
@@ -55,10 +56,13 @@ class PixelCNNPrior(nn.Module):
         *,
         hidden_channels: int = 64,
         layers: int = 16,
+        first_kernel_size: int = 7,
     ) -> None:
         super().__init__()
         if layers < 1:
             raise ValueError("PixelCNN needs at least one masked layer.")
+        if first_kernel_size < 1 or first_kernel_size % 2 == 0:
+            raise ValueError("The first PixelCNN kernel size must be positive and odd.")
         self.vocabulary_size = vocabulary_size
         self.embedding = nn.Embedding(vocabulary_size, hidden_channels)  # (K, m)
         self.causal = nn.ModuleList(
@@ -67,8 +71,8 @@ class PixelCNNPrior(nn.Module):
                     "A" if i == 0 else "B",
                     hidden_channels,
                     hidden_channels,
-                    7 if i == 0 else 3,
-                    padding=3 if i == 0 else 1,
+                    first_kernel_size if i == 0 else 3,
+                    padding=first_kernel_size // 2 if i == 0 else 1,
                 )
                 for i in range(layers)
             ]

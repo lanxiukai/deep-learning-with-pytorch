@@ -11,8 +11,9 @@ See dl_utils/vae/quantization.py and token_priors.py for the model paths.
 
 Stage 1 minimizes mean RGB MSE plus 0.25 * mean squared commitment error.
 Stage 2 freezes the tokenizer, encodes every image once into memory, and fits
-p(k) = product_t p(k_t | k_<t) with mean token cross-entropy. This single-stream
-PixelCNN has a receptive-field blind spot; it cannot use every earlier token.
+p(k) = product_t p(k_t | k_<t) with mean token cross-entropy. A 31x31 first
+masked convolution sees every earlier token in the 16x16 grid directly;
+seven 3x3 masked layers refine that context in the same single stream.
 Sampling visits all 256 positions sequentially, then decodes the complete grid.
 
 RESUME=True restores the same recipe at an epoch boundary, including optimizer
@@ -38,20 +39,21 @@ Training data -- glasses-256 (fresh run):
 Training images:          4,500
 Batch size:                  16
 Samples per epoch:        4,500 (281 full batches + 4 images; drop_last=False)
-Tokenizer/prior epochs:     100 / 100
-Optimizer updates:       28,200 per stage; 56,400 total
+Tokenizer/prior epochs:     100 / 50
+Optimizer updates:       28,200 tokenizer + 14,100 prior = 42,300 total
 
 Default dimensions:
 Training/generated image: 256x256 RGB in [-1, 1]
 Token grid:               16x16; four 2x downsampling stages
 Codebook:                 512 vectors, 64 values each
 Encoder/decoder width:    128 channels; first/last image stage: 64 channels
-PixelCNN:                 128 channels, 16 masked layers, 512 output logits
-Model size:               tokenizer 2.236 M / prior 3.165 M parameters
+PixelCNN:                 128 channels, 8 masked layers, first kernel 31x31
+                          512 output logits per token
+Model size:               tokenizer 2.236 M / prior 16.926 M parameters
                           Tokenizer count includes 32,768 frozen codebook values.
 EMA decay / epsilon:      0.99 / 1e-5
-Optimizer:                Adam, betas (0.9, 0.999), constant 2e-4 for both stages
-Previews:                 8 images; epochs 1, every 10, and final; temperature 0.6
+Optimizer:                Adam, betas (0.9, 0.999); tokenizer 2e-4, prior 5e-4
+Previews:                 8 images; epochs 1, every 10, and final; temperature 1.0
 
 Run without arguments; edit the constants below to experiment. Comparison
 with VAE shares data, but pixel scaling, loss reduction, and training differ.
@@ -98,25 +100,26 @@ EMA_DECAY = 0.99
 EMA_EPSILON = 1e-5
 
 # Prior configuration
-# A wider prior improves sample coherence within the same epoch budget.
+# The first mask covers the complete causal history of a 16x16 token grid.
 PRIOR_HIDDEN_CHANNELS = 128
-PRIOR_LAYERS = 16
+PRIOR_LAYERS = 8
+PRIOR_KERNEL_SIZE = 31
 
 # Training configuration
 RESUME = True
 TOKENIZER_EPOCHS = 100
-PRIOR_EPOCHS = 100
+PRIOR_EPOCHS = 50
 BATCH_SIZE = 16
 LR = 2e-4
-PRIOR_LR = 2e-4
+PRIOR_LR = 5e-4
 WORKERS = 4
 SEED = 42
 
 # Preview configuration
 SAMPLE_EVERY = 10
 NUM_SAMPLES = 8
-# Trade some diversity for cleaner teaching previews.
-TEMPERATURE = 0.6
+# Sample the learned categorical distribution without temperature sharpening.
+TEMPERATURE = 1.0
 
 
 def train_tokenizer(
@@ -195,6 +198,7 @@ def train() -> None:
             "vocabulary_size": CODEBOOK_SIZE,
             "hidden_channels": PRIOR_HIDDEN_CHANNELS,
             "layers": PRIOR_LAYERS,
+            "first_kernel_size": PRIOR_KERNEL_SIZE,
         },
     }
     recipe = {

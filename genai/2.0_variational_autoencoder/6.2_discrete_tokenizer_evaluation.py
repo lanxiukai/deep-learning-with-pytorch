@@ -36,7 +36,7 @@ Evaluation defaults:
     Reconstruction images: 8 shared training inputs; one batch.
     Generated images:      16 per model and temperature; 2 rows of 8; 256x256 RGB.
     Discrete token grid:   16x16 with the default four downsampling stages.
-    Prior temperatures:    0.6, 1.0, 1.3.
+    Prior temperatures:    0.9, 1.0, 1.1.
     Seed:                  123 for controlled prior sampling.
 
 Run without arguments after training 6.0 and 6.1; edit the constants
@@ -72,7 +72,7 @@ NUM_SAMPLES = 16
 SAMPLE_GRID_COLUMNS = 8
 
 # Sampling configuration
-TEMPERATURES = (0.6, 1.0, 1.3)
+TEMPERATURES = (0.9, 1.0, 1.1)
 SEED = 123
 
 

@@ -133,10 +133,12 @@ environment or dependency workflow.
   instead of reconstructions. Model modules do not import the workflow.
   [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
   autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
-  with ReLU and recomputes full-grid logits for each sampled position. Its
-  receptive field has a blind spot. The Transformer recomputes the full token
-  prefix at each step; its layers are independently initialized. Transformer
-  sampling temporarily disables dropout and restores the previous mode.
+  with ReLU and a configurable first kernel. The lessons use a 31x31 first
+  mask and eight layers to cover the full causal history of their 16x16 grids.
+  Sampling recomputes full-grid logits for each position. The Transformer
+  recomputes the full token prefix at each step; its layers are independently
+  initialized. Transformer sampling temporarily disables dropout and restores
+  the previous mode.
   [vae/quantization.py](vae/quantization.py) supplies the shared quantizers.
   The lessons use `TOKENIZER_DOWNSAMPLE_STEPS=4`: 256x256 images map to 16x16
   grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior
