@@ -49,6 +49,7 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.discrete_tokenizers import VQVAE
 from dl_utils.vae.discrete_workflow import (
     epoch_checkpoint,
     fixed_images,
@@ -60,7 +61,6 @@ from dl_utils.vae.discrete_workflow import (
     seed_epoch_loader,
 )
 from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior
-from dl_utils.vae.quantization import VQVAE
 
 # Paths and data
 PROJECT_ROOT = infer_project_root()

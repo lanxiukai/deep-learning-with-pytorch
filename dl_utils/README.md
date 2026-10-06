@@ -140,7 +140,8 @@ environment or dependency workflow.
   recomputes the full token prefix at each step; its layers are independently
   initialized. Both samplers temporarily disable dropout and restore
   the previous mode.
-  [vae/quantization.py](vae/quantization.py) supplies the shared quantizers.
+  [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
+  quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids
   with 128/240 possible codes. VQGAN uses `TOKENIZER_DOWNSAMPLE_STEPS=4` for
   16x16 grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior

@@ -21,12 +21,12 @@ from dl_utils.data.vision import image_folder_dataset
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import TrainingCheckpoint, atomic_torch_save
-from dl_utils.vae.vqgan import VQPerceptualAutoencoder
-from dl_utils.vae.quantization import VQVAE, FSQAutoencoder, validate_image_size
+from dl_utils.vae.discrete_tokenizers import VQVAE, FSQAutoencoder, validate_image_size
 from dl_utils.vae.token_priors import (
     CausalTransformerPrior,
     PixelCNNPrior,
 )
+from dl_utils.vae.vqgan import VQPerceptualAutoencoder
 
 MODEL_TYPES = {
     "vq_vae": (VQVAE, PixelCNNPrior),

@@ -12,7 +12,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
-from dl_utils.vae.quantization import (
+from dl_utils.vae.discrete_tokenizers import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     VectorQuantizer,
     validate_image_size,
@@ -132,51 +132,6 @@ class PerceptualDecoder(nn.Module):
         return self.net(z)
 
 
-class VQPerceptualAutoencoder(nn.Module):
-    """VQGAN first-stage model without hiding its loss in the module."""
-
-    def __init__(
-        self,
-        *,
-        latent_channels: int = 64,
-        codebook_size: int = 512,
-        hidden_channels: int = 128,
-        commitment: float = 0.25,
-        ema_decay: float = 0.99,
-        ema_epsilon: float = 1e-5,
-        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
-    ) -> None:
-        super().__init__()
-        self.downsample_steps = downsample_steps
-        self.encoder = PerceptualEncoder(
-            latent_channels, hidden_channels, downsample_steps
-        )
-        self.quantizer = VectorQuantizer(
-            codebook_size,
-            latent_channels,
-            commitment,
-            ema_decay=ema_decay,
-            ema_epsilon=ema_epsilon,
-        )
-        self.decoder = PerceptualDecoder(
-            latent_channels, hidden_channels, downsample_steps
-        )
-
-    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        return self.quantizer(self.encoder(images))
-
-    def encode_indices(self, images: Tensor) -> Tensor:
-        """Encode images and return only their discrete token grid."""
-        return self.encode(images)[1]
-
-    def decode_indices(self, indices: Tensor) -> Tensor:
-        return self.decoder(self.quantizer.indices_to_values(indices))
-
-    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        z_st, indices, quantizer_loss = self.encode(images)
-        return self.decoder(z_st), indices, quantizer_loss
-
-
 class PatchDiscriminator(nn.Module):
     """Small PatchGAN returning a spatial grid of local real/fake logits."""
 
@@ -242,6 +197,51 @@ def adaptive_adversarial_weight(
     )[0]
     ratio = base_gradient.norm() / (adversarial_gradient.norm() + 1e-4)
     return (float(scale) * ratio.clamp(0.0, maximum)).detach()
+
+
+class VQPerceptualAutoencoder(nn.Module):
+    """VQGAN first-stage model without hiding its loss in the module."""
+
+    def __init__(
+        self,
+        *,
+        latent_channels: int = 64,
+        codebook_size: int = 512,
+        hidden_channels: int = 128,
+        commitment: float = 0.25,
+        ema_decay: float = 0.99,
+        ema_epsilon: float = 1e-5,
+        downsample_steps: int = TOKENIZER_DOWNSAMPLE_STEPS,
+    ) -> None:
+        super().__init__()
+        self.downsample_steps = downsample_steps
+        self.encoder = PerceptualEncoder(
+            latent_channels, hidden_channels, downsample_steps
+        )
+        self.quantizer = VectorQuantizer(
+            codebook_size,
+            latent_channels,
+            commitment,
+            ema_decay=ema_decay,
+            ema_epsilon=ema_epsilon,
+        )
+        self.decoder = PerceptualDecoder(
+            latent_channels, hidden_channels, downsample_steps
+        )
+
+    def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        return self.quantizer(self.encoder(images))
+
+    def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        z_st, indices, quantizer_loss = self.encode(images)
+        return self.decoder(z_st), indices, quantizer_loss
+
+    def encode_indices(self, images: Tensor) -> Tensor:
+        """Encode images and return only their discrete token grid."""
+        return self.encode(images)[1]
+
+    def decode_indices(self, indices: Tensor) -> Tensor:
+        return self.decoder(self.quantizer.indices_to_values(indices))
 
 
 __all__ = [

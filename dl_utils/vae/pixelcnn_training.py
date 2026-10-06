@@ -13,13 +13,13 @@ from tqdm.auto import tqdm
 
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.discrete_tokenizers import VQVAE, FSQAutoencoder
 from dl_utils.vae.discrete_workflow import (
     encode_dataset,
     epoch_checkpoint,
     save_loss_curves,
     seed_epoch_loader,
 )
-from dl_utils.vae.quantization import VQVAE, FSQAutoencoder
 from dl_utils.vae.token_priors import PixelCNNPrior
 
 
