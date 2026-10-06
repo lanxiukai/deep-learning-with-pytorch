@@ -1,31 +1,5 @@
 """VQGAN perceptual tokenizer with a class-conditional causal Transformer prior.
 
-Reconstruction and generation flow (k is a raster-ordered token sequence):
-    encoder(x)           -> z_e -> EMA codebook vectors z_q, indices k
-    decoder(z_q)         -> reconstruction -> perceptual and PatchGAN losses
-    Transformer(k_<t, c) -> logits for k_t -> sample k_t
-    codebook(k)          -> z_q -> decoder -> generated image
-model(x) returns (reconstruction, indices, commitment_loss). The tokenizer is
-unconditional; only the prior uses c, with G=0 and NoG=1. See
-dl_utils/vae/vqgan.py and token_priors.py for the model paths.
-
-Stage 1 minimizes mean RGB L1 + frozen VGG LPIPS + commitment loss + an
-adaptively weighted generator hinge loss. The adversarial weight matches
-gradient norms at the decoder's last layer and is detached. PatchGAN is frozen
-during the autoencoder update; its own hinge update uses detached reconstructions.
-Adversarial training starts at zero-based batch step 1,000. The codebook uses
-EMA rather than autograd, with straight-through gradients to the encoder.
-
-Stage 2 freezes the tokenizer and encodes every image once into memory. The
-Transformer fits p(k | c) = product_t p(k_t | k_<t, c) with shifted BOS inputs,
-a causal mask, and mean token cross-entropy. Training predicts all positions
-in parallel; generation samples 256 tokens sequentially before decoding.
-
-RESUME=True restores the same recipe at an epoch boundary, including optimizer
-state, loss history, and the stage-1 global step. A prior checkpoint also
-restores its frozen tokenizer. The final file stores the tokenizer/prior pair,
-model configuration, and class order. There is no validation or model selection.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].

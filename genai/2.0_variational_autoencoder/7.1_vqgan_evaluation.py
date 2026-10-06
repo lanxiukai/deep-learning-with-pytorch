@@ -1,20 +1,5 @@
 """Inspect VQGAN reconstructions and class-conditional generation after training.
 
-Reconstruction and generation flow:
-    x -> encoder -> nearest codebook tokens -> decoder -> reconstruction
-    c -> causal Transformer -> sampled token sequence -> codebook -> decoder
-The saved tokenizer is unconditional; the Transformer prior supplies G/NoG
-conditioning. A two-row reconstruction grid compares each original with its
-own reconstruction. Each temperature gets a separate two-row prior grid,
-with four G samples followed by four NoG samples. Generation columns do not
-match identities across classes and are independent of the reconstruction inputs.
-
-Temperature divides prior logits before categorical sampling. The seed is
-reset for every temperature to control the random stream, without guaranteeing
-matched identities or token sequences. These visual training-set diagnostics
-do not compute numerical reconstruction, likelihood, or generation metrics.
-See dl_utils/vae/discrete_workflow.py for pair loading and token-grid checks.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Read the first 8 training images without shuffling.
