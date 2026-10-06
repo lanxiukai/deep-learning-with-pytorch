@@ -41,7 +41,7 @@ Cloud-specific setup and future cloud utilities belong in
 optional dependencies, prepared datasets, short validation runs, training,
 checkpoint recovery, and result transfer. Model-specific training and evaluation
 remain in the numbered lesson directories. The
-[GAN roadmap](../genai/1.0_generative_adversarial_network/0.0-ROADMAP.md)
+[GAN roadmap](../visual_generation/1.0_generative_adversarial_network/0.0-ROADMAP.md)
 describes direct refinement of the style-based GAN lessons.
 
 ## Safety boundaries
@@ -107,17 +107,17 @@ images and the completed manifest are published atomically.
 `data/food101-256/diffusion_manifest.json` retains the official image IDs and
 alphabetical 101-class mapping. Split seed 42 gives 70,700 training, 5,050
 validation, and 25,250 official test images. All training and evaluation
-entries in the [foundation](../genai/3.0_diffusion_model/0.0-ROADMAP.md) and
-[modern](../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) series default to
+entries in the [foundation](../visual_generation/3.0_diffusion_model/0.0-ROADMAP.md) and
+[modern](../visual_generation/4.0_modern_visual_generation/0.0-ROADMAP.md) series default to
 this prepared directory. They read the cached 256x256 images directly; training
 adds horizontal flips and normalization. SR conditions and explicit 128px
 experiments downsample the same cached images.
 
 For an existing download, custom locations, or a different worker count, use
-the shared [preparation lesson](../genai/3.0_diffusion_model/0.1_prepare_data.py):
+the shared [preparation lesson](../visual_generation/3.0_diffusion_model/0.1_prepare_data.py):
 
 ```bash
-uv run --locked --no-sync python genai/3.0_diffusion_model/0.1_prepare_data.py \
+uv run --locked --no-sync python visual_generation/3.0_diffusion_model/0.1_prepare_data.py \
   --source-dir data/food101 --data-dir data/food101-256 --workers 8
 ```
 

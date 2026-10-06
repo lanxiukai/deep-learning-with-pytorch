@@ -59,10 +59,10 @@ environment or dependency workflow.
   Existing D2L and EBM imports through `training.metrics` and `plot.figures`
   remain available; new callers use the focused modules above.
 
-- The [foundation roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) covers
+- The [foundation roadmap](../visual_generation/3.0_diffusion_model/0.0-ROADMAP.md) covers
   DDPM/CFG, VP score with classifier guidance and linear CFM/RF in
   [diffusion/](diffusion/). The sibling
-  [modern roadmap](../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) covers
+  [modern roadmap](../visual_generation/4.0_modern_visual_generation/0.0-ROADMAP.md) covers
   LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD, DMD2 and iMF in [modern/](modern/).
   Each series has separate numbered training and evaluation entries.
   [preparation.py](diffusion/preparation.py) builds the shared lossless 256px

@@ -52,7 +52,7 @@ class Config:
 
 @dataclass(kw_only=True)
 class LayerConfig(Config):
-    """A lightweight config used only to reuse genai's loading utilities."""
+    """A lightweight config used only to reuse visual_generation's loading utilities."""
 
     dataset: str
     n_visible: int

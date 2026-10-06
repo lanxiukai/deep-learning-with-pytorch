@@ -12,11 +12,11 @@ sample grid.
 
 Run:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.1_stylegan.py
+        visual_generation/1.0_generative_adversarial_network/7.1_stylegan.py
 
 Resume:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.1_stylegan.py \
+        visual_generation/1.0_generative_adversarial_network/7.1_stylegan.py \
         --resume-from output/gan/stylegan/checkpoints/latest.pth
 
 Default schedule:

@@ -12,11 +12,11 @@ the reference lesson, together with a fixed-latent/noise EMA sample grid.
 
 Run:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.2_stylegan2.py
+        visual_generation/1.0_generative_adversarial_network/7.2_stylegan2.py
 
 Resume:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.2_stylegan2.py \
+        visual_generation/1.0_generative_adversarial_network/7.2_stylegan2.py \
         --resume-from output/gan/stylegan2/checkpoints/latest.pth
 
 Default schedule:

@@ -77,7 +77,7 @@ with a short real-data run to exercise model forward/backward passes and data
 loading. For example, check DDPM without periodic quality evaluation:
 
 ```bash
-uv run --locked --no-sync python genai/3.0_diffusion_model/1.0_ddpm.py \
+uv run --locked --no-sync python visual_generation/3.0_diffusion_model/1.0_ddpm.py \
   --precision bf16 --max-steps 5 --sample-every 0 --eval-every 0 \
   --output-dir output/diffusion/ddpm-smoke
 ```
@@ -86,7 +86,7 @@ Then start a persistent terminal with `tmux new -s training`, and launch the
 chosen lesson with an explicit training budget and a fresh experiment directory:
 
 ```bash
-uv run --locked --no-sync python genai/3.0_diffusion_model/1.0_ddpm.py \
+uv run --locked --no-sync python visual_generation/3.0_diffusion_model/1.0_ddpm.py \
   --precision bf16 --epochs 100 --output-dir output/diffusion/ddpm-run01
 ```
 
@@ -96,8 +96,8 @@ reconnect with `tmux attach -t training`. The terminal session survives an SSH
 disconnect, but training still depends on the instance remaining alive.
 
 Use the corresponding independent evaluation entry after training. The
-[foundation roadmap](../../genai/3.0_diffusion_model/0.0-ROADMAP.md) and
-[modern roadmap](../../genai/4.0_modern_visual_generation/0.0-ROADMAP.md) describe
+[foundation roadmap](../../visual_generation/3.0_diffusion_model/0.0-ROADMAP.md) and
+[modern roadmap](../../visual_generation/4.0_modern_visual_generation/0.0-ROADMAP.md) describe
 metrics, validation/test usage, and codec/teacher prerequisites. Use each
 series' documented resume option; foundation and modern lessons accept
 `--resume-from PATH`. A short smoke checkpoint is only a runtime check.

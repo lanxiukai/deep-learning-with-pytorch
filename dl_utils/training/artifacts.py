@@ -90,7 +90,7 @@ def maybe_save_curve(
         )
     except Exception as err:  # noqa: BLE001 - Optional EBM plots must not abort training.
         if verbose:
-            print(f"[genai] skip plot {path!r}: {err}")
+            print(f"[visual_generation] skip plot {path!r}: {err}")
 
 
 def save_training_samples(

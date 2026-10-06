@@ -12,11 +12,11 @@ phase boundary, matching the reference lesson.
 
 Run:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.0_progan.py
+        visual_generation/1.0_generative_adversarial_network/7.0_progan.py
 
 Resume:
     uv run --locked --no-sync python \
-        genai/1.0_generative_adversarial_network/7.0_progan.py \
+        visual_generation/1.0_generative_adversarial_network/7.0_progan.py \
         --resume-from output/gan/progan/checkpoints/latest.pth
 
 Default schedule:
