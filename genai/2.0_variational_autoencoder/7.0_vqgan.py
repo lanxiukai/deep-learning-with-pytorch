@@ -7,7 +7,7 @@ Reconstruction and generation flow (k is a raster-ordered token sequence):
     codebook(k)          -> z_q -> decoder -> generated image
 model(x) returns (reconstruction, indices, commitment_loss). The tokenizer is
 unconditional; only the prior uses c, with G=0 and NoG=1. See
-dl_utils/vae/perceptual_autoencoder.py and token_priors.py for the model paths.
+dl_utils/vae/vqgan.py and token_priors.py for the model paths.
 
 Stage 1 minimizes mean RGB L1 + frozen VGG LPIPS + commitment loss + an
 adaptively weighted generator hinge loss. The adversarial weight matches
@@ -94,7 +94,7 @@ from dl_utils.vae.discrete_workflow import (
     save_reconstruction,
     seed_epoch_loader,
 )
-from dl_utils.vae.perceptual_autoencoder import (
+from dl_utils.vae.vqgan import (
     LPIPSPerceptualLoss,
     PatchDiscriminator,
     VQPerceptualAutoencoder,
