@@ -127,21 +127,23 @@ environment or dependency workflow.
   `tokenizer_latest.pth` and `prior_latest.pth` provide same-recipe epoch recovery;
   the latter includes the frozen tokenizer alongside the prior. A final
   `model.pth` stores both model configurations and both sets of weights together.
-  The 6.2/7.1 evaluations load that pair, reconstruct, sample, and save two grids.
+  The 6.2/7.1 evaluations load that pair and save reconstruction and sample grids.
   VQ models return reconstruction, token indices, and commitment loss; FSQ
   returns reconstruction and token indices. Quantizers return quantized latents
   instead of reconstructions. Model modules do not import the workflow.
   [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
   autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
-  with ReLU and a configurable first kernel. The lessons use a 31x31 first
-  mask and eight layers to cover the full causal history of their 16x16 grids.
+  with ordinary bottleneck residual blocks. The lessons use a grouped 63x63
+  first mask and 15 residual blocks for their 32x32 grids. Only this selected
+  PixelCNN architecture is retained; there is no legacy architecture selector.
   Sampling recomputes full-grid logits for each position. The Transformer
   recomputes the full token prefix at each step; its layers are independently
-  initialized. Transformer sampling temporarily disables dropout and restores
+  initialized. Both samplers temporarily disable dropout and restore
   the previous mode.
   [vae/quantization.py](vae/quantization.py) supplies the shared quantizers.
-  The lessons use `TOKENIZER_DOWNSAMPLE_STEPS=4`: 256x256 images map to 16x16
-  grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior
+  VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids
+  with 128/240 possible codes. VQGAN uses `TOKENIZER_DOWNSAMPLE_STEPS=4` for
+  16x16 grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior
   uses G=0 and NoG=1. Final-pair loading checks image size, vocabulary, token
   grid, and class names. VQGAN retains its own backbone, objective, and budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses

@@ -1,17 +1,5 @@
 """Test whether each stochastic VAE layer adds information beyond its prior.
 
-For both the ordinary HVAE and Ladder posterior, this script reports per-layer
-KL and reconstruction distortion increases from two sampled interventions:
-
-* replace only q(z1 | z2, x) with p(z1 | z2);
-* replace only q(z2 | x) with p(z2), retaining lower data evidence.
-
-It also saves a four-row mean-path reconstruction comparison and two controlled
-resampling grids. The mean-path comparison uses z2=0 for top replacement;
-the numerical interventions sample from the corresponding distributions.
-Any apparent global/local division remains an empirical observation, not a
-property implied by the hierarchical ELBO.
-
 Data:
     data/glasses-256, read directly as 256x256 RGB in [0, 1].
     All 4,500 training images are used; labels are ignored. These are

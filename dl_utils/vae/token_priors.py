@@ -40,56 +40,77 @@ class MaskedConv2d(nn.Conv2d):
         )
 
 
-class PixelCNNPrior(nn.Module):
-    """Token embeddings, masked convolutions with ReLU, and a 1x1 class head.
+class PixelCNNResidualBlock(nn.Module):
+    """A plain 1x1 / masked 3x3 / 1x1 bottleneck residual block."""
 
-    The first convolution uses mask A; later convolutions use mask B on
-    already-causal features. A small first kernel leaves an above-right blind
-    spot even in a deep stack. For a square grid of side length s, a first
-    kernel of size 2*s-1 sees every earlier token directly.
-    The prior supports only unconditional generation.
+    def __init__(self, channels: int, bottleneck: int, dropout: float) -> None:
+        super().__init__()
+        self.reduce = nn.Conv2d(channels, bottleneck, 1)
+        self.masked = MaskedConv2d("B", bottleneck, bottleneck, 3, padding=1)
+        self.expand = nn.Conv2d(bottleneck, channels, 1)
+        self.dropout = dropout
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        update = self.reduce(F.relu(hidden))
+        update = self.masked(F.relu(update))
+        update = F.dropout(F.relu(update), self.dropout, self.training)
+        return hidden + self.expand(update)
+
+
+class PixelCNNPrior(nn.Module):
+    """Plain bottleneck PixelCNN, following the residual layout of PixelRNN.
+
+    The initial mask-A convolution can cover the whole token grid's past.
+    Grouping this large kernel reduces its cost; the following 1x1 convolutions
+    mix channels. Blocks contain only convolution, ReLU, dropout, and addition.
+    Sampling recomputes the full grid in raster order.
     """
 
     def __init__(
         self,
         vocabulary_size: int,
         *,
-        hidden_channels: int = 64,
-        layers: int = 16,
-        first_kernel_size: int = 7,
+        hidden_channels: int = 256,
+        embedding_dim: int = 32,
+        blocks: int = 15,
+        bottleneck: int = 128,
+        head_channels: int = 1024,
+        first_kernel_size: int = 63,
+        first_groups: int = 32,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
-        if layers < 1:
-            raise ValueError("PixelCNN needs at least one masked layer.")
         if first_kernel_size < 1 or first_kernel_size % 2 == 0:
-            raise ValueError("The first PixelCNN kernel size must be positive and odd.")
+            raise ValueError("PixelCNN kernel size must be positive and odd.")
+        if blocks < 1:
+            raise ValueError("Residual PixelCNN needs at least one block.")
         self.vocabulary_size = vocabulary_size
-        self.embedding = nn.Embedding(vocabulary_size, hidden_channels)  # (K, m)
-        self.causal = nn.ModuleList(
-            [
-                MaskedConv2d(
-                    "A" if i == 0 else "B",
-                    hidden_channels,
-                    hidden_channels,
-                    first_kernel_size if i == 0 else 3,
-                    padding=first_kernel_size // 2 if i == 0 else 1,
-                )
-                for i in range(layers)
-            ]
-        )  # (B, m, h, w)
+        self.embedding = nn.Embedding(vocabulary_size, embedding_dim)  # (K, C)
+        self.first = MaskedConv2d(
+            "A",
+            embedding_dim,
+            hidden_channels,
+            first_kernel_size,
+            padding=first_kernel_size // 2,
+            groups=first_groups,
+        )
+        self.blocks = nn.ModuleList(
+            PixelCNNResidualBlock(hidden_channels, bottleneck, dropout)
+            for _ in range(blocks)
+        )
         self.head = nn.Sequential(
             nn.ReLU(),
-            nn.Conv2d(hidden_channels, hidden_channels, 1),
+            nn.Conv2d(hidden_channels, head_channels, 1),
             nn.ReLU(),
-            nn.Conv2d(hidden_channels, vocabulary_size, 1),
-        )  # (B, m, h, w) -> (B, K, h, w)
+            nn.Conv2d(head_channels, vocabulary_size, 1),
+        )
 
     def forward(self, indices: Tensor) -> Tensor:
-        # indices (B, h, w) -> hidden (B, m, h, w)
-        hidden = self.embedding(indices).permute(0, 3, 1, 2).contiguous()
-        for convolution in self.causal:
-            hidden = F.relu(convolution(hidden))
-        return self.head(hidden)  # logits (B, K, h, w)
+        # indices (B, h, w) -> hidden (B, hidden_channels, h, w)
+        hidden = self.first(self.embedding(indices).permute(0, 3, 1, 2).contiguous())
+        for block in self.blocks:
+            hidden = block(hidden)
+        return self.head(hidden)  # (B, vocabulary_size, h, w)
 
     @torch.inference_mode()
     def sample(
@@ -101,22 +122,26 @@ class PixelCNNPrior(nn.Module):
         device: torch.device,
         temperature: float = 1.0,
     ) -> Tensor:
-        """Predict one token at a time by recomputing the full grid's logits."""
+        """Sample in raster order with dropout disabled; restore the caller's mode."""
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError("Sampling temperature must be finite and positive.")
         if min(count, height, width) < 1:
             raise ValueError("Sample count and grid dimensions must be positive.")
-        # indices: (B, h, w)
-        indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
-        # Each iteration recomputes logits for the entire grid but uses only
-        # the current position's logits.
-        for i in range(height):
-            for j in range(width):
-                logits = self(indices)[:, :, i, j] / temperature  # (B, K)
-                # Sample one token index per batch item; squeeze (B, 1) to (B,).
-                tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
-                indices[:, i, j] = tokens
-        return indices  # (B, h, w)
+        was_training = self.training
+        self.eval()
+        try:
+            indices = torch.zeros(
+                count, height, width, dtype=torch.long, device=device
+            )
+            # Recompute the full grid, using only the current position's logits.
+            for i in range(height):
+                for j in range(width):
+                    logits = self(indices)[:, :, i, j] / temperature
+                    tokens = torch.multinomial(logits.softmax(dim=1), 1).squeeze(1)
+                    indices[:, i, j] = tokens
+            return indices
+        finally:
+            self.train(was_training)
 
 
 class CausalTransformerPrior(nn.Module):
@@ -232,4 +257,9 @@ class CausalTransformerPrior(nn.Module):
             self.train(was_training)
 
 
-__all__ = ["CausalTransformerPrior", "MaskedConv2d", "PixelCNNPrior"]
+__all__ = [
+    "CausalTransformerPrior",
+    "MaskedConv2d",
+    "PixelCNNPrior",
+    "PixelCNNResidualBlock",
+]

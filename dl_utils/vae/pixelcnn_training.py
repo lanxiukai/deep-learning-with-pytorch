@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
+from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_workflow import (
     encode_dataset,
@@ -61,6 +62,8 @@ def train_pixelcnn_prior(
     """Train the same unconditional prior for either frozen tokenizer."""
     epochs = recipe["prior_epochs"]
     seed = recipe["seed"]
+    # Prior initialization must not depend on the number of tokenizer updates.
+    set_seed(seed)
     prior = PixelCNNPrior(**recipe["model"]["prior"]).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=recipe["prior_lr"])
     # The prior's checkpoint also restores the frozen tokenizer it was trained on.
@@ -78,7 +81,13 @@ def train_pixelcnn_prior(
     if completed == epochs:
         save_loss_curves(state["history"], output_dir / "prior_loss.png")
         return prior.eval()
-    tokens = encode_dataset(tokenizer, images, device)  # (B, h, w)
+    tokens = encode_dataset(
+        tokenizer,
+        images,
+        device,
+        horizontal_flip=recipe["prior_horizontal_flip"],
+        token_batch_size=recipe["prior_batch_size"],
+    )  # (B, h, w)
     side = recipe["model"]["image_size"] // (2**tokenizer.downsample_steps)
     with tqdm(
         total=epochs * len(tokens),
@@ -112,3 +121,6 @@ def train_pixelcnn_prior(
                 )
     save_loss_curves(state["history"], output_dir / "prior_loss.png")
     return prior.eval()
+
+
+__all__ = ["train_pixelcnn_prior", "train_pixelcnn_prior_epoch"]

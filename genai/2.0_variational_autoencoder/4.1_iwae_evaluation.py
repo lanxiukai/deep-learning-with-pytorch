@@ -1,13 +1,5 @@
 """Compare IWAE particle counts under one held-out protocol.
 
-All default K=1, K=4, K=8, K=16, and K=32 checkpoints are re-evaluated with
-the same large K, particle chunk size, test examples, and repeated random
-estimates. This keeps the training objective separate from the evaluation
-estimator. Loss, reconstruction loss, KL loss, and ESS/K are reported for
-each model.
-The report also includes the sample standard deviation over repeats and each
-metric's absolute and percentage change relative to the K=1 baseline.
-
 Data:
     data/mnist, downloaded automatically by torchvision when absent. Digit
     labels are ignored by the IWAE comparison.

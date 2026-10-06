@@ -1,26 +1,5 @@
 """VQ-VAE tokenizer with an EMA codebook and an unconditional PixelCNN prior.
 
-Reconstruction and generation flow (k is a raster-ordered token grid):
-    encoder(x)       -> z_e -> nearest codebook vectors z_q, indices k
-    decoder(z_q)     -> reconstruction
-    PixelCNN(k_<t)   -> logits for k_t -> sample k_t
-    codebook(k)      -> z_q -> decoder -> generated image
-model(x) returns (reconstruction, indices, commitment_loss). Straight-through
-gradients train the encoder; the codebook is updated by EMA, not autograd.
-See dl_utils/vae/quantization.py and token_priors.py for the model paths.
-
-Stage 1 minimizes mean RGB MSE plus 0.25 * mean squared commitment error.
-Stage 2 freezes the tokenizer, encodes every image once into memory, and fits
-p(k) = product_t p(k_t | k_<t) with mean token cross-entropy. A 31x31 first
-masked convolution sees every earlier token in the 16x16 grid directly;
-seven 3x3 masked layers refine that context in the same single stream.
-Sampling visits all 256 positions sequentially, then decodes the complete grid.
-
-RESUME=True restores the same recipe at an epoch boundary, including optimizer
-state and loss history. A prior checkpoint also restores its frozen tokenizer.
-The final checkpoint stores the tokenizer/prior pair and model configuration.
-There is no validation split or model selection.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].
@@ -30,27 +9,26 @@ Outputs:
     output/vae/vq_vae/model.pth: final tokenizer/prior pair
     output/vae/vq_vae/tokenizer_latest.pth: stage-1 recovery checkpoint
     output/vae/vq_vae/prior_latest.pth: stage-2 recovery checkpoint
-    output/vae/vq_vae/tokenizer_loss.png: MSE and commitment curves
+    output/vae/vq_vae/tokenizer_loss.png: L1, MSE, and commitment curves
     output/vae/vq_vae/prior_loss.png: token cross-entropy curve
     output/vae/vq_vae/training/tokenizer_epoch_*.png: original/reconstruction rows
     output/vae/vq_vae/training/prior_epoch_*.png: unconditional sample grids
 
 Training data -- glasses-256 (fresh run):
 Training images:          4,500
-Batch size:                  16
-Samples per epoch:        4,500 (281 full batches + 4 images; drop_last=False)
-Tokenizer/prior epochs:     100 / 50
-Optimizer updates:       28,200 tokenizer + 14,100 prior = 42,300 total
+Tokenizer/prior batches:     16 / 32
+Examples per epoch:      4,500 images / 9,000 original-and-flipped token grids
+Tokenizer/prior epochs:     100 / 45
+Optimizer updates:       28,200 tokenizer + 12,690 prior = 40,890 total
 
 Default dimensions:
 Training/generated image: 256x256 RGB in [-1, 1]
-Token grid:               16x16; four 2x downsampling stages
-Codebook:                 512 vectors, 64 values each
+Token grid:               32x32; three 2x downsampling stages
+Codebook:                 128 vectors, 32 values each
 Encoder/decoder width:    128 channels; first/last image stage: 64 channels
-PixelCNN:                 128 channels, 8 masked layers, first kernel 31x31
-                          512 output logits per token
-Model size:               tokenizer 2.236 M / prior 16.926 M parameters
-                          Tokenizer count includes 32,768 frozen codebook values.
+PixelCNN:                 256 channels, 15 bottleneck residual blocks
+                          128 bottleneck / 1,024 head channels; 128 output logits
+                          First kernel 63x63, 32 groups, 32-dimensional embeddings
 EMA decay / epsilon:      0.99 / 1e-5
 Optimizer:                Adam, betas (0.9, 0.999); tokenizer 2e-4, prior 5e-4
 Previews:                 8 images; epochs 1, every 10, and final; temperature 1.0
@@ -82,7 +60,7 @@ from dl_utils.vae.discrete_workflow import (
     seed_epoch_loader,
 )
 from dl_utils.vae.pixelcnn_training import train_pixelcnn_prior
-from dl_utils.vae.quantization import TOKENIZER_DOWNSAMPLE_STEPS, VQVAE
+from dl_utils.vae.quantization import VQVAE
 
 # Paths and data
 PROJECT_ROOT = infer_project_root()
@@ -91,25 +69,32 @@ OUTPUT_DIR = PROJECT_ROOT / "output" / "vae" / "vq_vae"
 IMAGE_SIZE = 256
 
 # Tokenizer configuration
-DOWNSAMPLE_STEPS = TOKENIZER_DOWNSAMPLE_STEPS
+DOWNSAMPLE_STEPS = 3
 HIDDEN_CHANNELS = 128
-EMBEDDING_DIM = 64
-CODEBOOK_SIZE = 512
+EMBEDDING_DIM = 32
+CODEBOOK_SIZE = 128
 COMMITMENT = 0.25
 EMA_DECAY = 0.99
 EMA_EPSILON = 1e-5
 
 # Prior configuration
-# The first mask covers the complete causal history of a 16x16 token grid.
-PRIOR_HIDDEN_CHANNELS = 128
-PRIOR_LAYERS = 8
-PRIOR_KERNEL_SIZE = 31
+# The first mask covers the complete causal history of a 32x32 token grid.
+PRIOR_HIDDEN_CHANNELS = 256
+PRIOR_BLOCKS = 15
+PRIOR_BOTTLENECK_CHANNELS = 128
+PRIOR_HEAD_CHANNELS = 1024
+PRIOR_KERNEL_SIZE = 63
+PRIOR_FIRST_GROUPS = 32
+PRIOR_EMBEDDING_DIM = 32
+PRIOR_DROPOUT = 0.1
 
 # Training configuration
 RESUME = True
 TOKENIZER_EPOCHS = 100
-PRIOR_EPOCHS = 50
+PRIOR_EPOCHS = 45
 BATCH_SIZE = 16
+PRIOR_BATCH_SIZE = 32
+PRIOR_HORIZONTAL_FLIP = True
 LR = 2e-4
 PRIOR_LR = 5e-4
 WORKERS = 4
@@ -149,7 +134,7 @@ def train_tokenizer(
         for epoch in range(completed + 1, TOKENIZER_EPOCHS + 1):
             model.train()
             seed_epoch_loader(loader, SEED, epoch)
-            metrics = MetricAccumulator(("mse", "commitment_loss"), device=device)
+            metrics = MetricAccumulator(("mse", "l1", "commitment_loss"), device=device)
             progress.set_description(
                 f"Stage 1/2: VQ-VAE tokenizer {epoch}/{TOKENIZER_EPOCHS}", refresh=False
             )
@@ -157,15 +142,16 @@ def train_tokenizer(
                 images = images.to(device)
                 reconstruction, _, commitment = model(images)
                 mse = F.mse_loss(reconstruction, images)
-                loss = mse + commitment
+                l1 = F.l1_loss(reconstruction, images)
+                loss = l1 + commitment
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-                metrics.add_batch_means((mse, commitment), num_examples=len(images))
+                metrics.add_batch_means((mse, l1, commitment), num_examples=len(images))
                 progress.update(1)
             losses = metrics.compute_weighted_means(require_finite=True)
             progress.set_postfix(
-                mse=f"{losses['mse']:.4f}",
+                l1=f"{losses['l1']:.4f}",
                 commitment=f"{losses['commitment_loss']:.4f}",
                 refresh=False,
             )
@@ -197,8 +183,13 @@ def train() -> None:
         "prior": {
             "vocabulary_size": CODEBOOK_SIZE,
             "hidden_channels": PRIOR_HIDDEN_CHANNELS,
-            "layers": PRIOR_LAYERS,
+            "blocks": PRIOR_BLOCKS,
+            "bottleneck": PRIOR_BOTTLENECK_CHANNELS,
+            "head_channels": PRIOR_HEAD_CHANNELS,
             "first_kernel_size": PRIOR_KERNEL_SIZE,
+            "first_groups": PRIOR_FIRST_GROUPS,
+            "embedding_dim": PRIOR_EMBEDDING_DIM,
+            "dropout": PRIOR_DROPOUT,
         },
     }
     recipe = {
@@ -206,8 +197,11 @@ def train() -> None:
         "tokenizer_epochs": TOKENIZER_EPOCHS,
         "prior_epochs": PRIOR_EPOCHS,
         "lr": LR,
+        "reconstruction_loss": "l1",
         "prior_lr": PRIOR_LR,
         "batch_size": BATCH_SIZE,
+        "prior_batch_size": PRIOR_BATCH_SIZE,
+        "prior_horizontal_flip": PRIOR_HORIZONTAL_FLIP,
         "seed": SEED,
     }
     prepare_training_output(OUTPUT_DIR, resume=RESUME, recipe=recipe)
@@ -233,9 +227,5 @@ def train() -> None:
     save_pair(OUTPUT_DIR / "model.pth", "vq_vae", tokenizer, prior, config)
 
 
-def main() -> None:
-    train()
-
-
 if __name__ == "__main__":
-    main()
+    train()

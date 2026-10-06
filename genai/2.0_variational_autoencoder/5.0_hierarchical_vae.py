@@ -1,32 +1,5 @@
 """Two-level HVAE baseline with matched top-down prior/posterior conditions.
 
-The generator is
-
-    p(z2) p(z1 | z2) p(x | z1),
-
-and the recognition model is
-
-    q(z2 | x) q(z1 | z2, x).
-
-Inference and generation flow (layer 0 = x, layer 1 = z1, layer 2 = z2):
-    q_2(x)           -> mu_q_2, v_q_2 -> sample z2
-    p_1(z2)          -> mu_p_1, v_p_1
-    q_1([h_1(x),z2]) -> mu_q_1, v_q_1 -> sample z1
-    p_0(z1)          -> mu_p_0
-Here v = log(sigma**2). q_2 contains the full image encoder and also returns
-the deterministic feature h_1(x), shared with q_1.
-model(x) returns (mu_p_0, latents), with the named Gaussian parameters and
-z1/z2 in latents. p(z2) is fixed N(0, I); observation variance is fixed 1/2.
-See dl_utils/vae/hierarchical_vae.py for the implementation and forward path.
-
-The negative ELBO therefore contains a top KL against N(0, I) and a lower KL
-between distributions conditioned on the same sampled z2.  KL warm-up and
-group-wise free bits are visible optimization controls, not guarantees that a
-layer is informative.  The next lesson changes only the lower posterior.
-
-The script saves final model weights and the small set of constructor and
-evaluation controls needed by the next lesson. It has no resume machinery.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Read the RGB cache directly, without resizing or normalization.

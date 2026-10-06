@@ -1,21 +1,5 @@
 """Inspect VQ-VAE and FSQ reconstructions and unconditional prior samples.
 
-Reconstruction and generation flow:
-    VQ-VAE: x -> nearest codebook tokens -> decoder
-    FSQ:    x -> bounded scalar rounding -> decoder
-    Both discrete generators: PixelCNN -> token grid -> tokenizer decoder
-Each tokenizer gets a two-row reconstruction grid (original, reconstruction)
-and a 2x8 unconditional sample grid per temperature, in its own directory.
-Both tokenizers reconstruct the same inputs. Generated samples are independent
-of those inputs; columns do not imply matching identities across temperatures.
-
-Temperature divides the discrete prior logits before categorical sampling.
-The seed is reset for each temperature so the random stream is controlled,
-but neither identities nor token sequences are guaranteed to match. These are
-visual training-set diagnostics, without numerical metrics or a held-out split.
-The tokenizers differ in bottleneck dimensions and objectives. See
-dl_utils/vae/discrete_workflow.py for pair loading.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Read the first 8 training images without shuffling; class labels are ignored.
@@ -35,7 +19,7 @@ Outputs:
 Evaluation defaults:
     Reconstruction images: 8 shared training inputs; one batch.
     Generated images:      16 per model and temperature; 2 rows of 8; 256x256 RGB.
-    Discrete token grid:   16x16 with the default four downsampling stages.
+    Discrete token grid:   32x32 with the default three downsampling stages.
     Prior temperatures:    0.9, 1.0, 1.1.
     Seed:                  123 for controlled prior sampling.
 

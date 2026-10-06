@@ -1,28 +1,5 @@
 """Ladder VAE: replace one lower posterior network with Gaussian fusion.
 
-The generator, two conditional KL terms, decoder, latent sizes, warm-up, and
-free-bits protocol match `5.0_hierarchical_vae.py`.  Only q(z1 | z2, x)
-changes: the matching top-down prior and bottom-up evidence are multiplied,
-so their precisions add and their means combine by precision weighting.
-
-The top q(z2 | x) remains bottom-up evidence compared against N(0, I); it is
-not fused with that fixed prior as though a third evidence source existed.
-
-Inference and generation flow (layer 0 = x, layer 1 = z1, layer 2 = z2):
-    q_2(x)         -> mu_q_2, v_q_2 -> sample z2
-    p_1(z2)        -> mu_p_1, v_p_1
-    q_hat_1(h_1(x))-> mu_hat_q_1, v_hat_q_1              (hatted evidence)
-    precision fusion -> mu_q_1, v_q_1 -> sample z1
-    p_0(z1)        -> mu_p_0
-Here v = log(sigma**2). q_2 includes the full image encoder and also returns
-h_1(x) for q_hat_1. The hatted evidence is not sampled; the fused q,1
-parameters are computed without a learned q_1 block. model(x) returns
-(mu_p_0, latents), retaining both evidence and fused parameters in latents.
-See dl_utils/vae/hierarchical_vae.py, especially LadderVAE.lower_parameters.
-
-The script saves final model weights and the small set of constructor and
-evaluation controls needed for comparison. It has no resume machinery.
-
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Read the RGB cache directly, without resizing or normalization.

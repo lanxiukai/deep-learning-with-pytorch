@@ -1,18 +1,5 @@
 """Importance-Weighted Autoencoder: tighten the bound without changing networks.
 
-For each image, K samples from the same diagonal-Gaussian posterior form
-
-    log_mean_exp(log p(x | z_k) + log p(z_k) - log q(z_k | x)).
-
-The particle reduction happens per image and entirely in log space.  K=1 is
-exactly the Monte Carlo ELBO.  Larger K changes the objective and compute
-budget, not the VAE model family.
-
-All default particle counts use the same architecture and number of training
-epochs.
-Final weights feed the companion evaluation script. Evaluation decodes
-particles in small chunks to keep memory use bounded.
-
 Data:
     data/mnist, downloaded automatically by torchvision when absent.
 

@@ -23,7 +23,10 @@ from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import TrainingCheckpoint, atomic_torch_save
 from dl_utils.vae.perceptual_autoencoder import VQPerceptualAutoencoder
 from dl_utils.vae.quantization import VQVAE, FSQAutoencoder, validate_image_size
-from dl_utils.vae.token_priors import CausalTransformerPrior, PixelCNNPrior
+from dl_utils.vae.token_priors import (
+    CausalTransformerPrior,
+    PixelCNNPrior,
+)
 
 MODEL_TYPES = {
     "vq_vae": (VQVAE, PixelCNNPrior),
@@ -112,8 +115,15 @@ def encode_dataset(
     tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
     image_loader: DataLoader,
     device: torch.device,
+    *,
+    horizontal_flip: bool = False,
+    token_batch_size: int | None = None,
 ) -> DataLoader:
-    """Freeze the tokenizer and encode each image once, in stable dataset order."""
+    """Cache frozen tokens, optionally also encoding horizontally flipped pixels.
+
+    Reversing a token grid would not reproduce encoding the flipped image.
+    The prior may use a different batch size from the image tokenizer.
+    """
     tokenizer.eval().requires_grad_(False)
     batch_size = cast(int, image_loader.batch_size)
     source = make_device_aware_loader(
@@ -127,11 +137,15 @@ def encode_dataset(
     source.generator = torch.Generator().manual_seed(0)
     tokens, labels = [], []
     for images, batch_labels in source:
-        tokens.append(tokenizer.encode_indices(images.to(device)).cpu())
+        images = images.to(device)
+        tokens.append(tokenizer.encode_indices(images).cpu())
         labels.append(batch_labels.cpu())
+        if horizontal_flip:
+            tokens.append(tokenizer.encode_indices(images.flip(-1)).cpu())
+            labels.append(batch_labels.cpu())
     return make_device_aware_loader(
         TensorDataset(torch.cat(tokens), torch.cat(labels)),
-        batch_size,
+        batch_size if token_batch_size is None else token_batch_size,
         device,
         shuffle=True,
         num_workers=0,
@@ -196,7 +210,7 @@ def save_pair(
             "format": PAIR_FORMAT,
             "model_name": name,
             "config": config,
-            "class_names": list(GLASSES_CLASS_NAMES) if name == "vqgan" else [],
+            "class_names": (list(GLASSES_CLASS_NAMES) if name == "vqgan" else []),
             "tokenizer": tokenizer.state_dict(),
             "prior": prior.state_dict(),
         },
@@ -243,3 +257,19 @@ def load_pair(
     if getattr(prior, "num_classes", 0) != len(classes):
         raise ValueError("Prior conditioning does not match the class names.")
     return tokenizer.eval().requires_grad_(False), prior.eval().requires_grad_(False)
+
+
+__all__ = [
+    "MODEL_TYPES",
+    "PAIR_FORMAT",
+    "encode_dataset",
+    "epoch_checkpoint",
+    "fixed_images",
+    "glasses_loader",
+    "load_pair",
+    "prepare_training_output",
+    "save_loss_curves",
+    "save_pair",
+    "save_reconstruction",
+    "seed_epoch_loader",
+]
