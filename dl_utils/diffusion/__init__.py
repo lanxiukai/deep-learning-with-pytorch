@@ -1,1 +1,1 @@
-"""DDPM, continuous score, and flow-matching foundations plus optional extensions."""
+"""Diffusion/flow foundations and shared data, training and evaluation utilities."""

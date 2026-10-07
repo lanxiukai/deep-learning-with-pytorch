@@ -17,7 +17,7 @@ environment or dependency workflow.
 |---|---|---|
 | [d2l/](d2l/) | D2L-style textbook helpers | The relevant lesson call site |
 | [data/](data/) | Downloads, datasets, image preparation, and loaders | [datasets/](data/datasets/) and [vision.py](data/vision.py) |
-| [diffusion/](diffusion/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
+| [diffusion/](diffusion/), [modern/](modern/), [ebm/](ebm/), [gan/](gan/), [vae/](vae/) | Model-family building blocks | The importing lesson and focused source module |
 | [inference/](inference/) | Model-independent batched inference and fixed class-latent grids | [batching.py](inference/batching.py) and [latent_sampling.py](inference/latent_sampling.py) |
 | [evaluation/](evaluation/) | Supervised evaluation, image features, distribution metrics, and reconstruction metrics | [supervised.py](evaluation/supervised.py), [image_features.py](evaluation/image_features.py), [distribution_metrics.py](evaluation/distribution_metrics.py), and [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) |
 | [runtime/](runtime/), [training/](training/) | Devices, precision, checkpoints, metrics, and optimization | [precision.py](training/precision.py), [checkpoints.py](training/checkpoints.py), [metrics.py](training/metrics.py), and [history.py](training/history.py) |
@@ -59,25 +59,20 @@ environment or dependency workflow.
   Existing D2L and EBM imports through `training.metrics` and `plot.figures`
   remain available; new callers use the focused modules above.
 
-- Foundation lessons import the [DDPM](diffusion/diffusion_ddpm.py),
-  score-SDE, flow-matching, and U-Net modules directly. The
-  [diffusion roadmap](../genai/3.0_diffusion_model/0.0-ROADMAP.md) follows the
-  128px CelebA main line: discrete denoising, continuous score learning, then
-  direct velocity learning. `diffusion/flow_matching.py` owns conditional
-  Gaussian paths and Euler/midpoint/Heun integration from noise to data;
-  `diffusion/checkpoints.py` keeps score and velocity contracts distinct.
-  Improved DDPM, EDM, and DPM solvers serve optional extension lessons.
-  `diffusion/lesson_utils.py` shares data, binned losses, and checkpoint
-  handling while objectives and optimization remain in scripts;
-  `diffusion/quality.py` monitors FID, KID, feature precision/recall, and NFE
-  using shared [image features](evaluation/image_features.py) and
-  [distribution metrics](evaluation/distribution_metrics.py).
-  [gan/continuation.py](gan/continuation.py) retains its CelebA generator evaluation
-  protocol and seeded 256D projection; diffusion monitoring retains full
-  2048D features, sampling callbacks, and NFE accounting. Sharing primitives
-  does not make these evaluation protocols interchangeable.
-  [reconstruction_metrics.py](evaluation/reconstruction_metrics.py) provides
-  SSIM, including for the latent-diffusion first stage.
+- The [foundation roadmap](../visual_generation/3.0_diffusion_model/0.0-ROADMAP.md) covers
+  DDPM/CFG, VP score with classifier guidance and linear CFM/RF in
+  [diffusion/](diffusion/). The sibling
+  [modern roadmap](../visual_generation/4.0_modern_visual_generation/0.0-ROADMAP.md) covers
+  LDM, EDM, DiT, SiT/REPA, SR3/CDM, CD, DMD2 and iMF in [modern/](modern/).
+  Each series has separate numbered training and evaluation entries.
+  [preparation.py](diffusion/preparation.py) builds the shared lossless 256px
+  Food-101 cache, and [data.py](diffusion/data.py) loads it directly using the
+  shared manifest. Both series default to `data/food101-256/`;
+  [quality.py](diffusion/quality.py) supplies Clean-FID features, distribution,
+  category and cost metrics. Modern code reuses foundation utilities; foundation
+  imports do not load the modern package. Each family owns its model assembly,
+  while checkpoint I/O and evaluation loops are shared explicitly.
+  The metric protocol remains distinct from existing GAN/VAE protocols.
 - GANs use one module per algorithm. [progan.py](gan/progan.py),
   [stylegan.py](gan/stylegan.py), and [stylegan2.py](gan/stylegan2.py) keep their
   model definitions and continuation adapters together; StyleGAN2 also keeps
@@ -105,16 +100,53 @@ environment or dependency workflow.
   on a model family.
 - [data/datasets/celeba/](data/datasets/celeba/) loads aligned faces using the official
   partitions and optional binary attributes. Conditional GANs use Smiling
-  labels with 64x64 images; the discrete-tokenizer lessons use 128x128 images
-  and pass labels only to their second-stage priors.
+  labels with 64x64 images.
 - [vae/vae.py](vae/vae.py) implements the 256x256 introductory VAE and the
   comparable standard/beta-VAE training path using the RGB encoder/decoder in
   [vae/vae_common.py](vae/vae_common.py). Focused modules cover 256x256 RGB
-  hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior, and
-  perceptual-autoencoder blocks for the 128x128 CelebA lessons.
-  The KL perceptual autoencoder also supports an f=8, 128px continuous first
-  stage for latent diffusion; its 16x16 latent resolution is distinct from the
-  decoded RGB image size.
+  hierarchical VAEs on glasses-256 plus reusable discrete-tokenizer, token-prior,
+  and perceptual-autoencoder blocks for the 256x256 glasses-256 lessons.
+- [modern/kl_autoencoder.py](modern/kl_autoencoder.py) independently owns
+  the KL codec, learned LPIPS wrapper, and reconstruction PatchGAN. Its f=8
+  configuration maps 256px RGB to 4x32x32 latents. The codec's posterior scale
+  is calibrated on training images and frozen for LDM, DiT, SiT and iMF;
+  diffusion lessons do not import the GAN or VAE model-family packages.
+- [vae/discrete_workflow.py](vae/discrete_workflow.py) provides small helpers for
+  glasses-256 loading, fixed preview images, one-time in-memory token encoding,
+  ordinary epoch checkpoints, basic loss curves, and final model pairs.
+  The VQ-VAE/FSQ/VQGAN lessons own the stage order and tokenizer epoch loops.
+  Read each lesson's `train()` first: load images, train the tokenizer, freeze
+  and encode, train the prior, then save the pair. There is no model selection,
+  monitoring subset, disk token cache, or stage state machine.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares the identical
+  PixelCNN prior setup, epoch loop, recovery, and sampling for VQ-VAE and FSQ.
+  Their tokenizer losses stay explicit in the lesson scripts; VQGAN also keeps
+  its own Transformer training loop.
+  Each stage keeps a short loss history and writes one loss figure. Eight-image
+  previews run on the first epoch, every ten epochs, and the final epoch.
+  `tokenizer_latest.pth` and `prior_latest.pth` provide same-recipe epoch recovery;
+  the latter includes the frozen tokenizer alongside the prior. A final
+  `model.pth` stores both model configurations and both sets of weights together.
+  The 6.2/7.1 evaluations load that pair and save reconstruction and sample grids.
+  VQ models return reconstruction, token indices, and commitment loss; FSQ
+  returns reconstruction and token indices. Quantizers return quantized latents
+  instead of reconstructions. Model modules do not import the workflow.
+  [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
+  autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
+  with ordinary bottleneck residual blocks. The lessons use a grouped 63x63
+  first mask and 15 residual blocks for their 32x32 grids. Only this selected
+  PixelCNN architecture is retained; there is no legacy architecture selector.
+  Sampling recomputes full-grid logits for each position. The Transformer
+  recomputes the full token prefix at each step; its layers are independently
+  initialized. Both samplers temporarily disable dropout and restore
+  the previous mode.
+  [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
+  quantizers and VQ-VAE/FSQ image tokenizers.
+  VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids
+  with 128/240 possible codes. VQGAN uses `TOKENIZER_DOWNSAMPLE_STEPS=4` for
+  16x16 grids with 512 possible codes. VQ-VAE/FSQ ignore folder labels; VQGAN's prior
+  uses G=0 and NoG=1. Final-pair loading checks image size, vocabulary, token
+  grid, and class names. VQGAN retains its own backbone, objective, and budget.
 - [vae/conditional_vae.py](vae/conditional_vae.py) owns the 256x256 glasses
   CVAE, conditional objective, cache metadata contract, and evaluation figures.
   Its RGB backbone is shared with standard VAE, beta-VAE, and HVAE/Ladder through

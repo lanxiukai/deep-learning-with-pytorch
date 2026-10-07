@@ -36,6 +36,9 @@ examples = [
 test = [
     "pytest==9.1.1",
 ]
+diffusion = [
+    "clean-fid==0.1.35",
+]
 
 [tool.uv]
 environments = [

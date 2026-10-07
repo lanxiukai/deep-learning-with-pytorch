@@ -285,14 +285,19 @@ def load_model_weights(
     expected_metadata: Mapping[str, Any] | None = None,
     config_transform: (Callable[[dict[str, Any]], Mapping[str, Any]] | None) = None,
     strict: bool = True,
+    return_checkpoint: bool = False,
 ) -> tuple[nn.Module, dict[str, Any]]:
-    """Load and validate one metadata-rich model weight checkpoint."""
+    """Load weights and return their model config by default.
+
+    With return_checkpoint=True, return the full CPU checkpoint instead so
+    callers can reuse snapshot identities and auxiliary weights without rereading.
+    """
     checkpoint_path = Path(path)
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Model checkpoint not found: {checkpoint_path}.")
     checkpoint = torch.load(
         checkpoint_path,
-        map_location=device,
+        map_location="cpu" if return_checkpoint else device,
         weights_only=True,
     )
     if not isinstance(checkpoint, Mapping):
@@ -322,4 +327,4 @@ def load_model_weights(
         raise TypeError("config_transform must return a mapping.")
     model = model_class(**dict(constructor_config)).to(device)
     model.load_state_dict(state_dict, strict=strict)
-    return model.eval(), model_config
+    return model.eval(), dict(checkpoint) if return_checkpoint else model_config

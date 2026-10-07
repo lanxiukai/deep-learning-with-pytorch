@@ -1,18 +1,11 @@
-"""VP, VE, and sub-VP perturbations with explicit score-based samplers.
-
-Forward time runs from data to noise. Reverse integration uses negative dt;
-Brownian variance uses |dt|. Optional Tweedie denoising follows a finite endpoint.
-NCSN-style annealed Langevin is restricted to the VE noise path.
-"""
+"""Continuous VP score and classifier guidance; time runs from data to noise."""
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
-from typing import Literal
 
 import torch
-
-ScoreSampler = Literal["reverse_sde", "probability_flow", "pc", "annealed_langevin"]
 
 
 def _expand(value, sample):
@@ -58,163 +51,61 @@ class VPSDE:
         return -0.5 * beta * sample, beta
 
 
-@dataclass(frozen=True)
-class SubVPSDE(VPSDE):
-    """Same drift, reduced diffusion; marginal std is 1-exp(-integral(beta))."""
-
-    def marginal_coefficients(self, time, sample):
-        integral = self.integrated_beta(time)
-        return _expand((-0.5 * integral).exp(), sample), _expand(
-            -torch.expm1(-integral), sample
-        )
-
-    def drift_diffusion(self, sample, time):
-        beta = _expand(self.beta(time), sample)
-        discount = _expand(-torch.expm1(-2 * self.integrated_beta(time)), sample)
-        return -0.5 * beta * sample, beta * discount
-
-
-@dataclass(frozen=True)
-class VESDE(VPSDE):
-    """Additive geometric noise; the finite sigma_min endpoint is approximate."""
-
-    sigma_min: float = 0.01
-    sigma_max: float = 50.0
-
-    def __post_init__(self):
-        if not 0 < self.sigma_min < self.sigma_max:
-            raise ValueError("Expected 0 < sigma_min < sigma_max.")
-        object.__setattr__(self, "prior_std", self.sigma_max)
-
-    def marginal_coefficients(self, time, sample):
-        sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** time
-        return torch.ones_like(_expand(sigma, sample)), _expand(sigma, sample)
-
-    def drift_diffusion(self, sample, time):
-        import math
-
-        _, sigma = self.marginal_coefficients(time, sample)
-        return torch.zeros_like(sample), 2 * math.log(
-            self.sigma_max / self.sigma_min
-        ) * sigma.square()
-
-
-def make_sde(name, **config):
-    return {"vp": VPSDE, "ve": VESDE, "subvp": SubVPSDE}[name](**config)
-
-
 @torch.no_grad()
 def sample_score_model(
     model,
     sde,
-    shape,
+    noise,
     *,
-    sampler="probability_flow",
-    num_steps=250,
-    time_epsilon=1e-3,
-    ode_solver="heun",
-    time_embedding_scale=1000.0,
-    final_denoise=True,
-    corrector_steps=1,
-    langevin_step_size=0.01,
-    initial_noise=None,
-    generator=None,
-    return_trajectory=False,
-    trajectory_frames=8,
+    steps=50,
+    solver="heun",
+    epsilon=1e-3,
+    classifier=None,
+    labels=None,
+    guidance=0.0,
 ):
-    """Euler-Maruyama, Langevin PC, Euler/Heun PF-ODE, or VE annealed Langevin.
+    if (
+        steps < 1
+        or not 0 < epsilon < 1
+        or solver not in ("euler", "heun", "reverse_sde")
+    ):
+        raise ValueError("Invalid VP sampler configuration.")
+    if guidance and (classifier is None or labels is None):
+        raise ValueError(
+            "Classifier guidance needs a trained noisy classifier and labels."
+        )
+    state = noise.clone()
+    times = torch.linspace(1, epsilon, steps + 1, device=state.device)
 
-    Langevin uses eta(t) = langevin_step_size * sigma(t)^2. This explicit
-    fixed rule is a teaching choice, not the adaptive-SNR corrector recipe.
-    At every reverse-SDE interval Brownian noise is retained; the separately
-    counted final network evaluation performs the optional finite-endpoint
-    denoise. Disabling it returns the state at time_epsilon (then pixel-clipped).
-    """
-    if num_steps < 2 or not 0 < time_epsilon < 1:
-        raise ValueError("Need >=2 steps and 0 < time_epsilon < 1.")
-    if sampler not in ("reverse_sde", "pc", "probability_flow", "annealed_langevin"):
-        raise ValueError("Unknown score sampler.")
-    if ode_solver not in ("euler", "heun"):
-        raise ValueError("Unknown ODE solver.")
-    if sampler == "annealed_langevin" and not isinstance(sde, VESDE):
-        raise ValueError("Annealed Langevin uses the VE/NCSN noise path.")
-    if corrector_steps < 1 or langevin_step_size <= 0:
-        raise ValueError("Langevin count and step size must be positive.")
-    parameter = next(model.parameters())
-    device = parameter.device
-    if initial_noise is None:
-        initial_noise = torch.randn(shape, device=device, generator=generator)
-    state = initial_noise.to(device).clone() * sde.prior_std
-    annealed = sampler == "annealed_langevin"
-    times = torch.linspace(
-        1.0, time_epsilon, num_steps if annealed else num_steps + 1, device=device
-    )
-    path = [state.cpu()] if return_trajectory else []
-    capture = set(
-        torch.linspace(0, num_steps - 1, min(trajectory_frames - 1, num_steps))
-        .round()
-        .long()
-        .tolist()
-    )
+    def score(x, t):
+        value = model(x, t * 1000)
+        if guidance:
+            with torch.enable_grad():
+                leaf = x.detach().requires_grad_(True)
+                logits = classifier(leaf, t * 1000)
+                selected = logits.log_softmax(-1).gather(1, labels[:, None]).sum()
+                gradient = torch.autograd.grad(selected, leaf)[0]
+            value = value + guidance * gradient
+        return value
 
-    def score(sample, time):
-        return model(sample, time * time_embedding_scale)
+    def field(x, t):
+        drift, g2 = sde.drift_diffusion(x, t)
+        return drift - (1 if solver == "reverse_sde" else 0.5) * g2 * score(x, t)
 
-    def field(sample, time, factor):
-        drift, diffusion_squared = sde.drift_diffusion(sample, time)
-        return drift - factor * diffusion_squared * score(sample, time)
-
-    was_training = model.training
-    model.eval()
-    try:
-        for index in range(num_steps):
-            time = times[index].expand(shape[0])
-            next_time = times[min(index + 1, len(times) - 1)].expand(shape[0])
-            step_size = next_time[0] - time[0]
-            if sampler == "probability_flow":
-                velocity = field(state, time, 0.5)
-                proposal = state + step_size * velocity
-                state = (
-                    proposal
-                    if ode_solver == "euler"
-                    else state + 0.5 * step_size * (velocity + field(proposal, next_time, 0.5))
-                )
-            elif sampler != "annealed_langevin":
-                _, diffusion_squared = sde.drift_diffusion(state, time)
-                noise = torch.randn(state.shape, device=device, generator=generator)
-                state = state + step_size * field(state, time, 1.0) + (-step_size * diffusion_squared).sqrt() * noise
-            if sampler in ("pc", "annealed_langevin"):
-                correction_time = next_time if sampler == "pc" else time
-                _, sigma = sde.marginal_coefficients(correction_time, state)
-                correction_step_size = langevin_step_size * sigma.square()
-                for _ in range(corrector_steps):
-                    noise = torch.randn(state.shape, device=device, generator=generator)
-                    state = (
-                        state
-                        + correction_step_size * score(state, correction_time)
-                        + (2 * correction_step_size).sqrt() * noise
-                    )
-            if return_trajectory and index in capture:
-                path.append(state.cpu())
-        if final_denoise:
-            final_time = times[-1].expand(shape[0])
-            alpha, sigma = sde.marginal_coefficients(final_time, state)
-            state = (state + sigma.square() * score(state, final_time)) / alpha
-        if path:
-            path[-1] = state.cpu()
-    finally:
-        model.train(was_training)
-    return state.clamp(-1, 1), path
-
-
-# Retain the original VP entry point for importing notebooks.
-sample_vp_sde = sample_score_model
-__all__ = [
-    "VESDE",
-    "VPSDE",
-    "ScoreSampler",
-    "SubVPSDE",
-    "make_sde",
-    "sample_score_model",
-    "sample_vp_sde",
-]
+    for t, next_t in itertools.pairwise(times):
+        h = next_t - t
+        batch_t = t.expand(len(state))
+        velocity = field(state, batch_t)
+        proposal = state + h * velocity
+        if solver == "reverse_sde":
+            _, g2 = sde.drift_diffusion(state, batch_t)
+            state = proposal + (-h * g2).sqrt() * torch.randn_like(state)
+        elif solver == "heun":
+            state = (
+                state + h * (velocity + field(proposal, next_t.expand(len(state)))) / 2
+            )
+        else:
+            state = proposal
+    t = times[-1].expand(len(state))
+    alpha, sigma = sde.marginal_coefficients(t, state)
+    return (state + sigma.square() * score(state, t)) / alpha

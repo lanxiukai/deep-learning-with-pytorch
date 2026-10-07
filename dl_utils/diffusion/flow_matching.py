@@ -18,23 +18,21 @@ import torch
 class GaussianConditionalPath:
     """x_t = alpha(t) * data + sigma(t) * noise, with analytic derivatives."""
 
-    schedule: Literal["linear", "trigonometric"] = "linear"
+    schedule: Literal["linear"] = "linear"
 
     def __post_init__(self):
-        if self.schedule not in ("linear", "trigonometric"):
-            raise ValueError("Choose a linear or trigonometric conditional path.")
+        if self.schedule != "linear":
+            raise ValueError(
+                "This lesson uses independent linear CFM / first-round RF."
+            )
 
     def config(self):
         return {"schedule": self.schedule}
 
     def coefficients(self, time):
         """Return alpha, sigma, d(alpha)/dt, d(sigma)/dt in physical time."""
-        if self.schedule == "linear":
-            unit = torch.ones_like(time)
-            return time, 1 - time, unit, -unit
-        angle = torch.pi * time / 2
-        alpha, sigma = angle.sin(), angle.cos()
-        return alpha, sigma, (torch.pi / 2) * sigma, -(torch.pi / 2) * alpha
+        unit = torch.ones_like(time)
+        return time, 1 - time, unit, -unit
 
     @torch.no_grad()
     def sample(self, noise, data, time):

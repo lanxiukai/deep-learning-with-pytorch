@@ -23,8 +23,10 @@ def save_training_metrics(
     max_panels: int,
 ) -> None:
     """Keep metric curves and their numeric values together in the run root."""
-    metrics = {name: [row[name] for row in history] for name in history[0]}
-    epochs = list(range(1, len(history) + 1))
+    metrics = {
+        name: [row[name] for row in history] for name in history[0] if name != "epoch"
+    }
+    epochs = [row.get("epoch", index) for index, row in enumerate(history, 1)]
     save_metrics_csv(
         {"epoch": epochs, **metrics},
         out_dir / f"{prefix}_metrics.csv",
@@ -88,7 +90,7 @@ def maybe_save_curve(
         )
     except Exception as err:  # noqa: BLE001 - Optional EBM plots must not abort training.
         if verbose:
-            print(f"[genai] skip plot {path!r}: {err}")
+            print(f"[visual_generation] skip plot {path!r}: {err}")
 
 
 def save_training_samples(

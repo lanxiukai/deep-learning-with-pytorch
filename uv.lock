@@ -148,6 +148,23 @@ wheels = [
 ]
 
 [[package]]
+name = "clean-fid"
+version = "0.1.35"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "requests" },
+    { name = "scipy" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/56/0dfc83e0fe455cfe6272b23a65039b4101c63a4e7446801e26178b675fbf/clean_fid-0.1.35-py3-none-any.whl", hash = "sha256:757cf49d75debe9b07ab14955fe59c845a296deaf0616153b40c5e75b3cf87fb", size = 26008, upload-time = "2022-12-18T20:19:35.819Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -326,6 +343,9 @@ dependencies = [
 celeba = [
     { name = "kagglehub" },
 ]
+diffusion = [
+    { name = "clean-fid" },
+]
 examples = [
     { name = "aiohttp" },
     { name = "albumentations" },
@@ -348,6 +368,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'examples'", specifier = "==3.14.3" },
     { name = "albumentations", marker = "extra == 'examples'", specifier = "==2.0.8" },
+    { name = "clean-fid", marker = "extra == 'diffusion'", specifier = "==0.1.35" },
     { name = "datasets", marker = "extra == 'examples'", specifier = "==5.0.1" },
     { name = "diffusers", marker = "extra == 'examples'", specifier = "==0.39.0" },
     { name = "einops", specifier = "==0.8.2" },
@@ -367,7 +388,7 @@ requires-dist = [
     { name = "torchvision", specifier = "==0.28.0", index = "https://download.pytorch.org/whl/cu130" },
     { name = "tqdm", specifier = "==4.70.0" },
 ]
-provides-extras = ["celeba", "examples", "test"]
+provides-extras = ["celeba", "examples", "test", "diffusion"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -2,8 +2,8 @@
 
 The architecture descends from the DGAI chapter helper originally bundled with
 this repository.  It keeps residual time conditioning and spatial attention,
-and places attention at declared low-resolution levels. The default 128x128
-model uses attention at the 16x16 bottleneck.
+and places attention at declared low-resolution levels. The default 256x256
+model uses attention at the 32x32 bottleneck.
 """
 
 from __future__ import annotations
@@ -109,6 +109,49 @@ class SelfAttention2d(nn.Module):
         return inputs + self.projection(attended)
 
 
+class ClassCrossAttention(nn.Module):
+    """One semantic token: softmax is 1; the class value is broadcast spatially."""
+
+    def __init__(self, channels, context_dim, heads):
+        super().__init__()
+        self.norm = nn.LayerNorm(channels)
+        self.context = nn.Linear(context_dim, channels)
+        self.attention = nn.MultiheadAttention(channels, heads, batch_first=True)
+
+    def forward(self, images, context):
+        tokens = images.flatten(2).transpose(1, 2)
+        context = self.context(context)[:, None]
+        update, _ = self.attention(
+            self.norm(tokens), context, context, need_weights=False
+        )
+        return images + update.transpose(1, 2).reshape_as(images)
+
+
+class ResampleResidual(nn.Module):
+    """SR3-style time-conditioned residual resampling on both branches."""
+
+    def __init__(self, source, target, time_dim, *, up):
+        super().__init__()
+        self.up = up
+        self.norm = nn.GroupNorm(_group_count(source), source)
+        self.main = nn.Conv2d(source, target, 3, padding=1)
+        self.time = nn.Linear(time_dim, target)
+        self.last = nn.Conv2d(target, target, 3, padding=1)
+        self.skip = nn.Conv2d(source, target, 1)
+
+    def forward(self, x, time):
+        def resize(y):
+            return (
+                F.interpolate(y, scale_factor=2, mode="nearest")
+                if self.up
+                else F.avg_pool2d(y, 2)
+            )
+
+        h = self.main(resize(F.silu(self.norm(x))))
+        h = self.last(F.silu(h + self.time(time)[:, :, None, None]))
+        return (h + self.skip(resize(x))) / math.sqrt(2)
+
+
 class DownStage(nn.Module):
     def __init__(
         self,
@@ -120,6 +163,7 @@ class DownStage(nn.Module):
         dropout: float,
         num_heads: int,
         downsample: bool,
+        residual_resampling: bool = False,
     ) -> None:
         super().__init__()
         self.block1 = ResidualBlock(in_channels, channels, time_dim, dropout)
@@ -127,17 +171,29 @@ class DownStage(nn.Module):
         self.attention = (
             SelfAttention2d(channels, num_heads) if use_attention else nn.Identity()
         )
+        self.residual_resampling = residual_resampling and downsample
         self.downsample = (
-            nn.Conv2d(channels, next_channels, 4, stride=2, padding=1)
-            if downsample
-            else nn.Identity()
+            ResampleResidual(channels, next_channels, time_dim, up=False)
+            if self.residual_resampling
+            else (
+                nn.Conv2d(channels, next_channels, 4, stride=2, padding=1)
+                if downsample
+                else nn.Identity()
+            )
         )
 
-    def forward(self, hidden_states: Tensor, time_embedding: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(
+        self, hidden_states: Tensor, time_embedding: Tensor
+    ) -> tuple[Tensor, Tensor]:
         hidden_states = self.block1(hidden_states, time_embedding)
         hidden_states = self.block2(hidden_states, time_embedding)
         hidden_states = self.attention(hidden_states)
-        return self.downsample(hidden_states), hidden_states
+        down = (
+            self.downsample(hidden_states, time_embedding)
+            if self.residual_resampling
+            else self.downsample(hidden_states)
+        )
+        return down, hidden_states
 
 
 class UpStage(nn.Module):
@@ -152,6 +208,7 @@ class UpStage(nn.Module):
         dropout: float,
         num_heads: int,
         upsample: bool,
+        residual_resampling: bool = False,
     ) -> None:
         super().__init__()
         self.block1 = ResidualBlock(
@@ -161,21 +218,32 @@ class UpStage(nn.Module):
         self.attention = (
             SelfAttention2d(channels, num_heads) if use_attention else nn.Identity()
         )
+        self.residual_resampling = residual_resampling and upsample
         self.upsample = (
-            nn.Sequential(
-                nn.Upsample(scale_factor=2.0, mode="nearest"),
-                nn.Conv2d(channels, next_channels, 3, padding=1),
+            ResampleResidual(channels, next_channels, time_dim, up=True)
+            if self.residual_resampling
+            else (
+                nn.Sequential(
+                    nn.Upsample(scale_factor=2.0, mode="nearest"),
+                    nn.Conv2d(channels, next_channels, 3, padding=1),
+                )
+                if upsample
+                else nn.Identity()
             )
-            if upsample
-            else nn.Identity()
         )
 
-    def forward(self, hidden_states: Tensor, skip: Tensor, time_embedding: Tensor) -> Tensor:
+    def forward(
+        self, hidden_states: Tensor, skip: Tensor, time_embedding: Tensor
+    ) -> Tensor:
         hidden_states = torch.cat((hidden_states, skip), dim=1)
         hidden_states = self.block1(hidden_states, time_embedding)
         hidden_states = self.block2(hidden_states, time_embedding)
         hidden_states = self.attention(hidden_states)
-        return self.upsample(hidden_states)
+        return (
+            self.upsample(hidden_states, time_embedding)
+            if self.residual_resampling
+            else self.upsample(hidden_states)
+        )
 
 
 class DiffusionUNet(nn.Module):
@@ -188,7 +256,7 @@ class DiffusionUNet(nn.Module):
 
     def __init__(
         self,
-        image_size: int = 128,
+        image_size: int = 256,
         in_channels: int = 3,
         hidden_dims: Sequence[int] = (64, 128, 256, 384),
         attention_levels: Sequence[int] | None = None,
@@ -196,6 +264,9 @@ class DiffusionUNet(nn.Module):
         dropout: float = 0.0,
         num_classes: int | None = None,
         out_channels: int | None = None,
+        class_conditioning: str = "additive",
+        residual_resampling: bool = False,
+        extra_noise_condition: bool = False,
     ) -> None:
         super().__init__()
         hidden_dims = tuple(hidden_dims)
@@ -227,6 +298,11 @@ class DiffusionUNet(nn.Module):
         self.num_classes = num_classes
         self.null_class = num_classes if num_classes is not None else 0
 
+        if class_conditioning not in ("additive", "cross_attention"):
+            raise ValueError("Unknown class conditioning interface.")
+        self.class_conditioning = class_conditioning
+        self.residual_resampling = residual_resampling
+        self.extra_noise_condition = extra_noise_condition
         base_channels = hidden_dims[0]
         time_dim = base_channels * 4
         self.time_embedding = nn.Sequential(
@@ -237,6 +313,21 @@ class DiffusionUNet(nn.Module):
         )
         self.class_embedding = (
             nn.Embedding(num_classes + 1, time_dim) if num_classes is not None else None
+        )
+        self.aux_time_embedding = (
+            nn.Sequential(
+                SinusoidalTimeEmbedding(base_channels),
+                nn.Linear(base_channels, time_dim),
+                nn.SiLU(),
+                nn.Linear(time_dim, time_dim),
+            )
+            if extra_noise_condition
+            else None
+        )
+        self.class_cross_attention = (
+            ClassCrossAttention(hidden_dims[-1], time_dim, num_heads)
+            if class_conditioning == "cross_attention" and num_classes is not None
+            else None
         )
         self.input_projection = nn.Conv2d(in_channels, base_channels, 3, padding=1)
 
@@ -255,6 +346,7 @@ class DiffusionUNet(nn.Module):
                     dropout,
                     num_heads,
                     has_next,
+                    residual_resampling,
                 )
             )
             current_channels = next_channels
@@ -286,6 +378,7 @@ class DiffusionUNet(nn.Module):
                     dropout,
                     num_heads,
                     has_previous,
+                    residual_resampling,
                 )
             )
             current_channels = next_channels
@@ -306,6 +399,9 @@ class DiffusionUNet(nn.Module):
             "num_heads": self.num_heads,
             "dropout": self.dropout,
             "num_classes": self.num_classes,
+            "class_conditioning": self.class_conditioning,
+            "residual_resampling": self.residual_resampling,
+            "extra_noise_condition": self.extra_noise_condition,
         }
 
     def forward(
@@ -313,6 +409,9 @@ class DiffusionUNet(nn.Module):
         noisy_images: Tensor,
         timesteps: Tensor,
         labels: Tensor | None = None,
+        *,
+        extra_time=None,
+        return_features=False,
     ) -> Tensor:
         if noisy_images.ndim != 4 or noisy_images.shape[1] != self.in_channels:
             raise ValueError(
@@ -341,7 +440,14 @@ class DiffusionUNet(nn.Module):
                     raise ValueError("labels must have shape [batch]")
                 if labels.min() < 0 or labels.max() > self.null_class:
                     raise ValueError("class label is outside the configured range")
-            time_embedding = time_embedding + self.class_embedding(labels)
+            if self.class_conditioning == "additive":
+                time_embedding = time_embedding + self.class_embedding(labels)
+        if self.aux_time_embedding is not None:
+            if extra_time is None:
+                raise ValueError(
+                    "This model requires the condition augmentation level."
+                )
+            time_embedding = time_embedding + self.aux_time_embedding(extra_time)
 
         hidden = self.input_projection(noisy_images)
         skips: list[Tensor] = []
@@ -352,10 +458,14 @@ class DiffusionUNet(nn.Module):
         hidden = self.middle_block1(hidden, time_embedding)
         hidden = self.middle_attention(hidden)
         hidden = self.middle_block2(hidden, time_embedding)
+        if self.class_cross_attention is not None:
+            hidden = self.class_cross_attention(hidden, self.class_embedding(labels))
+        features = hidden.mean(dim=(-2, -1))
 
         for stage in self.up_stages:
             hidden = stage(hidden, skips.pop(), time_embedding)
-        return self.output_projection(F.silu(self.output_norm(hidden)))
+        output = self.output_projection(F.silu(self.output_norm(hidden)))
+        return (output, features) if return_features else output
 
 
 # Compatibility with notebooks that imported the original DGAI class name.
