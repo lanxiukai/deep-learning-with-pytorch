@@ -200,18 +200,81 @@ class CausalTransformerPrior(nn.Module):
             torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1
         )
 
-    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
+    def _embed_tokens(
+        self, input_tokens: Tensor, labels: Tensor | None, position: int = 0
+    ) -> Tensor:
         length = input_tokens.shape[1]
         hidden = self.token_embedding(input_tokens)
-        hidden = hidden + self.position_embedding[:, :length]
+        hidden = hidden + self.position_embedding[:, position : position + length]
         if self.class_embedding is not None:
             if labels is None:
                 raise ValueError("A class-conditional prior requires labels.")
             hidden = hidden + self.class_embedding(labels)[:, None, :]
+        return hidden
+
+    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
+        length = input_tokens.shape[1]
+        hidden = self._embed_tokens(input_tokens, labels)
         hidden = self.transformer(
             hidden, mask=self._causal_mask(length, input_tokens.device)
         )
         return self.head(self.normalization(hidden))
+
+    def _decode_step(
+        self,
+        token: Tensor,
+        labels: Tensor | None,
+        position: int,
+        cache: list[tuple[Tensor, Tensor] | None],
+    ) -> Tensor:
+        """Decode one position in eval mode using a cache owned by ``sample``."""
+        hidden = self._embed_tokens(token, labels, position)
+        batch_size = token.shape[0]
+        for index, encoder_layer in enumerate(self.transformer.layers):
+            # Use the same pre-norm attention and feedforward weights as training.
+            block = cast(nn.TransformerEncoderLayer, encoder_layer)
+            attention = block.self_attn
+            qkv = F.linear(
+                block.norm1(hidden),
+                cast(Tensor, attention.in_proj_weight),
+                attention.in_proj_bias,
+            )
+            query, key, value = (
+                projected.reshape(
+                    batch_size, 1, attention.num_heads, attention.head_dim
+                ).transpose(1, 2)
+                for projected in qkv.chunk(3, dim=-1)
+            )
+            layer_cache = cache[index]
+            if layer_cache is None:
+                # Allocate once per layer/call, in the projected (autocast) dtype.
+                shape = (
+                    batch_size,
+                    attention.num_heads,
+                    self.sequence_length,
+                    attention.head_dim,
+                )
+                layer_cache = (key.new_empty(shape), value.new_empty(shape))
+                cache[index] = layer_cache
+            keys, values = layer_cache
+            keys[:, :, position : position + 1].copy_(key)
+            values[:, :, position : position + 1].copy_(value)
+            # The single query can see every cached position, including itself.
+            # is_causal=True would align a non-square mask to the first key.
+            attended = F.scaled_dot_product_attention(
+                query,
+                keys[:, :, : position + 1],
+                values[:, :, : position + 1],
+                dropout_p=0.0,
+                is_causal=False,
+            )
+            attended = attended.transpose(1, 2).reshape(batch_size, 1, -1)
+            hidden = hidden + block.dropout1(attention.out_proj(attended))
+            update = block.linear2(
+                block.dropout(block.activation(block.linear1(block.norm2(hidden))))
+            )
+            hidden = hidden + block.dropout2(update)
+        return self.head(self.normalization(hidden))[:, 0, :]
 
     def teacher_forcing(
         self,
@@ -233,10 +296,11 @@ class CausalTransformerPrior(nn.Module):
         labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
-        """Recompute the full prefix and sample its next token at each step.
+        """Sample one token at a time with a per-call KV cache.
 
         Sampling temporarily disables dropout and restores the previous mode.
         Training and likelihood evaluation use the parallel forward pass.
+        Cache tensors are transient and never become part of the checkpoint.
         """
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError("Sampling temperature must be finite and positive.")
@@ -246,12 +310,21 @@ class CausalTransformerPrior(nn.Module):
         self.eval()
         try:
             tokens = torch.full(
-                (count, 1), self.bos_token, dtype=torch.long, device=device
+                (count, self.sequence_length + 1),
+                self.bos_token,
+                dtype=torch.long,
+                device=device,
             )
-            for _ in range(self.sequence_length):
-                logits = self(tokens, labels)[:, -1, :] / temperature
+            cache: list[tuple[Tensor, Tensor] | None] = [
+                None for _ in self.transformer.layers
+            ]
+            for position in range(self.sequence_length):
+                logits = self._decode_step(
+                    tokens[:, position : position + 1], labels, position, cache
+                )
+                logits = logits / temperature
                 sampled = torch.multinomial(logits.softmax(dim=-1), 1)
-                tokens = torch.cat((tokens, sampled), dim=1)
+                tokens[:, position + 1 : position + 2] = sampled
             return tokens[:, 1:]
         finally:
             self.train(was_training)
