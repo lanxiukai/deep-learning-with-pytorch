@@ -130,9 +130,7 @@ class PixelCNNPrior(nn.Module):
         was_training = self.training
         self.eval()
         try:
-            indices = torch.zeros(
-                count, height, width, dtype=torch.long, device=device
-            )
+            indices = torch.zeros(count, height, width, dtype=torch.long, device=device)
             # Recompute the full grid, using only the current position's logits.
             for i in range(height):
                 for j in range(width):
@@ -145,10 +143,7 @@ class PixelCNNPrior(nn.Module):
 
 
 class CausalTransformerPrior(nn.Module):
-    """Fixed-length causal token Transformer, unconditional by default.
-
-    A positive num_classes explicitly enables class conditioning.
-    """
+    """Unconditional fixed-length causal token Transformer."""
 
     def __init__(
         self,
@@ -159,17 +154,12 @@ class CausalTransformerPrior(nn.Module):
         heads: int = 8,
         layers: int = 4,
         dropout: float = 0.0,
-        num_classes: int = 0,
     ) -> None:
         super().__init__()
         self.vocabulary_size = vocabulary_size
         self.sequence_length = sequence_length
-        self.num_classes = num_classes
         self.bos_token = vocabulary_size
         self.token_embedding = nn.Embedding(vocabulary_size + 1, model_dim)
-        self.class_embedding = (
-            nn.Embedding(num_classes, model_dim) if num_classes else None
-        )
         self.position_embedding = nn.Parameter(
             torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
         )
@@ -200,21 +190,15 @@ class CausalTransformerPrior(nn.Module):
             torch.ones(length, length, dtype=torch.bool, device=device), diagonal=1
         )
 
-    def _embed_tokens(
-        self, input_tokens: Tensor, labels: Tensor | None, position: int = 0
-    ) -> Tensor:
+    def _embed_tokens(self, input_tokens: Tensor, position: int = 0) -> Tensor:
         length = input_tokens.shape[1]
         hidden = self.token_embedding(input_tokens)
         hidden = hidden + self.position_embedding[:, position : position + length]
-        if self.class_embedding is not None:
-            if labels is None:
-                raise ValueError("A class-conditional prior requires labels.")
-            hidden = hidden + self.class_embedding(labels)[:, None, :]
         return hidden
 
-    def forward(self, input_tokens: Tensor, labels: Tensor | None = None) -> Tensor:
+    def forward(self, input_tokens: Tensor) -> Tensor:
         length = input_tokens.shape[1]
-        hidden = self._embed_tokens(input_tokens, labels)
+        hidden = self._embed_tokens(input_tokens)
         hidden = self.transformer(
             hidden, mask=self._causal_mask(length, input_tokens.device)
         )
@@ -223,12 +207,11 @@ class CausalTransformerPrior(nn.Module):
     def _decode_step(
         self,
         token: Tensor,
-        labels: Tensor | None,
         position: int,
         cache: list[tuple[Tensor, Tensor] | None],
     ) -> Tensor:
         """Decode one position in eval mode using a cache owned by ``sample``."""
-        hidden = self._embed_tokens(token, labels, position)
+        hidden = self._embed_tokens(token, position)
         batch_size = token.shape[0]
         for index, encoder_layer in enumerate(self.transformer.layers):
             # Use the same pre-norm attention and feedforward weights as training.
@@ -279,13 +262,12 @@ class CausalTransformerPrior(nn.Module):
     def teacher_forcing(
         self,
         indices: Tensor,
-        labels: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Return logits and targets for ``[B,H,W]`` or ``[B,T]`` indices."""
         targets = indices.flatten(1)
         bos = targets.new_full((targets.shape[0], 1), self.bos_token)
         inputs = torch.cat((bos, targets[:, :-1]), dim=1)
-        return self(inputs, labels), targets
+        return self(inputs), targets
 
     @torch.inference_mode()
     def sample(
@@ -293,7 +275,6 @@ class CausalTransformerPrior(nn.Module):
         count: int,
         *,
         device: torch.device,
-        labels: Tensor | None = None,
         temperature: float = 1.0,
     ) -> Tensor:
         """Sample one token at a time with a per-call KV cache.
@@ -320,7 +301,7 @@ class CausalTransformerPrior(nn.Module):
             ]
             for position in range(self.sequence_length):
                 logits = self._decode_step(
-                    tokens[:, position : position + 1], labels, position, cache
+                    tokens[:, position : position + 1], position, cache
                 )
                 logits = logits / temperature
                 sampled = torch.multinomial(logits.softmax(dim=-1), 1)
