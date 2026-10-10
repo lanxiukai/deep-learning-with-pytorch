@@ -138,9 +138,13 @@ environment or dependency workflow.
   PixelCNN architecture is retained; there is no legacy architecture selector.
   Sampling recomputes full-grid logits for each position. The Transformer
   samples one token at a time with a preallocated, per-layer KV cache.
-  Its layers are independently initialized. Both samplers temporarily disable
-  dropout and restore the previous mode. Transformer training stays parallel;
-  caches last for one sampling call and are never saved in checkpoints.
+  Its complete image-token embedding matrix is shared with the output projection;
+  BOS has a separate input-only vector. Its layers are independently initialized.
+  Both samplers temporarily disable dropout and restore the previous mode.
+  Transformer training stays parallel; caches last for one sampling call and
+  are never saved in checkpoints. The prior supports multinomial, greedy,
+  top-k, and top-p decoding, plus beam search that reorders cached prefixes.
+  Sampling temperature affects only stochastic output-token selection.
   [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
   quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids

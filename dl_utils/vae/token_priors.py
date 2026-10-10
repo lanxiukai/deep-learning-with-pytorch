@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import torch
 import torch.nn.functional as F
@@ -143,7 +143,7 @@ class PixelCNNPrior(nn.Module):
 
 
 class CausalTransformerPrior(nn.Module):
-    """Unconditional fixed-length causal token Transformer."""
+    """Unconditional causal Transformer with tied image-token input/output weights."""
 
     def __init__(
         self,
@@ -159,7 +159,8 @@ class CausalTransformerPrior(nn.Module):
         self.vocabulary_size = vocabulary_size
         self.sequence_length = sequence_length
         self.bos_token = vocabulary_size
-        self.token_embedding = nn.Embedding(vocabulary_size + 1, model_dim)
+        self.token_embedding = nn.Embedding(vocabulary_size, model_dim)
+        self.bos_embedding = nn.Parameter(torch.randn(model_dim))
         self.position_embedding = nn.Parameter(
             torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
         )
@@ -184,6 +185,10 @@ class CausalTransformerPrior(nn.Module):
                 nn.init.zeros_(linear.bias)
         self.normalization = nn.LayerNorm(model_dim)
         self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
+        self.head.weight = self.token_embedding.weight
+
+    def _logits(self, hidden: Tensor) -> Tensor:
+        return self.head(self.normalization(hidden))
 
     def _causal_mask(self, length: int, device: torch.device) -> Tensor:
         return torch.triu(
@@ -192,7 +197,10 @@ class CausalTransformerPrior(nn.Module):
 
     def _embed_tokens(self, input_tokens: Tensor, position: int = 0) -> Tensor:
         length = input_tokens.shape[1]
-        hidden = self.token_embedding(input_tokens)
+        # BOS has its own vector, outside the shared image-token vocabulary.
+        is_bos = input_tokens == self.bos_token
+        hidden = self.token_embedding(input_tokens.masked_fill(is_bos, 0))
+        hidden = torch.where(is_bos.unsqueeze(-1), self.bos_embedding, hidden)
         hidden = hidden + self.position_embedding[:, position : position + length]
         return hidden
 
@@ -202,7 +210,7 @@ class CausalTransformerPrior(nn.Module):
         hidden = self.transformer(
             hidden, mask=self._causal_mask(length, input_tokens.device)
         )
-        return self.head(self.normalization(hidden))
+        return self._logits(hidden)
 
     def _decode_step(
         self,
@@ -210,7 +218,7 @@ class CausalTransformerPrior(nn.Module):
         position: int,
         cache: list[tuple[Tensor, Tensor] | None],
     ) -> Tensor:
-        """Decode one position in eval mode using a cache owned by ``sample``."""
+        """Decode one position in eval mode using a cache owned by the caller."""
         hidden = self._embed_tokens(token, position)
         batch_size = token.shape[0]
         for index, encoder_layer in enumerate(self.transformer.layers):
@@ -257,7 +265,7 @@ class CausalTransformerPrior(nn.Module):
                 block.dropout(block.activation(block.linear1(block.norm2(hidden))))
             )
             hidden = hidden + block.dropout2(update)
-        return self.head(self.normalization(hidden))[:, 0, :]
+        return self._logits(hidden)[:, 0, :]
 
     def teacher_forcing(
         self,
@@ -276,15 +284,26 @@ class CausalTransformerPrior(nn.Module):
         *,
         device: torch.device,
         temperature: float = 1.0,
+        method: Literal["multinomial", "greedy", "top_k", "top_p"] = "multinomial",
+        top_k: int = 50,
+        top_p: float = 0.9,
     ) -> Tensor:
         """Sample one token at a time with a per-call KV cache.
 
+        Greedy decoding uses argmax without temperature. Stochastic methods
+        apply temperature to output logits before top-k or nucleus filtering.
         Sampling temporarily disables dropout and restores the previous mode.
         Training and likelihood evaluation use the parallel forward pass.
         Cache tensors are transient and never become part of the checkpoint.
         """
-        if not math.isfinite(temperature) or temperature <= 0:
+        if method not in {"multinomial", "greedy", "top_k", "top_p"}:
+            raise ValueError("Unknown Transformer sampling method.")
+        if method != "greedy" and (not math.isfinite(temperature) or temperature <= 0):
             raise ValueError("Sampling temperature must be finite and positive.")
+        if method == "top_k" and not 1 <= top_k <= self.vocabulary_size:
+            raise ValueError("top_k must be between 1 and the vocabulary size.")
+        if method == "top_p" and (not math.isfinite(top_p) or not 0 < top_p <= 1):
+            raise ValueError("top_p must be finite and in (0, 1].")
         if count < 1 or self.sequence_length < 1:
             raise ValueError("Sample count and sequence length must be positive.")
         was_training = self.training
@@ -303,9 +322,71 @@ class CausalTransformerPrior(nn.Module):
                 logits = self._decode_step(
                     tokens[:, position : position + 1], position, cache
                 )
-                logits = logits / temperature
-                sampled = torch.multinomial(logits.softmax(dim=-1), 1)
+                if method == "greedy":
+                    sampled = logits.argmax(dim=-1, keepdim=True)
+                else:
+                    logits = logits / temperature
+                    if method == "top_k":
+                        values, indices = logits.topk(top_k, dim=-1)
+                        logits = torch.full_like(logits, -torch.inf).scatter(
+                            -1, indices, values
+                        )
+                    elif method == "top_p" and top_p < 1:
+                        values, indices = logits.sort(dim=-1, descending=True)
+                        remove = values.softmax(dim=-1).cumsum(dim=-1) >= top_p
+                        # Keep the token that first reaches the requested mass.
+                        remove[:, 1:] = remove[:, :-1].clone()
+                        remove[:, 0] = False
+                        logits = torch.empty_like(logits).scatter(
+                            -1, indices, values.masked_fill(remove, -torch.inf)
+                        )
+                    sampled = torch.multinomial(logits.softmax(dim=-1), 1)
                 tokens[:, position + 1 : position + 2] = sampled
+            return tokens[:, 1:]
+        finally:
+            self.train(was_training)
+
+    @torch.inference_mode()
+    def beam_search(self, beam_width: int, *, device: torch.device) -> Tensor:
+        """Return up to ``beam_width`` fixed-length candidates, best score first.
+
+        Each step keeps the best cumulative, untempered log probabilities.
+        Cached prefixes follow their selected parents, including duplicates.
+        There is no EOS or length penalty because every image has equal length.
+        """
+        if beam_width < 1 or self.sequence_length < 1:
+            raise ValueError("Beam width and sequence length must be positive.")
+        was_training = self.training
+        self.eval()
+        try:
+            tokens = torch.full(
+                (1, self.sequence_length + 1),
+                self.bos_token,
+                dtype=torch.long,
+                device=device,
+            )
+            scores = torch.zeros(1, device=device)
+            cache: list[tuple[Tensor, Tensor] | None] = [
+                None for _ in self.transformer.layers
+            ]
+            for position in range(self.sequence_length):
+                logits = self._decode_step(
+                    tokens[:, position : position + 1], position, cache
+                )
+                candidates = scores[:, None] + logits.log_softmax(dim=-1)
+                scores, selected = candidates.flatten().topk(
+                    min(beam_width, candidates.numel())
+                )
+                parents = selected // self.vocabulary_size
+                tokens = tokens.index_select(0, parents)
+                tokens[:, position + 1] = selected % self.vocabulary_size
+                for index, layer_cache in enumerate(cache):
+                    assert layer_cache is not None
+                    keys, values = layer_cache
+                    cache[index] = (
+                        keys.index_select(0, parents),
+                        values.index_select(0, parents),
+                    )
             return tokens[:, 1:]
         finally:
             self.train(was_training)

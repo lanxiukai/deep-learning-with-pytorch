@@ -14,21 +14,30 @@ Checkpoint:
 Outputs:
     output/vae/vqgan/evaluation/vqgan_real_and_reconstruction.png
     output/vae/vqgan/evaluation/vqgan_prior_samples_temperature_<temperature>.png
-    The evaluation directory is reset before writing its four grids.
+    output/vae/vqgan/evaluation/vqgan_prior_greedy.png
+    output/vae/vqgan/evaluation/vqgan_prior_beam_width_<K>.png
+    output/vae/vqgan/evaluation/vqgan_prior_top_k_<k>_temperature_<temperature>.png
+    output/vae/vqgan/evaluation/vqgan_prior_top_p_<p>_temperature_<temperature>.png
+    The evaluation directory is reset before writing its twelve default grids.
 
 Evaluation defaults:
     Reconstruction images: 8 training inputs; one batch.
-    Generated images:      8 per temperature, arranged in two rows; 256x256 RGB.
+    Generated images:      8 per stochastic run; one greedy image; 8 beam candidates.
+    Layout:                At most 4 images per row; 256x256 RGB.
     Token grid / sequence: 16x16 / 256 tokens with default four downsampling stages.
     Prior temperatures:    0.7, 1.0, 1.3.
+    Beam width / top-k / p: 8 / 50 / 0.9.
     Seed:                  123 for repeatable unconditional sampling.
     Model dimensions:      loaded from the checkpoint produced by 7.0.
 
 Run without arguments after training 7.0; edit the constants below to change
-the checkpoint, reconstruction count, sample count, or temperature sweep.
+the checkpoint, image counts, generation methods, beam width, top-k/top-p
+thresholds, or sampling temperatures. Greedy and beam search are deterministic
+for this unconditional fixed-length prior and do not apply temperature.
 """
 
 import math
+from typing import Literal
 
 import torch
 from tqdm.auto import tqdm
@@ -54,25 +63,68 @@ NUM_SAMPLES = 8
 SAMPLES_PER_ROW = 4
 
 # Sampling configuration
+GenerationMethod = Literal["multinomial", "greedy", "beam", "top_k", "top_p"]
+GENERATION_METHODS: tuple[GenerationMethod, ...] = (
+    "multinomial",
+    "greedy",
+    "beam",
+    "top_k",
+    "top_p",
+)
 TEMPERATURES = (0.7, 1.0, 1.3)
+BEAM_WIDTH = 8
+TOP_K = 50
+TOP_P = 0.9
 SEED = 123
 
 
 @torch.inference_mode()
 def evaluate():
-    if not TEMPERATURES or any(
-        not math.isfinite(temperature) or temperature <= 0
-        for temperature in TEMPERATURES
+    if not GENERATION_METHODS or any(
+        method not in {"multinomial", "greedy", "beam", "top_k", "top_p"}
+        for method in GENERATION_METHODS
+    ):
+        raise ValueError(
+            "GENERATION_METHODS must contain supported generation methods."
+        )
+    stochastic = any(
+        method in {"multinomial", "top_k", "top_p"} for method in GENERATION_METHODS
+    )
+    if stochastic and (
+        not TEMPERATURES
+        or any(
+            not math.isfinite(temperature) or temperature <= 0
+            for temperature in TEMPERATURES
+        )
     ):
         raise ValueError("TEMPERATURES must contain finite, positive values.")
-    reset_dir(OUTPUT_DIR)
+    if min(RECONSTRUCTION_SAMPLES, NUM_SAMPLES, SAMPLES_PER_ROW) < 1:
+        raise ValueError("Image counts and row width must be positive.")
+    if "beam" in GENERATION_METHODS and BEAM_WIDTH < 1:
+        raise ValueError("BEAM_WIDTH must be positive.")
+    if "top_p" in GENERATION_METHODS and (
+        not math.isfinite(TOP_P) or not 0 < TOP_P <= 1
+    ):
+        raise ValueError("TOP_P must be finite and in (0, 1].")
+    generation_runs: list[tuple[GenerationMethod, float]] = [
+        (method, temperature)
+        for method in GENERATION_METHODS
+        for temperature in (
+            TEMPERATURES if method in {"multinomial", "top_k", "top_p"} else (1.0,)
+        )
+    ]
     set_seed(SEED)
     device = try_gpu()
     with tqdm(
-        total=1 + len(TEMPERATURES), desc="Evaluate VQGAN", unit="grid"
+        total=1 + len(generation_runs), desc="Evaluate VQGAN", unit="grid"
     ) as progress:
         tokenizer, prior = load_pair(CHECKPOINT, "vqgan", device, image_size=IMAGE_SIZE)
         assert isinstance(prior, CausalTransformerPrior)
+        if "top_k" in GENERATION_METHODS and not 1 <= TOP_K <= prior.vocabulary_size:
+            raise ValueError(
+                "TOP_K must be between 1 and the checkpoint vocabulary size."
+            )
+        reset_dir(OUTPUT_DIR)
         loader = glasses_loader(DATA_DIR, IMAGE_SIZE, RECONSTRUCTION_SAMPLES, device)
         originals = next(iter(loader))[0].to(device)
         reconstruction = tokenizer(originals)[0]
@@ -85,22 +137,51 @@ def evaluate():
             dpi=160,
         )
         progress.update(1)
-        for temperature in TEMPERATURES:
-            progress.set_postfix(temperature=temperature, refresh=False)
+        for method, temperature in generation_runs:
+            progress.set_postfix(method=method, refresh=False)
             with torch.random.fork_rng():
                 torch.manual_seed(SEED)
-                indices = prior.sample(
-                    NUM_SAMPLES, device=device, temperature=temperature
-                )
+                if method == "beam":
+                    indices = prior.beam_search(BEAM_WIDTH, device=device)
+                    suffix = f"beam_width_{BEAM_WIDTH}"
+                    title = f"Beam search: width={BEAM_WIDTH} (best first)"
+                elif method == "greedy":
+                    indices = prior.sample(1, device=device, method="greedy")
+                    suffix = "greedy"
+                    title = "Greedy decoding"
+                else:
+                    indices = prior.sample(
+                        NUM_SAMPLES,
+                        device=device,
+                        method=method,
+                        temperature=temperature,
+                        top_k=TOP_K,
+                        top_p=TOP_P,
+                    )
+                    if method == "top_k":
+                        suffix = f"top_k_{TOP_K}_temperature_{temperature}"
+                        title = f"Top-k sampling: k={TOP_K}, temperature={temperature}"
+                    elif method == "top_p":
+                        suffix = f"top_p_{TOP_P}_temperature_{temperature}"
+                        title = f"Top-p sampling: p={TOP_P}, temperature={temperature}"
+                    else:
+                        suffix = f"samples_temperature_{temperature}"
+                        title = (
+                            f"Unconditional prior samples: temperature={temperature}"
+                        )
                 samples = tokenizer.decode_indices(
-                    indices.reshape(NUM_SAMPLES, side, side)
+                    indices.reshape(len(indices), side, side)
                 )
-            rows = samples.split(SAMPLES_PER_ROW)
+            # The row-grid helper requires equal row lengths, even for arbitrary K.
+            columns = min(SAMPLES_PER_ROW, len(samples))
+            while len(samples) % columns:
+                columns -= 1
+            rows = samples.split(columns)
             save_image_row_grid(
                 rows,
                 ["VQGAN"] * len(rows),
-                OUTPUT_DIR / f"vqgan_prior_samples_temperature_{temperature}.png",
-                title=f"Unconditional prior samples: temperature={temperature}",
+                OUTPUT_DIR / f"vqgan_prior_{suffix}.png",
+                title=title,
                 dpi=160,
             )
             progress.update(1)

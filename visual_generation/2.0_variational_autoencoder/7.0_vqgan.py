@@ -28,7 +28,8 @@ Token grid / sequence:    16x16 / 256 tokens; four 2x downsampling stages
 Codebook:                 512 vectors, 64 values each; commitment coefficient 0.25
 Tokenizer/PatchGAN width: 128 / 64 channels
 Transformer:              256 values, 8 heads, 4 layers, dropout 0.0
-Model size:               tokenizer 2.681 M / prior 3.487 M / PatchGAN 1.251 M
+                          Full input/output matrix is tied; BOS has a separate vector.
+Model size:               tokenizer 2.681 M / prior 3.356 M / PatchGAN 1.251 M
                           Counts exclude LPIPS; tokenizer includes frozen codebook.
 EMA decay / epsilon:      0.99 / 1e-5
 Loss weights:             perceptual 1.0, VQ 1.0, adversarial scale 1.0
@@ -357,6 +358,7 @@ def train() -> None:
     }
     recipe = {
         "model": config,
+        "prior_weight_tying": "full_matrix_with_separate_bos",
         "tokenizer_epochs": TOKENIZER_EPOCHS,
         "prior_epochs": PRIOR_EPOCHS,
         "lr": LR,
