@@ -160,9 +160,9 @@ class CausalTransformerPrior(nn.Module):
         self.sequence_length = sequence_length
         self.bos_token = vocabulary_size
         self.token_embedding = nn.Embedding(vocabulary_size, model_dim)
-        self.bos_embedding = nn.Parameter(torch.randn(model_dim))
+        self.bos_embedding = nn.Parameter(torch.empty(model_dim))
         self.position_embedding = nn.Parameter(
-            torch.randn(1, sequence_length, model_dim) / math.sqrt(model_dim)
+            torch.zeros(1, sequence_length, model_dim)
         )
         layer = nn.TransformerEncoderLayer(
             d_model=model_dim,
@@ -186,6 +186,9 @@ class CausalTransformerPrior(nn.Module):
         self.normalization = nn.LayerNorm(model_dim)
         self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
         self.head.weight = self.token_embedding.weight
+        # Unit-scale tied embeddings saturate the initial output distribution.
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.bos_embedding, std=0.02)
 
     def _logits(self, hidden: Tensor) -> Tensor:
         return self.head(self.normalization(hidden))

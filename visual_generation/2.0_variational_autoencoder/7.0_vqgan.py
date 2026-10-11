@@ -29,6 +29,7 @@ Codebook:                 512 vectors, 64 values each; commitment coefficient 0.
 Tokenizer/PatchGAN width: 128 / 64 channels
 Transformer:              256 values, 8 heads, 4 layers, dropout 0.0
                           Full input/output matrix is tied; BOS has a separate vector.
+                          Token/BOS initialization std 0.02; positions start at zero.
 Model size:               tokenizer 2.681 M / prior 3.356 M / PatchGAN 1.251 M
                           Counts exclude LPIPS; tokenizer includes frozen codebook.
 EMA decay / epsilon:      0.99 / 1e-5
@@ -54,7 +55,7 @@ from tqdm.auto import tqdm
 
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
-from dl_utils.runtime.devices import try_gpu
+from dl_utils.runtime.devices import configure_device, try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.discrete_tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
@@ -359,6 +360,7 @@ def train() -> None:
     recipe = {
         "model": config,
         "prior_weight_tying": "full_matrix_with_separate_bos",
+        "prior_initialization": "token_bos_std_0.02_zero_positions",
         "tokenizer_epochs": TOKENIZER_EPOCHS,
         "prior_epochs": PRIOR_EPOCHS,
         "lr": LR,
@@ -376,6 +378,7 @@ def train() -> None:
     prepare_training_output(OUTPUT_DIR, resume=RESUME, recipe=recipe)
     set_seed(SEED)
     device = try_gpu()
+    configure_device(device)
     loader = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
