@@ -3,6 +3,7 @@
 import argparse
 import copy
 import json
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -52,6 +53,10 @@ def parser_for(default_name, *, modern=False):
     parser.add_argument("--guidance", type=float, nargs="+", default=[1.0])
     if modern:
         parser.add_argument("--augmentation-level", type=float, default=0.0)
+        parser.add_argument("--guidance-lower", type=float, default=0.0)
+        parser.add_argument("--guidance-upper", type=float, default=1.0)
+        parser.add_argument("--sde-strength", type=float, default=0.2)
+        parser.add_argument("--sde-epsilon", type=float, default=1e-3)
     else:
         parser.set_defaults(augmentation_level=0.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -136,6 +141,18 @@ def evaluate(
     sampler = sampler_factory(
         model, state, codec=codec, latent_scale=scale, classifier=classifier
     )
+    sampling_options = {}
+    if task == "imf":
+        sampling_options = {
+            "lower": args.guidance_lower,
+            "upper": args.guidance_upper,
+        }
+    elif task == "sit":
+        sampling_options = {
+            "sde_strength": args.sde_strength,
+            "epsilon": args.sde_epsilon,
+        }
+    sampler = partial(sampler, **sampling_options)
     low_sampler, low_model = None, None
     if args.low_checkpoint:
         if task not in ("sr3", "sr_regression"):
@@ -246,6 +263,10 @@ def evaluate(
                         count_modules=counted,
                     )
                 record.update(
+                    sampling_options=sampling_options,
+                    augmentation_level=args.augmentation_level
+                    if task == "sr3"
+                    else None,
                     checkpoint_id=state["checkpoint_id"],
                     task=task,
                     seed=args.seed,

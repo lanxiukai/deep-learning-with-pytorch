@@ -14,6 +14,10 @@ from dl_utils.modern.transformer import DiffusionTransformer
 
 
 def build_model(kind, config):
+    if kind == "sr3":
+        # Older checkpoints scaled resampling blocks only. Preserve their function;
+        # newly trained SR3 models record scaling for every residual block.
+        return SR3(**{"residual_scale": 1.0, **config})
     if kind == "edm":
         options = dict(config)
         return EDMPreconditioner(
@@ -23,7 +27,6 @@ def build_model(kind, config):
         "dit": DiffusionTransformer,
         "imf": ImprovedMeanFlow,
         "autoencoder": KLPerceptualAutoencoder,
-        "sr3": SR3,
         "consistency": ConsistencyModel,
     }
     if kind in constructors:

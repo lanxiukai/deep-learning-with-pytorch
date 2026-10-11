@@ -10,7 +10,6 @@ import torch
 from tqdm import tqdm
 
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
-from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.lesson_utils import (
     BinnedLoss,
     autocast,
@@ -31,7 +30,6 @@ from dl_utils.training.ema import update_ema
 
 def parse_args():
     parser = training_parser("sit_repa")
-    parser.add_argument("--diffusion-steps", type=int, default=1000)
     parser.add_argument("--condition-dropout", type=float, default=0.1)
     parser.add_argument(
         "--unconditional",
@@ -69,13 +67,13 @@ def main(args):
         "conditional": conditional,
         "latent": latent,
         "condition_dropout": args.condition_dropout if conditional else 0.0,
-        "diffusion": {"num_steps": args.diffusion_steps},
         "precision": args.precision,
         "ema_decay": args.ema_decay,
     }
     channels, size = 3, args.image_size
     conditional = not args.unconditional
     algorithm["conditional"] = conditional
+    algorithm["condition_dropout"] = args.condition_dropout if conditional else 0.0
     codec, scale, codec_state = load_codec(args.autoencoder_checkpoint, device, data)
     algorithm.update(
         codec_checkpoint=str(args.autoencoder_checkpoint.resolve()),
@@ -102,8 +100,11 @@ def main(args):
         time_sampling=args.time_sampling,
         time_shift=args.time_shift,
         time_direction="data_to_noise",
+        path="independent_linear",
+        prediction_type="velocity",
+        time_embedding_scale=1000.0,
+        loss_reduction="coordinate_mean",
     )
-    GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     if not 0 <= args.repa_layer < args.depth:

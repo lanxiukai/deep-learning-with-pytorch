@@ -38,6 +38,12 @@ def parse_args():
     parser.add_argument("--guidance-max", type=float, default=5.0)
     parser.add_argument("--fixed-guidance-interval", action="store_true")
     parser.add_argument("--adaptive-power", type=float, default=0.5)
+    parser.add_argument("--equal-fraction", type=float, default=0.5)
+    parser.add_argument("--condition-dropout", type=float, default=0.1)
+    parser.add_argument("--auxiliary-weight", type=float, default=1.0)
+    parser.add_argument("--weighting-epsilon", type=float, default=1e-3)
+    parser.add_argument("--time-mean", type=float, default=0.0)
+    parser.add_argument("--time-std", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -45,6 +51,16 @@ def main(args):
     device = setup(args)
     if args.guidance_max < 1 or not 0 <= args.adaptive_power <= 1:
         raise ValueError("Invalid guidance range or adaptive power.")
+    if not 0 < args.equal_fraction < 1 or not 0 <= args.condition_dropout < 1:
+        raise ValueError(
+            "Train both zero and finite intervals with valid label dropout."
+        )
+    if args.auxiliary_weight <= 0 or args.weighting_epsilon <= 0 or args.time_std <= 0:
+        raise ValueError(
+            "Auxiliary weight, weighting epsilon and time std must be positive."
+        )
+    if args.guidance_max > 1 and args.condition_dropout == 0:
+        raise ValueError("Adjustable guidance requires a trained unconditional branch.")
     data = data_config(args)
     codec, scale, codec_state = load_codec(args.autoencoder_checkpoint, device, data)
     model = ImprovedMeanFlow(
@@ -71,6 +87,15 @@ def main(args):
         "guidance_max": args.guidance_max,
         "variable_interval": not args.fixed_guidance_interval,
         "adaptive_power": args.adaptive_power,
+        "equal_fraction": args.equal_fraction,
+        "condition_dropout": args.condition_dropout,
+        "auxiliary_weight": args.auxiliary_weight,
+        "weighting_epsilon": args.weighting_epsilon,
+        "time_mean": args.time_mean,
+        "time_std": args.time_std,
+        "time_direction": "data_to_noise",
+        "time_sampling": "sorted_logit_normal_with_equal_intervals",
+        "loss_reduction": "coordinate_mean",
         "precision": args.precision,
         "ema_decay": args.ema_decay,
     }
@@ -97,6 +122,12 @@ def main(args):
                     guidance_max=args.guidance_max,
                     variable_interval=not args.fixed_guidance_interval,
                     adaptive_power=args.adaptive_power,
+                    equal_fraction=args.equal_fraction,
+                    dropout=args.condition_dropout,
+                    auxiliary_weight=args.auxiliary_weight,
+                    weighting_epsilon=args.weighting_epsilon,
+                    time_mean=args.time_mean,
+                    time_std=args.time_std,
                 )
                 loss = per_image.float().mean()
             if not torch.isfinite(loss):

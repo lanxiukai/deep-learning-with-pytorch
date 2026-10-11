@@ -56,6 +56,7 @@ def main(args):
     channels, size = 3, args.image_size
     conditional = not args.unconditional
     algorithm["conditional"] = conditional
+    algorithm["condition_dropout"] = args.condition_dropout if conditional else 0.0
     codec, scale, codec_state = load_codec(args.autoencoder_checkpoint, device, data)
     algorithm.update(
         codec_checkpoint=str(args.autoencoder_checkpoint.resolve()),

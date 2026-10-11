@@ -27,7 +27,11 @@ def make_sampler(model, metadata, *, codec=None, latent_scale=1.0, classifier=No
         (codec.latent_channels, codec.latent_size) if latent else (3, size)
     )
     diffusion_type = LearnedVarianceDiffusion if task == "dit" else GaussianDiffusion
-    diffusion = diffusion_type(**algorithm.get("diffusion", {})).to(device)
+    diffusion = (
+        diffusion_type(**algorithm.get("diffusion", {})).to(device)
+        if task in ("ldm", "dit", "sr3")
+        else None
+    )
 
     @torch.no_grad()
     def sample(
@@ -42,6 +46,8 @@ def make_sampler(model, metadata, *, codec=None, latent_scale=1.0, classifier=No
         noise=None,
         lower=0.0,
         upper=1.0,
+        sde_strength=0.2,
+        epsilon=1e-3,
     ):
         if noise is None:
             noise = torch.randn(count, channels, spatial, spatial, device=device)
@@ -92,6 +98,8 @@ def make_sampler(model, metadata, *, codec=None, latent_scale=1.0, classifier=No
                 steps=steps,
                 solver=solver or "heun",
                 reverse=task == "sit",
+                sde_strength=sde_strength,
+                epsilon=epsilon,
             )
         elif task == "edm":
             if guidance != 1:
@@ -134,6 +142,18 @@ def make_sampler(model, metadata, *, codec=None, latent_scale=1.0, classifier=No
         elif task == "imf":
             if not 1 <= guidance <= algorithm["guidance_max"]:
                 raise ValueError("Guidance outside the training range.")
+            if not 0 <= lower < upper <= 1:
+                raise ValueError(
+                    "Guidance interval must satisfy 0 <= lower < upper <= 1."
+                )
+            if not algorithm["variable_interval"] and (lower != 0 or upper != 1):
+                raise ValueError(
+                    "This iMF checkpoint only trained full-interval guidance."
+                )
+            if algorithm["variable_interval"] and not (lower <= 0.3 and upper >= 0.7):
+                raise ValueError(
+                    "Guidance interval is outside the trained endpoint ranges."
+                )
             images = sample_imf(
                 model,
                 noise,

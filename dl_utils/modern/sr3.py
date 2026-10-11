@@ -14,6 +14,7 @@ class SR3(nn.Module):
         hidden_dims=(64, 128, 256, 384),
         augmentation=False,
         class_conditional=False,
+        residual_scale=2**-0.5,
     ):
         super().__init__()
         self._config = {
@@ -21,6 +22,7 @@ class SR3(nn.Module):
             "hidden_dims": list(hidden_dims),
             "augmentation": augmentation,
             "class_conditional": class_conditional,
+            "residual_scale": residual_scale,
         }
         self.augmentation, self.class_conditional = augmentation, class_conditional
         self.network = DiffusionUNet(
@@ -29,6 +31,7 @@ class SR3(nn.Module):
             out_channels=3,
             hidden_dims=hidden_dims,
             residual_resampling=True,
+            residual_scale=residual_scale,
             num_classes=101 if class_conditional else None,
             extra_noise_condition=augmentation,
         )

@@ -10,7 +10,6 @@ import torch
 from tqdm import tqdm
 
 from dl_utils.diffusion.data import NUM_CLASSES, data_config, make_loader
-from dl_utils.diffusion.diffusion_ddpm import GaussianDiffusion
 from dl_utils.diffusion.diffusion_unet import DiffusionUNet
 from dl_utils.diffusion.lesson_utils import (
     BinnedLoss,
@@ -28,8 +27,6 @@ from dl_utils.training.ema import update_ema
 
 def parse_args():
     parser = training_parser("edm")
-    parser.add_argument("--diffusion-steps", type=int, default=1000)
-    parser.add_argument("--condition-dropout", type=float, default=0.1)
     return parser.parse_args()
 
 
@@ -43,8 +40,7 @@ def main(args):
         "task": "edm",
         "conditional": conditional,
         "latent": latent,
-        "condition_dropout": args.condition_dropout if conditional else 0.0,
-        "diffusion": {"num_steps": args.diffusion_steps},
+        "condition_dropout": 0.0,
         "precision": args.precision,
         "ema_decay": args.ema_decay,
     }
@@ -65,7 +61,6 @@ def main(args):
         log_sigma_std=1.2,
         condition_dropout=0.0,
     )
-    GaussianDiffusion(num_steps=args.diffusion_steps).to(device)
     parameters = list(model.parameters())
     alignment = None
     loader = make_loader(args)
@@ -94,15 +89,11 @@ def main(args):
                     else images
                 )
             labels = classes if conditional else None
-            if conditional and algorithm["condition_dropout"]:
-                labels = torch.where(
-                    torch.rand(len(classes), device=device) < args.condition_dropout,
-                    NUM_CLASSES,
-                    classes,
-                )
             optimizer.zero_grad(set_to_none=True)
             with autocast(args):
-                log_sigma = -1.2 + 1.2 * torch.randn(len(clean), device=device)
+                log_sigma = algorithm["log_sigma_mean"] + algorithm[
+                    "log_sigma_std"
+                ] * torch.randn(len(clean), device=device)
                 sigma = log_sigma.exp()
                 s = sigma[:, None, None, None]
                 noisy = clean + s * torch.randn_like(clean)
