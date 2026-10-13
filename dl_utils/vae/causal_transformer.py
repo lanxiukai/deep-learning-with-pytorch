@@ -86,7 +86,10 @@ class CausalMultiHeadAttention(nn.Module):
     ) -> Tensor:
         # hidden: (B, T, model_dim)
         batch_size, length, model_dim = hidden.shape
-        # hidden (B, T, model_dim) -(Linear)
+        # hidden (B, T, model_dim) -> qkv (B, T, 3*model_dim)
+        # -> (B, T, 3, heads, model_dim // heads)
+        # -> (3, B, heads, T, model_dim // heads)
+        # -> Q, K, V: each (B, heads, T, model_dim // heads)
         query, key, value = (
             self.qkv(hidden)
             .reshape(batch_size, length, 3, self.heads, self.head_dim)
@@ -103,9 +106,10 @@ class CausalMultiHeadAttention(nn.Module):
             value,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=cache is None,
-        )
+        )  # (B, heads, T, model_dim // heads), Dropout(attention_weights) @ V
+        # -> (B, T, heads, model_dim // heads) -> (B, T, model_dim)
         attended = attended.transpose(1, 2).reshape(batch_size, length, model_dim)
-        return self.out_proj(attended)
+        return self.out_proj(attended)  # (B, T, model_dim)
 
 
 class FeedForward(nn.Sequential):
@@ -117,7 +121,7 @@ class FeedForward(nn.Sequential):
             nn.GELU(),
             nn.Dropout(dropout),
             _linear(4 * model_dim, model_dim),
-        )
+        )  # (B, T, model_dim) -> (B, T, model_dim)
 
 
 class CausalTransformerBlock(nn.Module):
@@ -141,7 +145,7 @@ class CausalTransformerBlock(nn.Module):
     ) -> Tensor:
         hidden = hidden + self.dropout1(
             self.attention(self.norm1(hidden), cache=cache, position=position)
-        )
+        )  # (B, T, model_dim) -> (B, T, model_dim)
         return hidden + self.dropout2(self.ffn(self.norm2(hidden)))
 
 
@@ -153,22 +157,26 @@ class CausalInputEmbedding(nn.Module):
     ) -> None:
         super().__init__()
         self.bos_token = vocabulary_size
+        # token_embedding: (vocabulary_size, model_dim)
         self.token_embedding = nn.Embedding(vocabulary_size, model_dim)
-        self.bos_embedding = nn.Parameter(torch.empty(model_dim))
+        self.bos_embedding = nn.Parameter(torch.empty(model_dim))  # (model_dim,)
         self.position_embedding = nn.Parameter(
             torch.zeros(1, sequence_length, model_dim)
-        )
+        )  # learned position embedding: (1, T, model_dim)
         # Unit-scale tied embeddings saturate the initial output distribution.
         nn.init.normal_(self.token_embedding.weight, std=0.02)
         nn.init.normal_(self.bos_embedding, std=0.02)
 
     def forward(self, input_tokens: Tensor, position: int = 0) -> Tensor:
-        """Return [B,T,D] embeddings starting at the supplied sequence position."""
-        length = input_tokens.shape[1]
+        """Return (B,T,D) embeddings starting at the supplied sequence position."""
+        # input_tokens (token IDs): (B, length)
+        length = input_tokens.shape[1]  # T or 1
         # BOS has its own vector, outside the shared image-token vocabulary.
-        is_bos = input_tokens == self.bos_token
+        is_bos = input_tokens == self.bos_token  # Boolean (B, length)
+        # (B, length, model_dim)
         hidden = self.token_embedding(input_tokens.masked_fill(is_bos, 0))
         hidden = torch.where(is_bos.unsqueeze(-1), self.bos_embedding, hidden)
+        # output: (B, length, model_dim)
         return hidden + self.position_embedding[:, position : position + length]
 
 
@@ -191,11 +199,12 @@ class CausalTransformerPrior(nn.Module):
         self.bos_token = vocabulary_size
         self.input_embedding = CausalInputEmbedding(
             vocabulary_size, sequence_length, model_dim
-        )
+        )  # (B, T) -> (B, T, model_dim)
         self.blocks = nn.ModuleList(
             CausalTransformerBlock(model_dim, heads, dropout) for _ in range(layers)
-        )
+        )  # (B, T, model_dim) -> (B, T, model_dim)
         self.normalization = nn.LayerNorm(model_dim)
+        # (B, T, model_dim) -> (B, T, V), V = vocabulary_size
         self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
         self.head.weight = self.input_embedding.token_embedding.weight
 
@@ -209,21 +218,23 @@ class CausalTransformerPrior(nn.Module):
         """Return logits for a full sequence or one cached token.
         Cached calls require eval mode and disabled gradients.
         """
+        # input_tokens (token IDs): (B, T)
         hidden = self.input_embedding(input_tokens, position)
         for index, block in enumerate(self.blocks):
             layer_cache = cache[index] if cache is not None else None
             hidden = block(hidden, cache=layer_cache, position=position)
-        return self.head(self.normalization(hidden))
+        return self.head(self.normalization(hidden))  # (B, T, V)
 
     def teacher_forcing(
         self,
         indices: Tensor,
     ) -> tuple[Tensor, Tensor]:
-        """Return logits and targets for ``[B,H,W]`` or ``[B,T]`` indices."""
-        targets = indices.flatten(1)
-        bos = targets.new_full((targets.shape[0], 1), self.bos_token)
-        inputs = torch.cat((bos, targets[:, :-1]), dim=1)
-        return self(inputs), targets
+        """Return logits and targets for (B,H,W) or (B,T) indices."""
+        # indices: (B, H, W) or (B, T), T = H * W
+        targets = indices.flatten(1)  # flatten indices or targets (B, T)
+        bos = targets.new_full((targets.shape[0], 1), self.bos_token)  # (B, 1)
+        inputs = torch.cat((bos, targets[:, :-1]), dim=1)  # shift right (B, T)
+        return self(inputs), targets  # logits (B, T, V), labels
 
     @contextmanager
     def _generation(
@@ -269,7 +280,7 @@ class CausalTransformerPrior(nn.Module):
 
     @torch.inference_mode()
     def beam_search(self, beam_width: int, *, device: torch.device) -> Tensor:
-        """Return up to ``beam_width`` fixed-length candidates, best score first.
+        """Return up to beam_width fixed-length candidates, best score first.
         Rank by cumulative log probability, without temperature or length penalty.
         """
         with self._generation(1, device) as (tokens, cache):
