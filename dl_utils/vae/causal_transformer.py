@@ -249,7 +249,7 @@ class CausalTransformerPrior(nn.Module):
                 self.bos_token,
                 dtype=torch.long,
                 device=device,
-            )
+            )  # (count, T+1)
             yield tokens, KVCache(len(self.blocks), self.sequence_length)
         finally:
             self.train(was_training)
@@ -304,22 +304,25 @@ def _sample_token(
     logits: Tensor, method: str, temperature: float, top_k: int, top_p: float
 ) -> Tensor:
     """Choose one token per batch item from already validated options."""
+    # logits: (B, V), method: ["multinomial", "greedy", "top_k", "top_p"]
     if method == "greedy":
-        return logits.argmax(dim=-1, keepdim=True)
+        return logits.argmax(dim=-1, keepdim=True)  # (B, 1)
     logits = logits / temperature
     if method == "top_k":
-        values, indices = logits.topk(top_k, dim=-1)
+        values, indices = logits.topk(top_k, dim=-1)  # filter and sort, (B, top_k)
         logits = torch.full_like(logits, -torch.inf).scatter(-1, indices, values)
     elif method == "top_p" and top_p < 1:
-        values, indices = logits.sort(dim=-1, descending=True)
+        # Each sample is filtered independently.
+        values, indices = logits.sort(dim=-1, descending=True)  # (B, V)
         remove = values.softmax(dim=-1).cumsum(dim=-1) >= top_p
         # Keep the token that first reaches the requested mass.
-        remove[:, 1:] = remove[:, :-1].clone()
+        remove[:, 1:] = remove[:, :-1].clone()  # shift right
+        # Keep the first token if it reaches the requested mass.
         remove[:, 0] = False
         logits = torch.empty_like(logits).scatter(
             -1, indices, values.masked_fill(remove, -torch.inf)
         )
-    return torch.multinomial(logits.softmax(dim=-1), 1)
+    return torch.multinomial(logits.softmax(dim=-1), 1)  # (B, 1)
 
 
 __all__ = [
