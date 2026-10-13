@@ -58,6 +58,7 @@ from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
 from dl_utils.runtime.devices import configure_device, try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
+from dl_utils.vae.causal_transformer import CausalTransformerPrior
 from dl_utils.vae.discrete_tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.discrete_workflow import (
     encode_dataset,
@@ -70,7 +71,6 @@ from dl_utils.vae.discrete_workflow import (
     save_reconstruction,
     seed_epoch_loader,
 )
-from dl_utils.vae.token_priors import CausalTransformerPrior
 from dl_utils.vae.vqgan import (
     LPIPSLoss,
     PatchDiscriminator,
@@ -359,6 +359,7 @@ def train() -> None:
     }
     recipe = {
         "model": config,
+        "prior_architecture": "pre_norm_causal_blocks",
         "prior_weight_tying": "full_matrix_with_separate_bos",
         "prior_initialization": "token_bos_std_0.02_zero_positions",
         "tokenizer_epochs": TOKENIZER_EPOCHS,

@@ -118,8 +118,10 @@ environment or dependency workflow.
   Read each lesson's `train()` first: load images, train the tokenizer, freeze
   and encode, train the prior, then save the pair. There is no model selection,
   monitoring subset, disk token cache, or stage state machine.
-  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares the identical
-  PixelCNN prior setup, epoch loop, recovery, and sampling for VQ-VAE and FSQ.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) owns the PixelCNN model
+  and raster sampler, and shares prior setup, epoch loops, and recovery for
+  VQ-VAE and FSQ. Its training entry imports workflow helpers when called, so
+  paired-model loading can import the prior without a circular dependency.
   Their tokenizer losses stay explicit in the lesson scripts; VQGAN also keeps
   its own Transformer training loop.
   Each stage keeps a short loss history and writes one loss figure. Eight-image
@@ -130,14 +132,18 @@ environment or dependency workflow.
   The 6.2/7.1 evaluations load that pair and save reconstruction and sample grids.
   VQ models return reconstruction, token indices, and commitment loss; FSQ
   returns reconstruction and token indices. Quantizers return quantized latents
-  instead of reconstructions. Model modules do not import the workflow.
-  [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
-  autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
+  instead of reconstructions. Tokenizer modules do not import the workflow.
+  PixelCNN uses one stream of A/B masked convolutions
   with ordinary bottleneck residual blocks. The lessons use a grouped 63x63
   first mask and 15 residual blocks for their 32x32 grids. Only this selected
   PixelCNN architecture is retained; there is no legacy architecture selector.
-  Sampling recomputes full-grid logits for each position. The Transformer
-  samples one token at a time with a preallocated, per-layer KV cache.
+  Sampling recomputes full-grid logits for each position.
+  [vae/causal_transformer.py](vae/causal_transformer.py) owns the Transformer
+  prior, its samplers, pre-norm causal blocks, multi-head attention, GELU
+  feedforward modules, and caller-owned KV caches. Parallel training and
+  incremental decoding use the same blocks. Each layer's cache preallocates
+  K/V tensors in their projected dtype, appends one position at a time, and
+  reorders beam parents.
   Its complete image-token embedding matrix is shared with the output projection;
   BOS has a separate input-only vector. Its layers are independently initialized.
   Both samplers temporarily disable dropout and restore the previous mode.
@@ -145,6 +151,9 @@ environment or dependency workflow.
   are never saved in checkpoints. The prior supports multinomial, greedy,
   top-k, and top-p decoding, plus beam search that reorders cached prefixes.
   Sampling temperature affects only stochastic output-token selection.
+  Transformer weights use the explicit block parameter names. The VQGAN recipe
+  records this architecture for same-recipe epoch recovery; previous encoder
+  checkpoints require a newly trained prior.
   [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
   quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids

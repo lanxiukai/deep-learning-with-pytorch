@@ -49,8 +49,8 @@ from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
+from dl_utils.vae.causal_transformer import CausalTransformerPrior
 from dl_utils.vae.discrete_workflow import glasses_loader, load_pair
-from dl_utils.vae.token_priors import CausalTransformerPrior
 
 # Paths and checkpoints
 PROJECT_ROOT = infer_project_root()
