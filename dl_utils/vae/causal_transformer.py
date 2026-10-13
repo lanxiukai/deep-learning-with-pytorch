@@ -1,8 +1,9 @@
-"""Causal image-token Transformer, reusable blocks, and per-call KV caches."""
+"""VQGAN causal Transformer blocks, token generation, and per-call KV caches."""
 
 from __future__ import annotations
 
-import math
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Literal
 
 import torch
@@ -10,58 +11,44 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
+def _linear(in_features: int, out_features: int) -> nn.Linear:
+    """Build a Transformer projection with Xavier weights and zero bias."""
+    layer = nn.Linear(in_features, out_features)
+    nn.init.xavier_uniform_(layer.weight)
+    nn.init.zeros_(layer.bias)
+    return layer
+
+
 class LayerKVCache:
     """Own one layer's K/V tensors, allocating in their projected dtype."""
 
     def __init__(self, capacity: int) -> None:
-        if capacity < 1:
-            raise ValueError("KV cache capacity must be positive.")
         self.capacity = capacity
-        self.length = 0
-        self.keys: Tensor | None = None
-        self.values: Tensor | None = None
+        self.keys: Tensor
+        self.values: Tensor
 
     def append(
         self, key: Tensor, value: Tensor, position: int
     ) -> tuple[Tensor, Tensor]:
-        """Append one position and return views of the populated prefix."""
-        if position != self.length:
-            raise ValueError("KV cache positions must be appended consecutively.")
-        if position >= self.capacity:
-            raise ValueError("KV cache capacity exceeded.")
-        if key.ndim != 4 or key.shape != value.shape or key.shape[2] != 1:
-            raise ValueError("Cached K/V must have matching [B, heads, 1, dim] shapes.")
-        if key.dtype != value.dtype or key.device != value.device:
-            raise ValueError("Cached K/V must share a dtype and device.")
-        if self.keys is None:
+        """Write consecutive single-token positions, starting at zero."""
+        if position == 0:
             shape = (key.shape[0], key.shape[1], self.capacity, key.shape[3])
             self.keys = key.new_empty(shape)
             self.values = value.new_empty(shape)
-        keys, values = self.keys, self.values
-        assert keys is not None and values is not None
-        if key.shape[:2] != keys.shape[:2] or key.shape[3] != keys.shape[3]:
-            raise ValueError("K/V shape changed within a decoding call.")
-        if key.dtype != keys.dtype or key.device != keys.device:
-            raise ValueError("K/V dtype or device changed within a decoding call.")
-        keys[:, :, position : position + 1].copy_(key)
-        values[:, :, position : position + 1].copy_(value)
-        self.length += 1
-        return keys[:, :, : self.length], values[:, :, : self.length]
+        self.keys[:, :, position : position + 1].copy_(key)
+        self.values[:, :, position : position + 1].copy_(value)
+        return self.keys[:, :, : position + 1], self.values[:, :, : position + 1]
 
     def reorder(self, parents: Tensor) -> None:
-        """Select beam parents along the batch axis, including duplicates."""
-        if self.keys is not None:
-            assert self.values is not None
-            self.keys = self.keys.index_select(0, parents)
-            self.values = self.values.index_select(0, parents)
+        """Select beam parents after an append, including duplicates."""
+        self.keys = self.keys.index_select(0, parents)
+        self.values = self.values.index_select(0, parents)
 
 
 class KVCache:
     """Group per-layer storage for a single sampling or beam-search call."""
 
     def __init__(self, layers: int, capacity: int) -> None:
-        if layers < 1:
-            raise ValueError("KV cache needs at least one layer.")
         self.layers = [LayerKVCache(capacity) for _ in range(layers)]
 
     def __getitem__(self, index: int) -> LayerKVCache:
@@ -83,11 +70,8 @@ class CausalMultiHeadAttention(nn.Module):
         self.heads = heads
         self.head_dim = model_dim // heads
         self.dropout = dropout
-        self.qkv = nn.Linear(model_dim, 3 * model_dim)
-        self.out_proj = nn.Linear(model_dim, model_dim)
-        for linear in (self.qkv, self.out_proj):
-            nn.init.xavier_uniform_(linear.weight)
-            nn.init.zeros_(linear.bias)
+        self.qkv = _linear(model_dim, 3 * model_dim)
+        self.out_proj = _linear(model_dim, model_dim)
 
     def forward(
         self,
@@ -97,10 +81,6 @@ class CausalMultiHeadAttention(nn.Module):
         position: int = 0,
     ) -> Tensor:
         batch_size, length, model_dim = hidden.shape
-        if cache is not None and (self.training or torch.is_grad_enabled()):
-            raise ValueError(
-                "Cached attention requires eval mode with gradients disabled."
-            )
         query, key, value = (
             self.qkv(hidden)
             .reshape(batch_size, length, 3, self.heads, self.head_dim)
@@ -122,21 +102,16 @@ class CausalMultiHeadAttention(nn.Module):
         return self.out_proj(attended)
 
 
-class FeedForward(nn.Module):
+class FeedForward(nn.Sequential):
     """Position-wise GELU network with a fourfold hidden expansion."""
 
     def __init__(self, model_dim: int, dropout: float = 0.0) -> None:
-        super().__init__()
-        self.linear1 = nn.Linear(model_dim, 4 * model_dim)
-        self.linear2 = nn.Linear(4 * model_dim, model_dim)
-        self.activation = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-        for linear in (self.linear1, self.linear2):
-            nn.init.xavier_uniform_(linear.weight)
-            nn.init.zeros_(linear.bias)
-
-    def forward(self, hidden: Tensor) -> Tensor:
-        return self.linear2(self.dropout(self.activation(self.linear1(hidden))))
+        super().__init__(
+            _linear(model_dim, 4 * model_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            _linear(4 * model_dim, model_dim),
+        )
 
 
 class CausalTransformerBlock(nn.Module):
@@ -186,8 +161,6 @@ class CausalTransformerPrior(nn.Module):
         self.position_embedding = nn.Parameter(
             torch.zeros(1, sequence_length, model_dim)
         )
-        if layers < 1:
-            raise ValueError("Causal Transformer needs at least one block.")
         self.blocks = nn.ModuleList(
             CausalTransformerBlock(model_dim, heads, dropout) for _ in range(layers)
         )
@@ -207,26 +180,21 @@ class CausalTransformerPrior(nn.Module):
         hidden = hidden + self.position_embedding[:, position : position + length]
         return hidden
 
-    def _logits(self, hidden: Tensor) -> Tensor:
-        return self.head(self.normalization(hidden))
-
-    def forward(self, input_tokens: Tensor) -> Tensor:
-        hidden = self._embed_tokens(input_tokens)
-        for block in self.blocks:
-            hidden = block(hidden)
-        return self._logits(hidden)
-
-    def _decode_step(
+    def forward(
         self,
-        token: Tensor,
-        position: int,
-        cache: KVCache,
+        input_tokens: Tensor,
+        *,
+        cache: KVCache | None = None,
+        position: int = 0,
     ) -> Tensor:
-        """Decode one position in eval mode using a cache owned by the caller."""
-        hidden = self._embed_tokens(token, position)
+        """Return logits for a full sequence or one cached token.
+        Cached calls require eval mode and disabled gradients.
+        """
+        hidden = self._embed_tokens(input_tokens, position)
         for index, block in enumerate(self.blocks):
-            hidden = block(hidden, cache=cache[index], position=position)
-        return self._logits(hidden)[:, 0, :]
+            layer_cache = cache[index] if cache is not None else None
+            hidden = block(hidden, cache=layer_cache, position=position)
+        return self.head(self.normalization(hidden))
 
     def teacher_forcing(
         self,
@@ -237,6 +205,24 @@ class CausalTransformerPrior(nn.Module):
         bos = targets.new_full((targets.shape[0], 1), self.bos_token)
         inputs = torch.cat((bos, targets[:, :-1]), dim=1)
         return self(inputs), targets
+
+    @contextmanager
+    def _generation(
+        self, count: int, device: torch.device
+    ) -> Generator[tuple[Tensor, KVCache]]:
+        """Create generation buffers and restore the previous dropout mode."""
+        was_training = self.training
+        self.eval()
+        try:
+            tokens = torch.full(
+                (count, self.sequence_length + 1),
+                self.bos_token,
+                dtype=torch.long,
+                device=device,
+            )
+            yield tokens, KVCache(len(self.blocks), self.sequence_length)
+        finally:
+            self.train(was_training)
 
     @torch.inference_mode()
     def sample(
@@ -249,87 +235,30 @@ class CausalTransformerPrior(nn.Module):
         top_k: int = 50,
         top_p: float = 0.9,
     ) -> Tensor:
-        """Sample one token at a time with a per-call KV cache.
-
-        Greedy decoding uses argmax without temperature. Stochastic methods
-        apply temperature to output logits before top-k or nucleus filtering.
-        Sampling temporarily disables dropout and restores the previous mode.
-        Training and likelihood evaluation use the parallel forward pass.
-        Cache tensors are transient and never become part of the checkpoint.
+        """Generate tokens with a per-call KV cache; VQGAN validates options.
+        Temperature scales logits before filtering; greedy ignores it.
         """
-        if method not in {"multinomial", "greedy", "top_k", "top_p"}:
-            raise ValueError("Unknown Transformer sampling method.")
-        if method != "greedy" and (not math.isfinite(temperature) or temperature <= 0):
-            raise ValueError("Sampling temperature must be finite and positive.")
-        if method == "top_k" and not 1 <= top_k <= self.vocabulary_size:
-            raise ValueError("top_k must be between 1 and the vocabulary size.")
-        if method == "top_p" and (not math.isfinite(top_p) or not 0 < top_p <= 1):
-            raise ValueError("top_p must be finite and in (0, 1].")
-        if count < 1 or self.sequence_length < 1:
-            raise ValueError("Sample count and sequence length must be positive.")
-        was_training = self.training
-        self.eval()
-        try:
-            tokens = torch.full(
-                (count, self.sequence_length + 1),
-                self.bos_token,
-                dtype=torch.long,
-                device=device,
-            )
-            cache = KVCache(len(self.blocks), self.sequence_length)
+        with self._generation(count, device) as (tokens, cache):
             for position in range(self.sequence_length):
-                logits = self._decode_step(
-                    tokens[:, position : position + 1], position, cache
+                logits = self(
+                    tokens[:, position : position + 1], cache=cache, position=position
+                )[:, 0]
+                tokens[:, position + 1 : position + 2] = _sample_token(
+                    logits, method, temperature, top_k, top_p
                 )
-                if method == "greedy":
-                    sampled = logits.argmax(dim=-1, keepdim=True)
-                else:
-                    logits = logits / temperature
-                    if method == "top_k":
-                        values, indices = logits.topk(top_k, dim=-1)
-                        logits = torch.full_like(logits, -torch.inf).scatter(
-                            -1, indices, values
-                        )
-                    elif method == "top_p" and top_p < 1:
-                        values, indices = logits.sort(dim=-1, descending=True)
-                        remove = values.softmax(dim=-1).cumsum(dim=-1) >= top_p
-                        # Keep the token that first reaches the requested mass.
-                        remove[:, 1:] = remove[:, :-1].clone()
-                        remove[:, 0] = False
-                        logits = torch.empty_like(logits).scatter(
-                            -1, indices, values.masked_fill(remove, -torch.inf)
-                        )
-                    sampled = torch.multinomial(logits.softmax(dim=-1), 1)
-                tokens[:, position + 1 : position + 2] = sampled
             return tokens[:, 1:]
-        finally:
-            self.train(was_training)
 
     @torch.inference_mode()
     def beam_search(self, beam_width: int, *, device: torch.device) -> Tensor:
         """Return up to ``beam_width`` fixed-length candidates, best score first.
-
-        Each step keeps the best cumulative, untempered log probabilities.
-        Cached prefixes follow their selected parents, including duplicates.
-        There is no EOS or length penalty because every image has equal length.
+        Rank by cumulative log probability, without temperature or length penalty.
         """
-        if beam_width < 1 or self.sequence_length < 1:
-            raise ValueError("Beam width and sequence length must be positive.")
-        was_training = self.training
-        self.eval()
-        try:
-            tokens = torch.full(
-                (1, self.sequence_length + 1),
-                self.bos_token,
-                dtype=torch.long,
-                device=device,
-            )
+        with self._generation(1, device) as (tokens, cache):
             scores = torch.zeros(1, device=device)
-            cache = KVCache(len(self.blocks), self.sequence_length)
             for position in range(self.sequence_length):
-                logits = self._decode_step(
-                    tokens[:, position : position + 1], position, cache
-                )
+                logits = self(
+                    tokens[:, position : position + 1], cache=cache, position=position
+                )[:, 0]
                 candidates = scores[:, None] + logits.log_softmax(dim=-1)
                 scores, selected = candidates.flatten().topk(
                     min(beam_width, candidates.numel())
@@ -339,8 +268,28 @@ class CausalTransformerPrior(nn.Module):
                 tokens[:, position + 1] = selected % self.vocabulary_size
                 cache.reorder(parents)
             return tokens[:, 1:]
-        finally:
-            self.train(was_training)
+
+
+def _sample_token(
+    logits: Tensor, method: str, temperature: float, top_k: int, top_p: float
+) -> Tensor:
+    """Choose one token per batch item from already validated options."""
+    if method == "greedy":
+        return logits.argmax(dim=-1, keepdim=True)
+    logits = logits / temperature
+    if method == "top_k":
+        values, indices = logits.topk(top_k, dim=-1)
+        logits = torch.full_like(logits, -torch.inf).scatter(-1, indices, values)
+    elif method == "top_p" and top_p < 1:
+        values, indices = logits.sort(dim=-1, descending=True)
+        remove = values.softmax(dim=-1).cumsum(dim=-1) >= top_p
+        # Keep the token that first reaches the requested mass.
+        remove[:, 1:] = remove[:, :-1].clone()
+        remove[:, 0] = False
+        logits = torch.empty_like(logits).scatter(
+            -1, indices, values.masked_fill(remove, -torch.inf)
+        )
+    return torch.multinomial(logits.softmax(dim=-1), 1)
 
 
 __all__ = [

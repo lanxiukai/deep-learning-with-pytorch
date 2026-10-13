@@ -141,8 +141,10 @@ environment or dependency workflow.
   Sampling recomputes full-grid logits for each position.
   [vae/causal_transformer.py](vae/causal_transformer.py) owns the Transformer
   prior, its samplers, pre-norm causal blocks, multi-head attention, GELU
-  feedforward modules, and caller-owned KV caches. Parallel training and
-  incremental decoding use the same blocks. Each layer's cache preallocates
+  feedforward modules, and caller-owned KV caches. Feedforward layers form an
+  explicit Linear/GELU/Dropout/Linear sequence. Parallel training and incremental
+  decoding share one forward path: embeddings, causal blocks, final normalization,
+  and the tied output projection. Each layer's cache preallocates
   K/V tensors in their projected dtype, appends one position at a time, and
   reorders beam parents.
   Its complete image-token embedding matrix is shared with the output projection;
@@ -151,10 +153,12 @@ environment or dependency workflow.
   Transformer training stays parallel; caches last for one sampling call and
   are never saved in checkpoints. The prior supports multinomial, greedy,
   top-k, and top-p decoding, plus beam search that reorders cached prefixes.
-  Sampling temperature affects only stochastic output-token selection.
-  Transformer weights use the explicit block parameter names. The VQGAN recipe
-  records this architecture for same-recipe epoch recovery; previous encoder
-  checkpoints require a newly trained prior.
+  Sampling temperature affects only stochastic output-token selection, which is
+  separate from the decoding loop. Generation options are validated in the VQGAN
+  entry scripts; internal caches assume consecutive single-token inference.
+  The VQGAN recipe records the sequential-FFN architecture for same-recipe epoch
+  recovery. Earlier prior checkpoints require retraining; there is no legacy
+  weight conversion.
   [vae/tokenizers.py](vae/tokenizers.py) supplies the shared
   quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids

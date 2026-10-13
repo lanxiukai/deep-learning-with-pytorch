@@ -43,6 +43,7 @@ pretrained VGG weights. Comparison with 6.0 changes architecture, objective,
 prior, and training budget together.
 """
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -337,6 +338,10 @@ def train_prior(
 
 
 def train() -> None:
+    if not math.isfinite(TEMPERATURE) or TEMPERATURE <= 0:
+        raise ValueError("TEMPERATURE must be finite and positive.")
+    if NUM_SAMPLES < 1:
+        raise ValueError("NUM_SAMPLES must be positive.")
     config = {
         "image_size": IMAGE_SIZE,
         "tokenizer": {
@@ -359,7 +364,7 @@ def train() -> None:
     }
     recipe = {
         "model": config,
-        "prior_architecture": "pre_norm_causal_blocks",
+        "prior_architecture": "pre_norm_causal_blocks_sequential_ffn",
         "prior_weight_tying": "full_matrix_with_separate_bos",
         "prior_initialization": "token_bos_std_0.02_zero_positions",
         "tokenizer_epochs": TOKENIZER_EPOCHS,
