@@ -140,15 +140,17 @@ environment or dependency workflow.
   PixelCNN architecture is retained; there is no legacy architecture selector.
   Sampling recomputes full-grid logits for each position.
   [vae/causal_transformer.py](vae/causal_transformer.py) owns the Transformer
-  prior, its samplers, pre-norm causal blocks, multi-head attention, GELU
-  feedforward modules, and caller-owned KV caches. Feedforward layers form an
-  explicit Linear/GELU/Dropout/Linear sequence. Parallel training and incremental
+  prior, its samplers, input embeddings, pre-norm causal blocks, multi-head
+  attention, GELU feedforward modules, and caller-owned KV caches. Feedforward
+  layers form an explicit Linear/GELU/Dropout/Linear sequence. Parallel training and incremental
   decoding share one forward path: embeddings, causal blocks, final normalization,
   and the tied output projection. Each layer's cache preallocates
   K/V tensors in their projected dtype, appends one position at a time, and
   reorders beam parents.
   Its complete image-token embedding matrix is shared with the output projection;
-  BOS has a separate input-only vector. Its layers are independently initialized.
+  `CausalInputEmbedding` owns that matrix, the separate input-only BOS vector,
+  and learned positions with an offset for cached decoding.
+  Its layers are independently initialized.
   Both samplers temporarily disable dropout and restore the previous mode.
   Transformer training stays parallel; caches last for one sampling call and
   are never saved in checkpoints. The prior supports multinomial, greedy,

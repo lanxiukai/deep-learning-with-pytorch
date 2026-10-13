@@ -364,7 +364,7 @@ def train() -> None:
     }
     recipe = {
         "model": config,
-        "prior_architecture": "pre_norm_causal_blocks_sequential_ffn",
+        "prior_architecture": "pre_norm_causal_blocks_sequential_ffn_input_embedding",
         "prior_weight_tying": "full_matrix_with_separate_bos",
         "prior_initialization": "token_bos_std_0.02_zero_positions",
         "tokenizer_epochs": TOKENIZER_EPOCHS,

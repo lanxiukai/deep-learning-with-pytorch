@@ -11,14 +11,6 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
-def _linear(in_features: int, out_features: int) -> nn.Linear:
-    """Build a Transformer projection with Xavier weights and zero bias."""
-    layer = nn.Linear(in_features, out_features)
-    nn.init.xavier_uniform_(layer.weight)
-    nn.init.zeros_(layer.bias)
-    return layer
-
-
 class LayerKVCache:
     """Own one layer's K/V tensors, allocating in their projected dtype."""
 
@@ -37,10 +29,13 @@ class LayerKVCache:
             self.values = value.new_empty(shape)
         self.keys[:, :, position : position + 1].copy_(key)
         self.values[:, :, position : position + 1].copy_(value)
+        # return two views
         return self.keys[:, :, : position + 1], self.values[:, :, : position + 1]
 
     def reorder(self, parents: Tensor) -> None:
         """Select beam parents after an append, including duplicates."""
+        # parents: (K,)
+        # keys_new[i] = keys_old[parents[i]] for i in range(K)
         self.keys = self.keys.index_select(0, parents)
         self.values = self.values.index_select(0, parents)
 
@@ -58,6 +53,15 @@ class KVCache:
         """Reorder every layer to match the selected candidate prefixes."""
         for layer in self.layers:
             layer.reorder(parents)
+
+
+def _linear(in_features: int, out_features: int) -> nn.Linear:
+    """Build a Transformer projection with Xavier weights and zero bias."""
+    # Transform the last dimension while preserving all leading dimensions
+    layer = nn.Linear(in_features, out_features)
+    nn.init.xavier_uniform_(layer.weight)
+    nn.init.zeros_(layer.bias)
+    return layer
 
 
 class CausalMultiHeadAttention(nn.Module):
@@ -80,7 +84,9 @@ class CausalMultiHeadAttention(nn.Module):
         cache: LayerKVCache | None = None,
         position: int = 0,
     ) -> Tensor:
+        # hidden: (B, T, model_dim)
         batch_size, length, model_dim = hidden.shape
+        # hidden (B, T, model_dim) -(Linear)
         query, key, value = (
             self.qkv(hidden)
             .reshape(batch_size, length, 3, self.heads, self.head_dim)
@@ -139,6 +145,33 @@ class CausalTransformerBlock(nn.Module):
         return hidden + self.dropout2(self.ffn(self.norm2(hidden)))
 
 
+class CausalInputEmbedding(nn.Module):
+    """Embed image tokens and an input-only BOS, then add learned positions."""
+
+    def __init__(
+        self, vocabulary_size: int, sequence_length: int, model_dim: int
+    ) -> None:
+        super().__init__()
+        self.bos_token = vocabulary_size
+        self.token_embedding = nn.Embedding(vocabulary_size, model_dim)
+        self.bos_embedding = nn.Parameter(torch.empty(model_dim))
+        self.position_embedding = nn.Parameter(
+            torch.zeros(1, sequence_length, model_dim)
+        )
+        # Unit-scale tied embeddings saturate the initial output distribution.
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+        nn.init.normal_(self.bos_embedding, std=0.02)
+
+    def forward(self, input_tokens: Tensor, position: int = 0) -> Tensor:
+        """Return [B,T,D] embeddings starting at the supplied sequence position."""
+        length = input_tokens.shape[1]
+        # BOS has its own vector, outside the shared image-token vocabulary.
+        is_bos = input_tokens == self.bos_token
+        hidden = self.token_embedding(input_tokens.masked_fill(is_bos, 0))
+        hidden = torch.where(is_bos.unsqueeze(-1), self.bos_embedding, hidden)
+        return hidden + self.position_embedding[:, position : position + length]
+
+
 class CausalTransformerPrior(nn.Module):
     """Unconditional causal Transformer with tied image-token input/output weights."""
 
@@ -156,29 +189,15 @@ class CausalTransformerPrior(nn.Module):
         self.vocabulary_size = vocabulary_size
         self.sequence_length = sequence_length
         self.bos_token = vocabulary_size
-        self.token_embedding = nn.Embedding(vocabulary_size, model_dim)
-        self.bos_embedding = nn.Parameter(torch.empty(model_dim))
-        self.position_embedding = nn.Parameter(
-            torch.zeros(1, sequence_length, model_dim)
+        self.input_embedding = CausalInputEmbedding(
+            vocabulary_size, sequence_length, model_dim
         )
         self.blocks = nn.ModuleList(
             CausalTransformerBlock(model_dim, heads, dropout) for _ in range(layers)
         )
         self.normalization = nn.LayerNorm(model_dim)
         self.head = nn.Linear(model_dim, vocabulary_size, bias=False)
-        self.head.weight = self.token_embedding.weight
-        # Unit-scale tied embeddings saturate the initial output distribution.
-        nn.init.normal_(self.token_embedding.weight, std=0.02)
-        nn.init.normal_(self.bos_embedding, std=0.02)
-
-    def _embed_tokens(self, input_tokens: Tensor, position: int = 0) -> Tensor:
-        length = input_tokens.shape[1]
-        # BOS has its own vector, outside the shared image-token vocabulary.
-        is_bos = input_tokens == self.bos_token
-        hidden = self.token_embedding(input_tokens.masked_fill(is_bos, 0))
-        hidden = torch.where(is_bos.unsqueeze(-1), self.bos_embedding, hidden)
-        hidden = hidden + self.position_embedding[:, position : position + length]
-        return hidden
+        self.head.weight = self.input_embedding.token_embedding.weight
 
     def forward(
         self,
@@ -190,7 +209,7 @@ class CausalTransformerPrior(nn.Module):
         """Return logits for a full sequence or one cached token.
         Cached calls require eval mode and disabled gradients.
         """
-        hidden = self._embed_tokens(input_tokens, position)
+        hidden = self.input_embedding(input_tokens, position)
         for index, block in enumerate(self.blocks):
             layer_cache = cache[index] if cache is not None else None
             hidden = block(hidden, cache=layer_cache, position=position)
@@ -293,6 +312,7 @@ def _sample_token(
 
 
 __all__ = [
+    "CausalInputEmbedding",
     "CausalMultiHeadAttention",
     "CausalTransformerBlock",
     "CausalTransformerPrior",
