@@ -25,12 +25,12 @@ from dl_utils.vae.token_priors import (
     CausalTransformerPrior,
     PixelCNNPrior,
 )
-from dl_utils.vae.vqgan import VQPerceptualAutoencoder
+from dl_utils.vae.vqgan import VQGANAutoencoder
 
 MODEL_TYPES = {
     "vq_vae": (VQVAE, PixelCNNPrior),
     "fsq": (FSQAutoencoder, PixelCNNPrior),
-    "vqgan": (VQPerceptualAutoencoder, CausalTransformerPrior),
+    "vqgan": (VQGANAutoencoder, CausalTransformerPrior),
 }
 PAIR_FORMAT = "discrete-pair-v1"
 
@@ -106,7 +106,7 @@ def fixed_images(loader: DataLoader, count: int) -> Tensor:
 
 @torch.no_grad()
 def encode_dataset(
-    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    tokenizer: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     image_loader: DataLoader,
     device: torch.device,
     *,
@@ -164,7 +164,7 @@ def epoch_checkpoint(
 
 @torch.inference_mode()
 def save_reconstruction(
-    model: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    model: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     originals: Tensor,
     path: str | Path,
     device: torch.device,
@@ -194,7 +194,7 @@ def save_loss_curves(
 def save_pair(
     path: str | PathLike[str],
     name: str,
-    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    tokenizer: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     prior: PixelCNNPrior | CausalTransformerPrior,
     config: Mapping[str, Any],
 ) -> None:
@@ -218,7 +218,7 @@ def load_pair(
     *,
     image_size: int = 256,
 ) -> tuple[
-    VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    VQVAE | FSQAutoencoder | VQGANAutoencoder,
     PixelCNNPrior | CausalTransformerPrior,
 ]:
     """Load a final pair and check the image, vocabulary, and token grid shapes."""

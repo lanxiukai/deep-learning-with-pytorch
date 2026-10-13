@@ -72,9 +72,9 @@ from dl_utils.vae.discrete_workflow import (
 )
 from dl_utils.vae.token_priors import CausalTransformerPrior
 from dl_utils.vae.vqgan import (
-    LPIPSPerceptualLoss,
+    LPIPSLoss,
     PatchDiscriminator,
-    VQPerceptualAutoencoder,
+    VQGANAutoencoder,
     adaptive_adversarial_weight,
 )
 
@@ -125,7 +125,7 @@ TEMPERATURE = 1.0
 
 
 def vqgan_autoencoder_step(
-    model: VQPerceptualAutoencoder,
+    model: VQGANAutoencoder,
     discriminator: PatchDiscriminator,
     perceptual: nn.Module,
     images: Tensor,
@@ -184,13 +184,13 @@ def vqgan_discriminator_step(
 
 
 def train_tokenizer(
-    model: VQPerceptualAutoencoder,
+    model: VQGANAutoencoder,
     loader: DataLoader,
     device: torch.device,
     recipe: Mapping[str, Any],
 ) -> None:
     discriminator = PatchDiscriminator(DISCRIMINATOR_CHANNELS).to(device)
-    perceptual = LPIPSPerceptualLoss().to(device)
+    perceptual = LPIPSLoss().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
     d_optimizer = torch.optim.Adam(
         discriminator.parameters(), lr=DISCRIMINATOR_LR, betas=ADAM_BETAS
@@ -265,7 +265,7 @@ def train_tokenizer(
 
 
 def train_prior(
-    tokenizer: VQPerceptualAutoencoder,
+    tokenizer: VQGANAutoencoder,
     images: DataLoader,
     device: torch.device,
     recipe: Mapping[str, Any],
@@ -387,7 +387,7 @@ def train() -> None:
         shuffle=True,
         num_workers=WORKERS,
     )
-    tokenizer = VQPerceptualAutoencoder(**config["tokenizer"]).to(device)
+    tokenizer = VQGANAutoencoder(**config["tokenizer"]).to(device)
     if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
         train_tokenizer(tokenizer, loader, device, recipe)
     prior = train_prior(tokenizer, loader, device, recipe)

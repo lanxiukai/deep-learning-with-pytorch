@@ -37,13 +37,13 @@ class ResidualBlock(nn.Module):
             nn.GroupNorm(groups, channels),
             nn.SiLU(inplace=True),
             nn.Conv2d(channels, channels, 3, padding=1),
-        )
+        )  # (B, C, H, W) -> (B, C, H, W)
 
     def forward(self, inputs: Tensor) -> Tensor:
         return inputs + self.net(inputs)
 
 
-class PerceptualEncoder(nn.Module):
+class VQGANEncoder(nn.Module):
     """Residual image encoder with configurable spatial compression."""
 
     def __init__(
@@ -82,11 +82,12 @@ class PerceptualEncoder(nn.Module):
 
     def forward(self, images: Tensor) -> Tensor:
         validate_image_size(images.shape[-2], images.shape[-1], self.downsample_steps)
+        # images (B, 3, H, W) -> output (B, C_out, H/F, W/F), F = 2**downsample_steps
         return self.net(images)
 
 
-class PerceptualDecoder(nn.Module):
-    """Mirror a ``PerceptualEncoder`` and reconstruct RGB in [-1, 1]."""
+class VQGANDecoder(nn.Module):
+    """Mirror a ``VQGANEncoder`` and reconstruct RGB in [-1, 1]."""
 
     def __init__(
         self,
@@ -126,9 +127,11 @@ class PerceptualDecoder(nn.Module):
 
     @property
     def last_layer(self) -> nn.Parameter:
+        # weight: (hidden_channels // 2, 3, 4, 4)
         return cast(nn.Parameter, cast(nn.ConvTranspose2d, self.net[-2]).weight)
 
     def forward(self, z: Tensor) -> Tensor:
+        # z (B, C_in, H/F, W/F) -> reconstructions (B, 3, H, W), F = 2**downsample_steps
         return self.net(z)
 
 
@@ -156,10 +159,11 @@ class PatchDiscriminator(nn.Module):
         )
 
     def forward(self, images: Tensor) -> Tensor:
+        # images (B, 3, H, W) -> scores (B, 1, H//8, W//8)
         return self.head(self.features(images))
 
 
-class LPIPSPerceptualLoss(nn.Module):
+class LPIPSLoss(nn.Module):
     """Frozen, learned LPIPS v0.1 distance for inputs in [-1, 1]."""
 
     def __init__(self) -> None:
@@ -179,6 +183,9 @@ class LPIPSPerceptualLoss(nn.Module):
         self.eval().requires_grad_(False)
 
     def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
+        # prediction: (B, 3, H, W), target (B, 3, H, W)
+        # both ∈ [-1, 1] (normalize=False)
+        # (B, 1, 1, 1).mean() -> loss scalar ()
         return self.metric(prediction, target, normalize=False).mean()
 
 
@@ -199,7 +206,7 @@ def adaptive_adversarial_weight(
     return (float(scale) * ratio.clamp(0.0, maximum)).detach()
 
 
-class VQPerceptualAutoencoder(nn.Module):
+class VQGANAutoencoder(nn.Module):
     """VQGAN first-stage model without hiding its loss in the module."""
 
     def __init__(
@@ -215,7 +222,7 @@ class VQPerceptualAutoencoder(nn.Module):
     ) -> None:
         super().__init__()
         self.downsample_steps = downsample_steps
-        self.encoder = PerceptualEncoder(
+        self.encoder = VQGANEncoder(
             latent_channels, hidden_channels, downsample_steps
         )
         self.quantizer = VectorQuantizer(
@@ -225,11 +232,12 @@ class VQPerceptualAutoencoder(nn.Module):
             ema_decay=ema_decay,
             ema_epsilon=ema_epsilon,
         )
-        self.decoder = PerceptualDecoder(
+        self.decoder = VQGANDecoder(
             latent_channels, hidden_channels, downsample_steps
         )
 
     def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        # images (B, 3, H, W) -> latent (B, latent_channels, h, w)
         return self.quantizer(self.encoder(images))
 
     def forward(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
@@ -245,11 +253,11 @@ class VQPerceptualAutoencoder(nn.Module):
 
 
 __all__ = [
-    "LPIPSPerceptualLoss",
+    "LPIPSLoss",
     "PatchDiscriminator",
-    "PerceptualDecoder",
-    "PerceptualEncoder",
     "ResidualBlock",
-    "VQPerceptualAutoencoder",
+    "VQGANAutoencoder",
+    "VQGANDecoder",
+    "VQGANEncoder",
     "adaptive_adversarial_weight",
 ]
