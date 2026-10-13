@@ -38,7 +38,7 @@ from dl_utils.plot.images import save_image_row_grid
 from dl_utils.runtime.devices import try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.vae.discrete_workflow import glasses_loader, load_pair
-from dl_utils.vae.pixelcnn_training import PixelCNNPrior
+from dl_utils.vae.pixelcnn import PixelCNNPrior
 
 # Paths and checkpoints
 PROJECT_ROOT = infer_project_root()

@@ -59,7 +59,6 @@ from dl_utils.runtime.devices import configure_device, try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
 from dl_utils.vae.causal_transformer import CausalTransformerPrior
-from dl_utils.vae.discrete_tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.discrete_workflow import (
     encode_dataset,
     epoch_checkpoint,
@@ -71,6 +70,7 @@ from dl_utils.vae.discrete_workflow import (
     save_reconstruction,
     seed_epoch_loader,
 )
+from dl_utils.vae.tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.vqgan import (
     LPIPSLoss,
     PatchDiscriminator,

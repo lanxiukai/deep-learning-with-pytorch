@@ -12,7 +12,7 @@ from typing import cast
 import torch
 from torch import Tensor, nn
 
-from dl_utils.vae.discrete_tokenizers import (
+from dl_utils.vae.tokenizers import (
     TOKENIZER_DOWNSAMPLE_STEPS,
     VectorQuantizer,
     validate_image_size,
@@ -222,9 +222,7 @@ class VQGANAutoencoder(nn.Module):
     ) -> None:
         super().__init__()
         self.downsample_steps = downsample_steps
-        self.encoder = VQGANEncoder(
-            latent_channels, hidden_channels, downsample_steps
-        )
+        self.encoder = VQGANEncoder(latent_channels, hidden_channels, downsample_steps)
         self.quantizer = VectorQuantizer(
             codebook_size,
             latent_channels,
@@ -232,9 +230,7 @@ class VQGANAutoencoder(nn.Module):
             ema_decay=ema_decay,
             ema_epsilon=ema_epsilon,
         )
-        self.decoder = VQGANDecoder(
-            latent_channels, hidden_channels, downsample_steps
-        )
+        self.decoder = VQGANDecoder(latent_channels, hidden_channels, downsample_steps)
 
     def encode(self, images: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         # images (B, 3, H, W) -> latent (B, latent_channels, h, w)

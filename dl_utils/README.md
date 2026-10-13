@@ -118,10 +118,11 @@ environment or dependency workflow.
   Read each lesson's `train()` first: load images, train the tokenizer, freeze
   and encode, train the prior, then save the pair. There is no model selection,
   monitoring subset, disk token cache, or stage state machine.
-  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) owns the PixelCNN model
-  and raster sampler, and shares prior setup, epoch loops, and recovery for
-  VQ-VAE and FSQ. Its training entry imports workflow helpers when called, so
-  paired-model loading can import the prior without a circular dependency.
+  [vae/pixelcnn.py](vae/pixelcnn.py) owns the PixelCNN model and raster sampler.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares prior setup,
+  epoch loops, and recovery for VQ-VAE and FSQ. Training depends on the workflow
+  helpers and model; paired-model loading depends only on the model, keeping
+  these module dependencies acyclic.
   Their tokenizer losses stay explicit in the lesson scripts; VQGAN also keeps
   its own Transformer training loop.
   Each stage keeps a short loss history and writes one loss figure. Eight-image
@@ -154,7 +155,7 @@ environment or dependency workflow.
   Transformer weights use the explicit block parameter names. The VQGAN recipe
   records this architecture for same-recipe epoch recovery; previous encoder
   checkpoints require a newly trained prior.
-  [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
+  [vae/tokenizers.py](vae/tokenizers.py) supplies the shared
   quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids
   with 128/240 possible codes. VQGAN uses `TOKENIZER_DOWNSAMPLE_STEPS=4` for

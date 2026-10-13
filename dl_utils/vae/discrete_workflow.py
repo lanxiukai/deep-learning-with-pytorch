@@ -21,8 +21,8 @@ from dl_utils.filesystem.directories import reset_dir
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import TrainingCheckpoint, atomic_torch_save
 from dl_utils.vae.causal_transformer import CausalTransformerPrior
-from dl_utils.vae.discrete_tokenizers import VQVAE, FSQAutoencoder, validate_image_size
-from dl_utils.vae.pixelcnn_training import PixelCNNPrior
+from dl_utils.vae.pixelcnn import PixelCNNPrior
+from dl_utils.vae.tokenizers import VQVAE, FSQAutoencoder, validate_image_size
 from dl_utils.vae.vqgan import VQGANAutoencoder
 
 MODEL_TYPES = {
