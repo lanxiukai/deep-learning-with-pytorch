@@ -201,32 +201,35 @@ class VectorQuantizer(nn.Module):
             )
         )
 
-    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        flat = z_e.permute(0, 2, 3, 1).contiguous().reshape(-1, self.embedding_dim)
+    def quantization(self, flat: Tensor) -> Tensor:
+        """Select nearest codebook indices (N,) for latent vectors (N, D)."""
         distances = (
             flat.square().sum(dim=1, keepdim=True)
             + self.embedding.weight.square().sum(dim=1)
             - 2.0 * flat @ self.embedding.weight.t()
         )  # (N, K), N = B*h*w
-        indices = distances.argmin(dim=1)  # (N,)
-        z_q = self.embedding(indices).view(
-            z_e.shape[0], z_e.shape[2], z_e.shape[3], self.embedding_dim
-        )
-        z_q = z_q.permute(0, 3, 1, 2).contiguous()
-        quantization_mse = F.mse_loss(z_e, z_q.detach())  # scaler ()
-        commitment_loss = self.commitment * quantization_mse
-        # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
-        z_st = z_e + (z_q - z_e).detach()
-        index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
-        # This batch uses the pre-update vectors for its outputs and losses.
-        if self.training:
-            self._update_ema(flat, indices)
-        return z_st, index_grid, commitment_loss
+        return distances.argmin(dim=1)  # (N,)
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
         """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
         # indices: (B, h, w), return z_q.detach(): (B, C, h, w), C = embedding_dim
         return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
+
+    def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        flat = z_e.permute(0, 2, 3, 1).contiguous().reshape(-1, self.embedding_dim)
+        indices = self.quantization(flat)
+        index_grid = indices.view(z_e.shape[0], z_e.shape[2], z_e.shape[3])
+        z_q = self.indices_to_values(index_grid)
+
+        quantization_mse = F.mse_loss(z_e, z_q.detach())  # scalar ()
+        commitment_loss = self.commitment * quantization_mse
+        # Forward is exactly z_q; the decoder gradient sees identity wrt z_e.
+        z_st = z_e + (z_q - z_e).detach()
+
+        # This batch uses the pre-update vectors for its outputs and losses.
+        if self.training:
+            self._update_ema(flat, indices)
+        return z_st, index_grid, commitment_loss
 
 
 class VQVAE(nn.Module):
