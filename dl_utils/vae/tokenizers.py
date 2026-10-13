@@ -212,7 +212,7 @@ class VectorQuantizer(nn.Module):
 
     def indices_to_values(self, indices: Tensor) -> Tensor:
         """Restore quantized latents (B, C, H, W) from token indices (B, H, W)."""
-        # indices: (B, h, w), return z_q.detach(): (B, C, h, w), C = embedding_dim
+        # indices: (B, h, w), return z_q: (B, C, h, w), C = embedding_dim
         return self.embedding(indices).permute(0, 3, 1, 2).contiguous()
 
     def forward(self, z_e: Tensor) -> tuple[Tensor, Tensor, Tensor]:

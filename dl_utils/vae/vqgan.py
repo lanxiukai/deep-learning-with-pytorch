@@ -182,11 +182,11 @@ class LPIPSLoss(nn.Module):
         )
         self.eval().requires_grad_(False)
 
-    def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
-        # prediction: (B, 3, H, W), target (B, 3, H, W)
+    def forward(self, reconstruction: Tensor, images: Tensor) -> Tensor:
+        # reconstruction: (B, 3, H, W), images (B, 3, H, W)
         # both ∈ [-1, 1] (normalize=False)
         # (B, 1, 1, 1).mean() -> loss scalar ()
-        return self.metric(prediction, target, normalize=False).mean()
+        return self.metric(reconstruction, images, normalize=False).mean()
 
 
 def adaptive_adversarial_weight(

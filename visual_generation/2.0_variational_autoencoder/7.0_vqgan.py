@@ -49,7 +49,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
+from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
@@ -128,7 +128,7 @@ TEMPERATURE = 1.0
 def vqgan_autoencoder_step(
     model: VQGANAutoencoder,
     discriminator: PatchDiscriminator,
-    perceptual: nn.Module,
+    perceptual: LPIPSLoss,
     images: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
@@ -141,21 +141,21 @@ def vqgan_autoencoder_step(
     reconstruction, _, vq_loss = model(images)
     pixel_l1 = F.l1_loss(reconstruction, images)
     perceptual_loss = perceptual(reconstruction, images)
-    reconstruction_objective = pixel_l1 + float(perceptual_weight) * perceptual_loss
+    reconstruction_loss = pixel_l1 + float(perceptual_weight) * perceptual_loss
 
     discriminator.requires_grad_(False)
-    adversarial = images.new_zeros(())
+    adversarial_loss = images.new_zeros(())
     adversarial_scale = images.new_zeros(())
     if step >= discriminator_start:
-        adversarial = generator_hinge_loss(discriminator(reconstruction))
+        adversarial_loss = generator_hinge_loss(discriminator(reconstruction))
         adversarial_scale = adaptive_adversarial_weight(
-            reconstruction_objective,
-            adversarial,
+            reconstruction_loss,
+            adversarial_loss,
             model.decoder.last_layer,
             scale=discriminator_weight,
         )
     loss = (
-        reconstruction_objective + vq_weight * vq_loss + adversarial_scale * adversarial
+        reconstruction_loss + vq_weight * vq_loss + adversarial_scale * adversarial_loss
     )
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -192,14 +192,14 @@ def train_tokenizer(
 ) -> None:
     discriminator = PatchDiscriminator(DISCRIMINATOR_CHANNELS).to(device)
     perceptual = LPIPSLoss().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
+    ae_optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
     d_optimizer = torch.optim.Adam(
         discriminator.parameters(), lr=DISCRIMINATOR_LR, betas=ADAM_BETAS
     )
     checkpoint = epoch_checkpoint(
         OUTPUT_DIR / "tokenizer_latest.pth",
         {"tokenizer": model, "discriminator": discriminator},
-        {"tokenizer": optimizer, "discriminator": d_optimizer},
+        {"tokenizer": ae_optimizer, "discriminator": d_optimizer},
         recipe,
     )
     completed, state = checkpoint.resume(
@@ -228,7 +228,7 @@ def train_tokenizer(
                     discriminator,
                     perceptual,
                     images,
-                    optimizer,
+                    ae_optimizer,
                     step=state["global_step"],
                     discriminator_start=DISCRIMINATOR_START,
                     perceptual_weight=PERCEPTUAL_WEIGHT,

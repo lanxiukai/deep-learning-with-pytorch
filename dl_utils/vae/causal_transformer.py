@@ -231,16 +231,18 @@ class CausalTransformerPrior(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """Return logits and targets for (B,H,W) or (B,T) indices."""
         # indices: (B, H, W) or (B, T), T = H * W
-        targets = indices.flatten(1)  # flatten indices or targets (B, T)
+        targets = indices.flatten(1)  # flatten indices or labels (B, T)
         bos = targets.new_full((targets.shape[0], 1), self.bos_token)  # (B, 1)
         inputs = torch.cat((bos, targets[:, :-1]), dim=1)  # shift right (B, T)
-        return self(inputs), targets  # logits (B, T, V), labels
+        return self(inputs), targets  # logits (B, T, V), targets (B, T)
 
+    # Expose this generator as a context manager for use with `with`.
     @contextmanager
     def _generation(
         self, count: int, device: torch.device
     ) -> Generator[tuple[Tensor, KVCache]]:
         """Create generation buffers and restore the previous dropout mode."""
+        # Entering `with` runs setup until the yield.
         was_training = self.training
         self.eval()
         try:
@@ -250,8 +252,10 @@ class CausalTransformerPrior(nn.Module):
                 dtype=torch.long,
                 device=device,
             )  # (count, T+1)
+            # Yield once and pause while the caller executes the `with` block.
             yield tokens, KVCache(len(self.blocks), self.sequence_length)
         finally:
+            # Restore the previous mode on normal exit, return, or exception.
             self.train(was_training)
 
     @torch.inference_mode()
@@ -272,11 +276,11 @@ class CausalTransformerPrior(nn.Module):
             for position in range(self.sequence_length):
                 logits = self(
                     tokens[:, position : position + 1], cache=cache, position=position
-                )[:, 0]
+                )[:, 0]  # (count, V)
                 tokens[:, position + 1 : position + 2] = _sample_token(
                     logits, method, temperature, top_k, top_p
-                )
-            return tokens[:, 1:]
+                )  # (count, T+1)
+            return tokens[:, 1:]  # (count, T)
 
     @torch.inference_mode()
     def beam_search(self, beam_width: int, *, device: torch.device) -> Tensor:
@@ -288,13 +292,15 @@ class CausalTransformerPrior(nn.Module):
             for position in range(self.sequence_length):
                 logits = self(
                     tokens[:, position : position + 1], cache=cache, position=position
-                )[:, 0]
+                )[:, 0]  # (K, V) if not first else (1, V), same below
+                # candidates[k, v] = scores[k] + logP(v|prefix_k)
                 candidates = scores[:, None] + logits.log_softmax(dim=-1)
                 scores, selected = candidates.flatten().topk(
                     min(beam_width, candidates.numel())
-                )
+                )  # sort and filter (K*V -> V), (K,) if K <= V
+                # k_indeces of candidates, (K,)
                 parents = selected // self.vocabulary_size
-                tokens = tokens.index_select(0, parents)
+                tokens = tokens.index_select(0, parents)  # (K, T+1)
                 tokens[:, position + 1] = selected % self.vocabulary_size
                 cache.reorder(parents)
             return tokens[:, 1:]
@@ -304,16 +310,16 @@ def _sample_token(
     logits: Tensor, method: str, temperature: float, top_k: int, top_p: float
 ) -> Tensor:
     """Choose one token per batch item from already validated options."""
-    # logits: (B, V), method: ["multinomial", "greedy", "top_k", "top_p"]
+    # logits: (count, V), method: ["multinomial", "greedy", "top_k", "top_p"]
     if method == "greedy":
-        return logits.argmax(dim=-1, keepdim=True)  # (B, 1)
+        return logits.argmax(dim=-1, keepdim=True)  # (count, 1)
     logits = logits / temperature
     if method == "top_k":
-        values, indices = logits.topk(top_k, dim=-1)  # filter and sort, (B, top_k)
+        values, indices = logits.topk(top_k, dim=-1)  # sort and filter, (count, top_k)
         logits = torch.full_like(logits, -torch.inf).scatter(-1, indices, values)
     elif method == "top_p" and top_p < 1:
         # Each sample is filtered independently.
-        values, indices = logits.sort(dim=-1, descending=True)  # (B, V)
+        values, indices = logits.sort(dim=-1, descending=True)  # (count, V)
         remove = values.softmax(dim=-1).cumsum(dim=-1) >= top_p
         # Keep the token that first reaches the requested mass.
         remove[:, 1:] = remove[:, :-1].clone()  # shift right
@@ -322,7 +328,7 @@ def _sample_token(
         logits = torch.empty_like(logits).scatter(
             -1, indices, values.masked_fill(remove, -torch.inf)
         )
-    return torch.multinomial(logits.softmax(dim=-1), 1)  # (B, 1)
+    return torch.multinomial(logits.softmax(dim=-1), 1)  # (count, 1)
 
 
 __all__ = [
