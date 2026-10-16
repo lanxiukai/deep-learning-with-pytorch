@@ -59,8 +59,10 @@ class ResidualBlock(nn.Module):
         out_channels: int,
         time_dim: int,
         dropout: float = 0.0,
+        output_scale: float = 1.0,
     ) -> None:
         super().__init__()
+        self.output_scale = output_scale
         self.norm1 = nn.GroupNorm(_group_count(in_channels), in_channels)
         self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
         self.time_projection = nn.Sequential(
@@ -79,7 +81,7 @@ class ResidualBlock(nn.Module):
         hidden = self.conv1(F.silu(self.norm1(inputs)))
         hidden = hidden + self.time_projection(time_embedding)[:, :, None, None]
         hidden = self.conv2(self.dropout(F.silu(self.norm2(hidden))))
-        return hidden + self.skip(inputs)
+        return (hidden + self.skip(inputs)) * self.output_scale
 
 
 class SelfAttention2d(nn.Module):
@@ -164,10 +166,15 @@ class DownStage(nn.Module):
         num_heads: int,
         downsample: bool,
         residual_resampling: bool = False,
+        residual_scale: float = 1.0,
     ) -> None:
         super().__init__()
-        self.block1 = ResidualBlock(in_channels, channels, time_dim, dropout)
-        self.block2 = ResidualBlock(channels, channels, time_dim, dropout)
+        self.block1 = ResidualBlock(
+            in_channels, channels, time_dim, dropout, residual_scale
+        )
+        self.block2 = ResidualBlock(
+            channels, channels, time_dim, dropout, residual_scale
+        )
         self.attention = (
             SelfAttention2d(channels, num_heads) if use_attention else nn.Identity()
         )
@@ -209,12 +216,15 @@ class UpStage(nn.Module):
         num_heads: int,
         upsample: bool,
         residual_resampling: bool = False,
+        residual_scale: float = 1.0,
     ) -> None:
         super().__init__()
         self.block1 = ResidualBlock(
-            in_channels + skip_channels, channels, time_dim, dropout
+            in_channels + skip_channels, channels, time_dim, dropout, residual_scale
         )
-        self.block2 = ResidualBlock(channels, channels, time_dim, dropout)
+        self.block2 = ResidualBlock(
+            channels, channels, time_dim, dropout, residual_scale
+        )
         self.attention = (
             SelfAttention2d(channels, num_heads) if use_attention else nn.Identity()
         )
@@ -267,6 +277,7 @@ class DiffusionUNet(nn.Module):
         class_conditioning: str = "additive",
         residual_resampling: bool = False,
         extra_noise_condition: bool = False,
+        residual_scale: float = 1.0,
     ) -> None:
         super().__init__()
         hidden_dims = tuple(hidden_dims)
@@ -303,6 +314,7 @@ class DiffusionUNet(nn.Module):
         self.class_conditioning = class_conditioning
         self.residual_resampling = residual_resampling
         self.extra_noise_condition = extra_noise_condition
+        self.residual_scale = residual_scale
         base_channels = hidden_dims[0]
         time_dim = base_channels * 4
         self.time_embedding = nn.Sequential(
@@ -347,6 +359,7 @@ class DiffusionUNet(nn.Module):
                     num_heads,
                     has_next,
                     residual_resampling,
+                    residual_scale,
                 )
             )
             current_channels = next_channels
@@ -354,11 +367,11 @@ class DiffusionUNet(nn.Module):
 
         bottleneck_channels = hidden_dims[-1]
         self.middle_block1 = ResidualBlock(
-            bottleneck_channels, bottleneck_channels, time_dim, dropout
+            bottleneck_channels, bottleneck_channels, time_dim, dropout, residual_scale
         )
         self.middle_attention = SelfAttention2d(bottleneck_channels, num_heads)
         self.middle_block2 = ResidualBlock(
-            bottleneck_channels, bottleneck_channels, time_dim, dropout
+            bottleneck_channels, bottleneck_channels, time_dim, dropout, residual_scale
         )
 
         up_stages: list[nn.Module] = []
@@ -379,6 +392,7 @@ class DiffusionUNet(nn.Module):
                     num_heads,
                     has_previous,
                     residual_resampling,
+                    residual_scale,
                 )
             )
             current_channels = next_channels
@@ -402,6 +416,11 @@ class DiffusionUNet(nn.Module):
             "class_conditioning": self.class_conditioning,
             "residual_resampling": self.residual_resampling,
             "extra_noise_condition": self.extra_noise_condition,
+            **(
+                {"residual_scale": self.residual_scale}
+                if self.residual_scale != 1
+                else {}
+            ),
         }
 
     def forward(

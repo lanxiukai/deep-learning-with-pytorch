@@ -32,6 +32,8 @@ def sample_velocity(
         raise ValueError(
             "The SDE comparison is defined for the SiT data-to-noise path."
         )
+    if solver == "sde" and (sde_strength < 0 or not 0 < epsilon < 1):
+        raise ValueError("SDE strength must be nonnegative and its endpoint in (0, 1).")
     end = epsilon if solver == "sde" else (0 if reverse else 1)
     times = torch.linspace(1 if reverse else 0, end, steps + 1, device=noise.device)
     state = noise.clone()

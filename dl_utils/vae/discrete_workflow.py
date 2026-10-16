@@ -15,23 +15,20 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 from torchvision.utils import save_image
 
-from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.data.loading import make_device_aware_loader
 from dl_utils.data.vision import image_folder_dataset
 from dl_utils.filesystem.directories import reset_dir
 from dl_utils.plot.curves import save_loss_panels
 from dl_utils.training.checkpoints import TrainingCheckpoint, atomic_torch_save
-from dl_utils.vae.discrete_tokenizers import VQVAE, FSQAutoencoder, validate_image_size
-from dl_utils.vae.token_priors import (
-    CausalTransformerPrior,
-    PixelCNNPrior,
-)
-from dl_utils.vae.vqgan import VQPerceptualAutoencoder
+from dl_utils.vae.causal_transformer import CausalTransformerPrior
+from dl_utils.vae.pixelcnn import PixelCNNPrior
+from dl_utils.vae.tokenizers import VQVAE, FSQAutoencoder, validate_image_size
+from dl_utils.vae.vqgan import VQGANAutoencoder
 
 MODEL_TYPES = {
     "vq_vae": (VQVAE, PixelCNNPrior),
     "fsq": (FSQAutoencoder, PixelCNNPrior),
-    "vqgan": (VQPerceptualAutoencoder, CausalTransformerPrior),
+    "vqgan": (VQGANAutoencoder, CausalTransformerPrior),
 }
 PAIR_FORMAT = "discrete-pair-v1"
 
@@ -72,15 +69,10 @@ def glasses_loader(
     *,
     shuffle: bool = False,
     num_workers: int = 0,
-    conditional: bool = False,
 ) -> DataLoader:
     dataset = image_folder_dataset(
         root, resize=(image_size, image_size), normalize=(0.5, 0.5)
     )
-    if conditional and dataset.classes != list(GLASSES_CLASS_NAMES):
-        raise ValueError(
-            f"Expected classes {GLASSES_CLASS_NAMES}, got {dataset.classes}"
-        )
     loader = make_device_aware_loader(
         dataset,
         batch_size,
@@ -112,7 +104,7 @@ def fixed_images(loader: DataLoader, count: int) -> Tensor:
 
 @torch.no_grad()
 def encode_dataset(
-    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    tokenizer: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     image_loader: DataLoader,
     device: torch.device,
     *,
@@ -170,7 +162,7 @@ def epoch_checkpoint(
 
 @torch.inference_mode()
 def save_reconstruction(
-    model: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    model: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     originals: Tensor,
     path: str | Path,
     device: torch.device,
@@ -200,7 +192,7 @@ def save_loss_curves(
 def save_pair(
     path: str | PathLike[str],
     name: str,
-    tokenizer: VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    tokenizer: VQVAE | FSQAutoencoder | VQGANAutoencoder,
     prior: PixelCNNPrior | CausalTransformerPrior,
     config: Mapping[str, Any],
 ) -> None:
@@ -210,7 +202,6 @@ def save_pair(
             "format": PAIR_FORMAT,
             "model_name": name,
             "config": config,
-            "class_names": (list(GLASSES_CLASS_NAMES) if name == "vqgan" else []),
             "tokenizer": tokenizer.state_dict(),
             "prior": prior.state_dict(),
         },
@@ -225,23 +216,16 @@ def load_pair(
     *,
     image_size: int = 256,
 ) -> tuple[
-    VQVAE | FSQAutoencoder | VQPerceptualAutoencoder,
+    VQVAE | FSQAutoencoder | VQGANAutoencoder,
     PixelCNNPrior | CausalTransformerPrior,
 ]:
-    """Load a final pair and check the image, vocabulary, grid, and label shapes."""
+    """Load a final pair and check the image, vocabulary, and token grid shapes."""
     payload = torch.load(path, map_location=device, weights_only=True)
     if payload.get("format") != PAIR_FORMAT:
         raise ValueError("Expected a discrete-pair-v1 checkpoint.")
     config = payload["config"]
-    classes = list(GLASSES_CLASS_NAMES) if name == "vqgan" else []
-    if (
-        payload["model_name"] != name
-        or config["image_size"] != image_size
-        or payload["class_names"] != classes
-    ):
-        raise ValueError(
-            "Model name, image size, or class names do not match this lesson."
-        )
+    if payload["model_name"] != name or config["image_size"] != image_size:
+        raise ValueError("Model name or image size does not match this lesson.")
     tokenizer_type, prior_type = MODEL_TYPES[name]
     tokenizer = tokenizer_type(**config["tokenizer"]).to(device)
     prior = prior_type(**config["prior"]).to(device)
@@ -254,8 +238,6 @@ def load_pair(
         or getattr(prior, "sequence_length", side**2) != side**2
     ):
         raise ValueError("Prior vocabulary or token grid does not match the tokenizer.")
-    if getattr(prior, "num_classes", 0) != len(classes):
-        raise ValueError("Prior conditioning does not match the class names.")
     return tokenizer.eval().requires_grad_(False), prior.eval().requires_grad_(False)
 
 

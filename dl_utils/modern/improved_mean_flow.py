@@ -133,9 +133,17 @@ def imf_loss(
     adaptive_power=0.5,
     auxiliary_weight=1.0,
     variable_interval=True,
+    weighting_epsilon=1e-3,
+    time_mean=0.0,
+    time_std=1.0,
 ):
     batch = len(clean)
-    times = torch.randn(2, batch, device=clean.device).sigmoid().sort(dim=0).values
+    times = (
+        (time_mean + time_std * torch.randn(2, batch, device=clean.device))
+        .sigmoid()
+        .sort(dim=0)
+        .values
+    )
     r, t = times.unbind(0)
     r = torch.where(torch.rand_like(t) < equal_fraction, t, r)
     noise = torch.randn_like(clean)
@@ -168,11 +176,11 @@ def imf_loss(
     induced = u + (t - r)[:, None, None, None] * derivative.detach()
     main_error = (induced - guided_target).square().flatten(1).mean(1)
     aux_error = (velocity - guided_target).square().flatten(1).mean(1)
-    loss = main_error / (main_error.detach() + 1e-3).pow(adaptive_power)
+    loss = main_error / (main_error.detach() + weighting_epsilon).pow(adaptive_power)
     if model.auxiliary_head:
-        loss = loss + auxiliary_weight * aux_error / (aux_error.detach() + 1e-3).pow(
-            adaptive_power
-        )
+        loss = loss + auxiliary_weight * aux_error / (
+            aux_error.detach() + weighting_epsilon
+        ).pow(adaptive_power)
     return (
         loss,
         t,
@@ -192,6 +200,10 @@ def imf_loss(
 
 @torch.no_grad()
 def sample_imf(model, noise, labels, *, steps=1, omega=1.0, lower=0.0, upper=1.0):
+    if steps < 1 or omega < 1 or not 0 <= lower < upper <= 1:
+        raise ValueError(
+            "Need positive steps, guidance >= 1 and 0 <= lower < upper <= 1."
+        )
     state = noise.clone()
     times = torch.linspace(1, 0, steps + 1, device=noise.device)
     for t, r in itertools.pairwise(times):

@@ -118,8 +118,11 @@ environment or dependency workflow.
   Read each lesson's `train()` first: load images, train the tokenizer, freeze
   and encode, train the prior, then save the pair. There is no model selection,
   monitoring subset, disk token cache, or stage state machine.
-  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares the identical
-  PixelCNN prior setup, epoch loop, recovery, and sampling for VQ-VAE and FSQ.
+  [vae/pixelcnn.py](vae/pixelcnn.py) owns the PixelCNN model and raster sampler.
+  [vae/pixelcnn_training.py](vae/pixelcnn_training.py) shares prior setup,
+  epoch loops, and recovery for VQ-VAE and FSQ. Training depends on the workflow
+  helpers and model; paired-model loading depends only on the model, keeping
+  these module dependencies acyclic.
   Their tokenizer losses stay explicit in the lesson scripts; VQGAN also keeps
   its own Transformer training loop.
   Each stage keeps a short loss history and writes one loss figure. Eight-image
@@ -130,17 +133,35 @@ environment or dependency workflow.
   The 6.2/7.1 evaluations load that pair and save reconstruction and sample grids.
   VQ models return reconstruction, token indices, and commitment loss; FSQ
   returns reconstruction and token indices. Quantizers return quantized latents
-  instead of reconstructions. Model modules do not import the workflow.
-  [vae/token_priors.py](vae/token_priors.py) owns both priors and their direct
-  autoregressive samplers. PixelCNN uses one stream of A/B masked convolutions
+  instead of reconstructions. Tokenizer modules do not import the workflow.
+  PixelCNN uses one stream of A/B masked convolutions
   with ordinary bottleneck residual blocks. The lessons use a grouped 63x63
   first mask and 15 residual blocks for their 32x32 grids. Only this selected
   PixelCNN architecture is retained; there is no legacy architecture selector.
-  Sampling recomputes full-grid logits for each position. The Transformer
-  recomputes the full token prefix at each step; its layers are independently
-  initialized. Both samplers temporarily disable dropout and restore
-  the previous mode.
-  [vae/discrete_tokenizers.py](vae/discrete_tokenizers.py) supplies the shared
+  Sampling recomputes full-grid logits for each position.
+  [vae/causal_transformer.py](vae/causal_transformer.py) owns the Transformer
+  prior, its samplers, input embeddings, pre-norm causal blocks, multi-head
+  attention, GELU feedforward modules, and caller-owned KV caches. Feedforward
+  layers form an explicit Linear/GELU/Dropout/Linear sequence. Parallel training and incremental
+  decoding share one forward path: embeddings, causal blocks, final normalization,
+  and the tied output projection. Each layer's cache preallocates
+  K/V tensors in their projected dtype, appends one position at a time, and
+  reorders beam parents.
+  Its complete image-token embedding matrix is shared with the output projection;
+  `CausalInputEmbedding` owns that matrix, the separate input-only BOS vector,
+  and learned positions with an offset for cached decoding.
+  Its layers are independently initialized.
+  Both samplers temporarily disable dropout and restore the previous mode.
+  Transformer training stays parallel; caches last for one sampling call and
+  are never saved in checkpoints. The prior supports multinomial, greedy,
+  top-k, and top-p decoding, plus beam search that reorders cached prefixes.
+  Sampling temperature affects only stochastic output-token selection, which is
+  separate from the decoding loop. Generation options are validated in the VQGAN
+  entry scripts; internal caches assume consecutive single-token inference.
+  The VQGAN recipe records the sequential-FFN architecture for same-recipe epoch
+  recovery. Earlier prior checkpoints require retraining; there is no legacy
+  weight conversion.
+  [vae/tokenizers.py](vae/tokenizers.py) supplies the shared
   quantizers and VQ-VAE/FSQ image tokenizers.
   VQ-VAE/FSQ use three downsampling steps: 256x256 images map to 32x32 grids
   with 128/240 possible codes. VQGAN uses `TOKENIZER_DOWNSAMPLE_STEPS=4` for

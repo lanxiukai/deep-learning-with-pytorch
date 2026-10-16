@@ -1,19 +1,19 @@
-"""VQGAN perceptual tokenizer with a class-conditional causal Transformer prior.
+"""VQGAN perceptual tokenizer with an unconditional causal Transformer prior.
 
 Data:
     data/glasses-256, prepared by tool_scripts/download_dataset.py --dataset glasses.
     Resize to 256x256 RGB and normalize from [0, 1] to [-1, 1].
     Use all 4,500 training images: 2,543 G and 1,957 NoG.
-    Stage 1 ignores labels; stage 2 uses them for conditional token prediction.
+    Both stages ignore class labels and learn from all images together.
 
 Outputs:
     output/vae/vqgan/model.pth: final tokenizer/prior pair
     output/vae/vqgan/tokenizer_latest.pth: tokenizer/discriminator recovery
-    output/vae/vqgan/prior_latest.pth: conditional prior recovery
+    output/vae/vqgan/prior_latest.pth: unconditional prior recovery
     output/vae/vqgan/tokenizer_loss.png: autoencoder and discriminator curves
     output/vae/vqgan/prior_loss.png: token cross-entropy curve
     output/vae/vqgan/training/tokenizer_epoch_*.png: original/reconstruction rows
-    output/vae/vqgan/training/prior_epoch_*.png: alternating G/NoG samples
+    output/vae/vqgan/training/prior_epoch_*.png: unconditional samples
 
 Training data -- glasses-256 (fresh run):
 Training images:          4,500
@@ -27,8 +27,10 @@ Training/generated image: 256x256 RGB in [-1, 1]
 Token grid / sequence:    16x16 / 256 tokens; four 2x downsampling stages
 Codebook:                 512 vectors, 64 values each; commitment coefficient 0.25
 Tokenizer/PatchGAN width: 128 / 64 channels
-Transformer:              256 values, 8 heads, 4 layers, 2 classes, dropout 0.0
-Model size:               tokenizer 2.681 M / prior 3.488 M / PatchGAN 1.251 M
+Transformer:              256 values, 8 heads, 4 layers, dropout 0.0
+                          Full input/output matrix is tied; BOS has a separate vector.
+                          Token/BOS initialization std 0.02; positions start at zero.
+Model size:               tokenizer 2.681 M / prior 3.356 M / PatchGAN 1.251 M
                           Counts exclude LPIPS; tokenizer includes frozen codebook.
 EMA decay / epsilon:      0.99 / 1e-5
 Loss weights:             perceptual 1.0, VQ 1.0, adversarial scale 1.0
@@ -38,26 +40,26 @@ Previews:                 8 images; epochs 1, every 10, and final; temperature 1
 
 Run without arguments; edit the constants below to experiment. LPIPS uses
 pretrained VGG weights. Comparison with 6.0 changes architecture, objective,
-prior, conditioning, and training budget together.
+prior, and training budget together.
 """
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch import Tensor, nn
+from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 from tqdm.auto import tqdm
 
-from dl_utils.data.datasets.glasses import GLASSES_CLASS_NAMES
 from dl_utils.filesystem.project_root import infer_project_root
 from dl_utils.gan.training import discriminator_hinge_loss, generator_hinge_loss
-from dl_utils.runtime.devices import try_gpu
+from dl_utils.runtime.devices import configure_device, try_gpu
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.discrete_tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
+from dl_utils.vae.causal_transformer import CausalTransformerPrior
 from dl_utils.vae.discrete_workflow import (
     encode_dataset,
     epoch_checkpoint,
@@ -69,11 +71,11 @@ from dl_utils.vae.discrete_workflow import (
     save_reconstruction,
     seed_epoch_loader,
 )
-from dl_utils.vae.token_priors import CausalTransformerPrior
+from dl_utils.vae.tokenizers import TOKENIZER_DOWNSAMPLE_STEPS
 from dl_utils.vae.vqgan import (
-    LPIPSPerceptualLoss,
+    LPIPSLoss,
     PatchDiscriminator,
-    VQPerceptualAutoencoder,
+    VQGANAutoencoder,
     adaptive_adversarial_weight,
 )
 
@@ -100,7 +102,6 @@ DISCRIMINATOR_WEIGHT = 1.0
 DISCRIMINATOR_START = 1000
 
 # Prior configuration
-NUM_CLASSES = len(GLASSES_CLASS_NAMES)
 PRIOR_DIM = 256
 PRIOR_HEADS = 8
 PRIOR_LAYERS = 4
@@ -125,9 +126,9 @@ TEMPERATURE = 1.0
 
 
 def vqgan_autoencoder_step(
-    model: VQPerceptualAutoencoder,
+    model: VQGANAutoencoder,
     discriminator: PatchDiscriminator,
-    perceptual: nn.Module,
+    perceptual: LPIPSLoss,
     images: Tensor,
     optimizer: torch.optim.Optimizer,
     *,
@@ -140,21 +141,21 @@ def vqgan_autoencoder_step(
     reconstruction, _, vq_loss = model(images)
     pixel_l1 = F.l1_loss(reconstruction, images)
     perceptual_loss = perceptual(reconstruction, images)
-    reconstruction_objective = pixel_l1 + float(perceptual_weight) * perceptual_loss
+    reconstruction_loss = pixel_l1 + float(perceptual_weight) * perceptual_loss
 
     discriminator.requires_grad_(False)
-    adversarial = images.new_zeros(())
+    adversarial_loss = images.new_zeros(())
     adversarial_scale = images.new_zeros(())
     if step >= discriminator_start:
-        adversarial = generator_hinge_loss(discriminator(reconstruction))
+        adversarial_loss = generator_hinge_loss(discriminator(reconstruction))
         adversarial_scale = adaptive_adversarial_weight(
-            reconstruction_objective,
-            adversarial,
+            reconstruction_loss,
+            adversarial_loss,
             model.decoder.last_layer,
             scale=discriminator_weight,
         )
     loss = (
-        reconstruction_objective + vq_weight * vq_loss + adversarial_scale * adversarial
+        reconstruction_loss + vq_weight * vq_loss + adversarial_scale * adversarial_loss
     )
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
@@ -184,21 +185,21 @@ def vqgan_discriminator_step(
 
 
 def train_tokenizer(
-    model: VQPerceptualAutoencoder,
+    model: VQGANAutoencoder,
     loader: DataLoader,
     device: torch.device,
     recipe: Mapping[str, Any],
 ) -> None:
     discriminator = PatchDiscriminator(DISCRIMINATOR_CHANNELS).to(device)
-    perceptual = LPIPSPerceptualLoss().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
+    perceptual = LPIPSLoss().to(device)
+    ae_optimizer = torch.optim.Adam(model.parameters(), lr=LR, betas=ADAM_BETAS)
     d_optimizer = torch.optim.Adam(
         discriminator.parameters(), lr=DISCRIMINATOR_LR, betas=ADAM_BETAS
     )
     checkpoint = epoch_checkpoint(
         OUTPUT_DIR / "tokenizer_latest.pth",
         {"tokenizer": model, "discriminator": discriminator},
-        {"tokenizer": optimizer, "discriminator": d_optimizer},
+        {"tokenizer": ae_optimizer, "discriminator": d_optimizer},
         recipe,
     )
     completed, state = checkpoint.resume(
@@ -227,7 +228,7 @@ def train_tokenizer(
                     discriminator,
                     perceptual,
                     images,
-                    optimizer,
+                    ae_optimizer,
                     step=state["global_step"],
                     discriminator_start=DISCRIMINATOR_START,
                     perceptual_weight=PERCEPTUAL_WEIGHT,
@@ -265,7 +266,7 @@ def train_tokenizer(
 
 
 def train_prior(
-    tokenizer: VQPerceptualAutoencoder,
+    tokenizer: VQGANAutoencoder,
     images: DataLoader,
     device: torch.device,
     recipe: Mapping[str, Any],
@@ -301,9 +302,9 @@ def train_prior(
             progress.set_description(
                 f"Stage 2/2: Transformer prior {epoch}/{PRIOR_EPOCHS}", refresh=False
             )
-            for indices, labels in tokens:
-                indices, labels = indices.to(device), labels.to(device)
-                logits, targets = prior.teacher_forcing(indices, labels)
+            for indices, _ in tokens:
+                indices = indices.to(device)
+                logits, targets = prior.teacher_forcing(indices)
                 loss = F.cross_entropy(logits.flatten(0, 1), targets.flatten())
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -318,13 +319,9 @@ def train_prior(
                 with torch.random.fork_rng(), torch.inference_mode():
                     torch.manual_seed(SEED)
                     prior.eval()
-                    labels = torch.arange(NUM_SAMPLES, device=device).remainder(
-                        NUM_CLASSES
-                    )
                     indices = prior.sample(
                         NUM_SAMPLES,
                         device=device,
-                        labels=labels,
                         temperature=TEMPERATURE,
                     )
                     samples = tokenizer.decode_indices(
@@ -341,6 +338,10 @@ def train_prior(
 
 
 def train() -> None:
+    if not math.isfinite(TEMPERATURE) or TEMPERATURE <= 0:
+        raise ValueError("TEMPERATURE must be finite and positive.")
+    if NUM_SAMPLES < 1:
+        raise ValueError("NUM_SAMPLES must be positive.")
     config = {
         "image_size": IMAGE_SIZE,
         "tokenizer": {
@@ -359,11 +360,13 @@ def train() -> None:
             "heads": PRIOR_HEADS,
             "layers": PRIOR_LAYERS,
             "dropout": PRIOR_DROPOUT,
-            "num_classes": NUM_CLASSES,
         },
     }
     recipe = {
         "model": config,
+        "prior_architecture": "pre_norm_causal_blocks_sequential_ffn_input_embedding",
+        "prior_weight_tying": "full_matrix_with_separate_bos",
+        "prior_initialization": "token_bos_std_0.02_zero_positions",
         "tokenizer_epochs": TOKENIZER_EPOCHS,
         "prior_epochs": PRIOR_EPOCHS,
         "lr": LR,
@@ -381,6 +384,7 @@ def train() -> None:
     prepare_training_output(OUTPUT_DIR, resume=RESUME, recipe=recipe)
     set_seed(SEED)
     device = try_gpu()
+    configure_device(device)
     loader = glasses_loader(
         DATA_DIR,
         IMAGE_SIZE,
@@ -388,9 +392,8 @@ def train() -> None:
         device,
         shuffle=True,
         num_workers=WORKERS,
-        conditional=True,
     )
-    tokenizer = VQPerceptualAutoencoder(**config["tokenizer"]).to(device)
+    tokenizer = VQGANAutoencoder(**config["tokenizer"]).to(device)
     if not (RESUME and (OUTPUT_DIR / "prior_latest.pth").is_file()):
         train_tokenizer(tokenizer, loader, device, recipe)
     prior = train_prior(tokenizer, loader, device, recipe)

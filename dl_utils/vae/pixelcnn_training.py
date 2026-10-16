@@ -1,5 +1,7 @@
 """Shared PixelCNN prior training for the VQ-VAE and FSQ lessons."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -13,14 +15,9 @@ from tqdm.auto import tqdm
 
 from dl_utils.runtime.randomness import set_seed
 from dl_utils.training.metrics import MetricAccumulator
-from dl_utils.vae.discrete_tokenizers import VQVAE, FSQAutoencoder
-from dl_utils.vae.discrete_workflow import (
-    encode_dataset,
-    epoch_checkpoint,
-    save_loss_curves,
-    seed_epoch_loader,
-)
-from dl_utils.vae.token_priors import PixelCNNPrior
+from dl_utils.vae import discrete_workflow
+from dl_utils.vae.pixelcnn import PixelCNNPrior
+from dl_utils.vae.tokenizers import VQVAE, FSQAutoencoder
 
 
 def train_pixelcnn_prior_epoch(
@@ -67,7 +64,7 @@ def train_pixelcnn_prior(
     prior = PixelCNNPrior(**recipe["model"]["prior"]).to(device)
     optimizer = torch.optim.Adam(prior.parameters(), lr=recipe["prior_lr"])
     # The prior's checkpoint also restores the frozen tokenizer it was trained on.
-    checkpoint = epoch_checkpoint(
+    checkpoint = discrete_workflow.epoch_checkpoint(
         output_dir / "prior_latest.pth",
         {"tokenizer": tokenizer, "prior": prior},
         {"prior": optimizer},
@@ -79,9 +76,11 @@ def train_pixelcnn_prior(
     )
     tokenizer.eval().requires_grad_(False)
     if completed == epochs:
-        save_loss_curves(state["history"], output_dir / "prior_loss.png")
+        discrete_workflow.save_loss_curves(
+            state["history"], output_dir / "prior_loss.png"
+        )
         return prior.eval()
-    tokens = encode_dataset(
+    tokens = discrete_workflow.encode_dataset(
         tokenizer,
         images,
         device,
@@ -99,7 +98,7 @@ def train_pixelcnn_prior(
             progress.set_description(
                 f"Stage 2/2: PixelCNN prior {epoch}/{epochs}", refresh=False
             )
-            seed_epoch_loader(tokens, seed, epoch)
+            discrete_workflow.seed_epoch_loader(tokens, seed, epoch)
             nll = train_pixelcnn_prior_epoch(
                 prior, tokens, optimizer, device, progress=progress
             )
@@ -119,7 +118,7 @@ def train_pixelcnn_prior(
                     training_dir / f"prior_epoch_{epoch:03d}.png",
                     nrow=4,
                 )
-    save_loss_curves(state["history"], output_dir / "prior_loss.png")
+    discrete_workflow.save_loss_curves(state["history"], output_dir / "prior_loss.png")
     return prior.eval()
 
 
